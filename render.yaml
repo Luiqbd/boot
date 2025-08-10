@@ -1,0 +1,8 @@
+services:
+  - type: web
+    name: bot-negociacao
+    env: python
+    buildCommand: ""
+    startCommand: python bot.py
+    plan: free
+
