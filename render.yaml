@@ -1,8 +1,8 @@
 services:
   - type: web
-    name: bot-negociacao
+    name: bot-2025
     env: python
-    buildCommand: ""
     startCommand: bash start.sh
-    plan: free
-
+    buildCommand: pip install -r requirements.txt
+    repo: https://github.com/Luiqbd/boot
+    branch: main
