@@ -3,6 +3,6 @@ services:
     name: bot-negociacao
     env: python
     buildCommand: ""
-    startCommand: python bot.py
+    startCommand: bash start.sh
     plan: free
 
