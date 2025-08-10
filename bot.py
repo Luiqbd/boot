@@ -1,5 +1,7 @@
 import logging
 import time
+import threading
+from flask import Flask
 from strategy import TradingStrategy
 from dex import DexClient
 from config import config
@@ -11,9 +13,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def main():
-    logger.info("Bot iniciado 🚀")
+# Cria o app Flask
+app = Flask(__name__)
 
+@app.route('/')
+def home():
+    return "Bot de trading está rodando! 🟢"
+
+def executar_bot():
+    logger.info("Bot iniciado 🚀")
     dex = DexClient(config['RPC_URL'], config['PRIVATE_KEY'])
     strategy = TradingStrategy(dex)
 
@@ -26,4 +34,10 @@ def main():
         time.sleep(config['INTERVAL'])
 
 if __name__ == "__main__":
-    main()
+    # Inicia o bot em uma thread separada
+    bot_thread = threading.Thread(target=executar_bot)
+    bot_thread.daemon = True
+    bot_thread.start()
+
+    # Inicia o servidor Flask
+    app.run(host='0.0.0.0', port=10000)
