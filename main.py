@@ -6,6 +6,7 @@ from strategy import TradingStrategy
 from dex import DexClient
 from config import config
 
+# Logging
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -19,7 +20,7 @@ def executar_bot():
             logger.info("Executando estratégia...")
             strategy.run()
         except Exception as e:
-            logger.error("Erro durante execução: %s", str(e))
+            logger.error("Erro na estratégia: %s", str(e))
         time.sleep(config['INTERVAL'])
 
 # Comando /start
@@ -28,8 +29,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Telegram bot
 TOKEN = os.getenv("TELEGRAM_TOKEN")
-WEBHOOK_URL = "https://boot-no4o.onrender.com/webhook"
-PORT = int(os.environ.get("PORT", 5000))
+WEBHOOK_URL = "https://boot-no4o.onrender.com"
+PORT_FLASK = int(os.environ.get("PORT", 5000))
+PORT_TELEGRAM = 8443  # Porta separada pro webhook do bot
 
 telegram_app = ApplicationBuilder().token(TOKEN).build()
 telegram_app.add_handler(CommandHandler("start", start))
@@ -39,25 +41,25 @@ flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def home():
-    return 'Bot está rodando com webhook!'
+    return '✅ Bot está rodando com Flask + Webhook Telegram'
 
 @flask_app.route('/status')
 def status():
-    return '✅ Bot de trading ativo e escutando comandos Telegram.'
+    return '🔍 Status: Estratégia ativa, Telegram aguardando comandos.'
 
-# Inicia o Flask em uma thread separada
+# Flask em thread separada
 def iniciar_flask():
-    flask_app.run(host="0.0.0.0", port=PORT)
+    flask_app.run(host="0.0.0.0", port=PORT_FLASK)
 
-# Inicia o Telegram webhook em outra thread
+# Telegram webhook em thread separada
 def iniciar_telegram():
     telegram_app.run_webhook(
         listen="0.0.0.0",
-        port=8443,  # Porta separada para o bot
-        webhook_url=WEBHOOK_URL,
-        webhook_path="/webhook"
+        port=PORT_TELEGRAM,
+        webhook_url=WEBHOOK_URL
     )
 
+# Inicialização geral
 if __name__ == "__main__":
     threading.Thread(target=executar_bot, daemon=True).start()
     threading.Thread(target=iniciar_flask, daemon=True).start()
