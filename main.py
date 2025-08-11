@@ -1,3 +1,4 @@
+from flask import Flask
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from telegram import Update
 import threading, time, os, logging
@@ -33,10 +34,31 @@ PORT = int(os.environ.get("PORT", 5000))
 telegram_app = ApplicationBuilder().token(TOKEN).build()
 telegram_app.add_handler(CommandHandler("start", start))
 
-if __name__ == "__main__":
-    threading.Thread(target=executar_bot, daemon=True).start()
+# Flask app
+flask_app = Flask(__name__)
+
+@flask_app.route('/')
+def home():
+    return 'Bot está rodando com webhook!'
+
+@flask_app.route('/status')
+def status():
+    return '✅ Bot de trading ativo e escutando comandos Telegram.'
+
+# Inicia o Flask em uma thread separada
+def iniciar_flask():
+    flask_app.run(host="0.0.0.0", port=PORT)
+
+# Inicia o Telegram webhook em outra thread
+def iniciar_telegram():
     telegram_app.run_webhook(
         listen="0.0.0.0",
-        port=PORT,
-        webhook_url=WEBHOOK_URL
+        port=8443,  # Porta separada para o bot
+        webhook_url=WEBHOOK_URL,
+        webhook_path="/webhook"
     )
+
+if __name__ == "__main__":
+    threading.Thread(target=executar_bot, daemon=True).start()
+    threading.Thread(target=iniciar_flask, daemon=True).start()
+    iniciar_telegram()
