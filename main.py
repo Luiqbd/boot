@@ -11,10 +11,11 @@ from config import config
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
+
 # Configuração do logger
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
+logger.info("🔍 main.py iniciado — verificação de instância única")
 # 🔁 Função do bot de trading
 def executar_bot():
     logger.info("Bot de trading iniciado 🚀")
