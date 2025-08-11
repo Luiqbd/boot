@@ -1,7 +1,7 @@
 from flask import Flask, request
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from telegram import Update
-import threading, time, os, logging
+import threading, time, os, logging, asyncio
 from strategy import TradingStrategy
 from dex import DexClient
 from config import config
@@ -45,11 +45,12 @@ def home():
 def webhook():
     return telegram_app.update_webhook(request)
 
+# Configura o webhook manualmente
+async def configurar_webhook():
+    await telegram_app.bot.set_webhook(WEBHOOK_URL)
+
 if __name__ == "__main__":
+    # Inicia o bot de trading em paralelo
     threading.Thread(target=executar_bot, daemon=True).start()
-    telegram_app.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        webhook_url=WEBHOOK_URL
-    )
-    flask_app.run(host="0.0.0.0", port=PORT)
+
+    # Configura o webhook antes de iniciar
