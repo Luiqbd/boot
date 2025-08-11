@@ -6,3 +6,5 @@ services:
     buildCommand: pip install -r requirements.txt
     repo: https://github.com/Luiqbd/boot
     branch: main
+    pythonVersion: 3.10
+
