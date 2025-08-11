@@ -43,7 +43,14 @@ def home():
 
 @flask_app.route('/webhook', methods=['POST'])
 def webhook():
-    return telegram_app.update_webhook(request)
+    try:
+        data = request.get_json(force=True)
+        update = Update.de_json(data, telegram_app.bot)
+        telegram_app.update_queue.put(update)
+        return 'OK', 200
+    except Exception as e:
+        logger.error("Erro ao processar webhook: %s", str(e))
+        return 'Erro interno', 500
 
 # Configura o webhook em uma thread separada
 def configurar_webhook():
