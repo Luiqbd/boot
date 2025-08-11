@@ -6,4 +6,4 @@ services:
     startCommand: bash start.sh
     branch: main
     environment:
-      pythonVersion: 3.10
+      pythonVersion: 3.10.12
