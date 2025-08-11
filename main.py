@@ -23,40 +23,36 @@ logger = logging.getLogger(__name__)
 # ----------------------
 # Configuração básica
 # ----------------------
-# Token do Telegram: pega do ambiente ou do config
 TOKEN = os.getenv("TELEGRAM_TOKEN") or config.get("TELEGRAM_TOKEN")
-if not TOKEN:
-    raise RuntimeError("TELEGRAM_TOKEN não definido no ambiente ou no config")
+RPC_URL = config["RPC_URL"]
+PRIVATE_KEY = config["PRIVATE_KEY"]
+INTERVAL = int(os.getenv("INTERVAL", config.get("INTERVAL", 10)))
 
-# URL pública do Render (defina PUBLIC_BASE_URL no ambiente se preferir)
+if not TOKEN:
+    raise RuntimeError("TELEGRAM_TOKEN não definido no ambiente ou config")
+
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://boot-no4o.onrender.com").rstrip("/")
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/webhook")
 WEBHOOK_URL = f"{PUBLIC_BASE_URL}{WEBHOOK_PATH}"
-
-INTERVAL = int(os.getenv("INTERVAL", config.get("INTERVAL", 10)))
-RPC_URL = config["RPC_URL"]
-PRIVATE_KEY = config["PRIVATE_KEY"]
 
 # ----------------------
 # Telegram Application
 # ----------------------
 application = ApplicationBuilder().token(TOKEN).build()
-
-# Vamos guardar o loop do bot para uso no Flask
 telegram_loop: asyncio.AbstractEventLoop | None = None
 
 # ----------------------
 # Handlers do Telegram
 # ----------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Fala, Luis! Seu bot tá online via webhook 🚀\nUse /wallet para ver endereço e saldo.")
+    await update.message.reply_text("Fala, Luis! Seu bot tá online via webhook 🚀\nUse /wallet para ver o saldo.")
 
 async def wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         web3 = Web3(Web3.HTTPProvider(RPC_URL))
         address = web3.eth.account.from_key(PRIVATE_KEY).address
         balance = web3.eth.get_balance(address)
-        eth_balance = web3.fromWei(balance, 'ether')
+        eth_balance = web3.from_wei(balance, 'ether')  # corrigido
         await update.message.reply_text(
             f"🪪 Endereço: `{address}`\n💰 Saldo: {eth_balance:.6f} ETH",
             parse_mode="Markdown"
@@ -69,7 +65,7 @@ application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("wallet", wallet))
 
 # ----------------------
-# Estratégia de trading (thread separada)
+# Estratégia de trading
 # ----------------------
 def executar_bot():
     logger.info("Bot de trading iniciado 🚀")
@@ -84,21 +80,16 @@ def executar_bot():
         time.sleep(INTERVAL)
 
 # ----------------------
-# Inicialização assíncrona do Telegram (loop próprio)
+# Telegram (assíncrono)
 # ----------------------
 def iniciar_telegram():
     global telegram_loop
 
     async def runner():
-        # Inicializa e inicia o Application
         await application.initialize()
         await application.start()
-
-        # Configura o webhook apontando para o Flask
         await application.bot.set_webhook(WEBHOOK_URL)
         logger.info("Webhook configurado em %s", WEBHOOK_URL)
-
-        # Mantém o loop vivo
         while True:
             await asyncio.sleep(3600)
 
@@ -113,56 +104,48 @@ def iniciar_telegram():
         loop.close()
 
 # ----------------------
-# Flask (servidor público)
+# Flask server
 # ----------------------
 flask_app = Flask(__name__)
 PORT = int(os.environ.get("PORT", 5000))
 
 @flask_app.route("/", methods=["GET", "HEAD", "POST"])
 def home():
-    # Evita 405 nos logs quando alguém (ou o Telegram) posta na raiz sem querer
     if request.method == "POST":
         return "ignored", 200
-    return "✅ Bot está rodando com Flask + Telegram Webhook"
+    return "✅ Bot está rodando com Flask + Webhook"
 
 @flask_app.route("/status", methods=["GET"])
 def status():
-    return "🔍 Status: Estratégia ativa e Telegram aguardando comandos."
+    return "🔍 Estratégia ativa, Telegram online."
 
 @flask_app.route(WEBHOOK_PATH, methods=["POST", "GET"])
 def webhook():
-    # Telegram envia POST. Devolvemos 200 a GET para evitar 405 acidental.
     if request.method == "GET":
         return "OK", 200
     try:
         data = request.get_json(force=True, silent=False)
         update = Update.de_json(data, application.bot)
         if telegram_loop is None:
-            logger.error("Loop do Telegram ainda não inicializado")
+            logger.error("Loop do Telegram ainda não está pronto")
             return "Loop não pronto", 503
-
-        # Envia o update para ser processado pelo Application no loop do Telegram
         fut = asyncio.run_coroutine_threadsafe(
             application.process_update(update),
             telegram_loop
         )
-        fut.result(timeout=3)  # opcional: espera curto só pra detectar falhas
+        fut.result(timeout=3)
         return "OK", 200
     except Exception as e:
-        logger.exception("Erro ao processar webhook: %s", e)
+        logger.exception("Erro no webhook: %s", e)
         return "Erro interno", 500
 
 def iniciar_flask():
-    # Render expõe somente a PORT pública. O Flask deve rodar nessa porta.
     flask_app.run(host="0.0.0.0", port=PORT)
 
 # ----------------------
 # Main
 # ----------------------
 if __name__ == "__main__":
-    # Thread da estratégia
     threading.Thread(target=executar_bot, daemon=True).start()
-    # Thread do Flask (porta pública)
     threading.Thread(target=iniciar_flask, daemon=True).start()
-    # Thread do Telegram (loop assíncrono + setWebhook)
     iniciar_telegram()
