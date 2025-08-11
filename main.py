@@ -46,7 +46,10 @@ def webhook():
     try:
         data = request.get_json(force=True)
         update = Update.de_json(data, telegram_app.bot)
-        asyncio.create_task(telegram_app.update_queue.put(update))
+        asyncio.run_coroutine_threadsafe(
+            telegram_app.update_queue.put(update),
+            telegram_app.bot.loop
+        )
         return 'OK', 200
     except Exception as e:
         logger.error("Erro ao processar webhook: %s", str(e))
