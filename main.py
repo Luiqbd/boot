@@ -48,7 +48,7 @@ def webhook():
         update = Update.de_json(data, telegram_app.bot)
         asyncio.run_coroutine_threadsafe(
             telegram_app.update_queue.put(update),
-            telegram_app.bot.loop
+            telegram_app._loop
         )
         return 'OK', 200
     except Exception as e:
