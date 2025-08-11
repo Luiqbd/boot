@@ -1,0 +1,17 @@
+
+# Ignorar o arquivo de variáveis de ambiente
+.env
+
+# Ignorar dependências (Node.js)
+node_modules/
+
+# Ignorar logs
+*.log
+
+# Ignorar arquivos temporários
+*.tmp
+.DS_Store
+
+# Ignorar build/output
+dist/
+build/
