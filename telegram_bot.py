@@ -1,4 +1,9 @@
-print("Telegram bot iniciado ✅")
+import logging
+logging.basicConfig(level=logging.INFO)
+print("telegram_bot.py iniciado com sucesso")
+
+
+
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 import os
