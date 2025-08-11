@@ -2,9 +2,8 @@ services:
   - type: web
     name: bot-2025
     env: python
-    startCommand: bash start.sh
     buildCommand: pip install -r requirements.txt
-    repo: https://github.com/Luiqbd/boot
+    startCommand: bash start.sh
     branch: main
-    pythonVersion: 3.10
-
+    environment:
+      pythonVersion: 3.10
