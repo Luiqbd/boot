@@ -45,12 +45,13 @@ def home():
 def webhook():
     return telegram_app.update_webhook(request)
 
-# Configura o webhook manualmente
-async def configurar_webhook():
-    await telegram_app.bot.set_webhook(WEBHOOK_URL)
+# Configura o webhook em uma thread separada
+def configurar_webhook():
+    async def set_hook():
+        await telegram_app.bot.set_webhook(WEBHOOK_URL)
+    asyncio.run(set_hook())
 
 if __name__ == "__main__":
-    # Inicia o bot de trading em paralelo
     threading.Thread(target=executar_bot, daemon=True).start()
-
-    # Configura o webhook antes de iniciar
+    threading.Thread(target=configurar_webhook, daemon=True).start()
+    flask_app.run(host="0.0.0.0", port=PORT)
