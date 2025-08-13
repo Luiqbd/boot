@@ -1,59 +1,44 @@
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from web3 import Web3
 from dotenv import load_dotenv
 import os
 
-# Carregar variáveis de ambiente
+# Carrega variáveis do .env
 load_dotenv()
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 RPC_URL = os.getenv("RPC_URL")
-PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 
-# Conectar à blockchain
+# Conecta à rede Base
 web3 = Web3(Web3.HTTPProvider(RPC_URL))
-address = web3.eth.account.from_key(PRIVATE_KEY).address
+if not web3.isConnected():
+    raise Exception("Não foi possível conectar à rede Base")
 
-# Tokens que você quer consultar
+# Define o contrato do TOSHI na Base
 TOKENS = {
-    "USDC": {
-        "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
-        "decimals": 6
-    },
     "TOSHI": {
-        "address": "0xAE12C5930881c53715B369cec7606B70d8EB229f",
+        "address": "0x11FFd70009F195cFb1fb908dae04B9AD6b5630dD",
         "decimals": 18
     }
 }
 
-# ABI mínima para balanceOf
+# ABI mínima para saldo
 ERC20_ABI = [
     {
         "constant": True,
         "inputs": [{"name": "_owner", "type": "address"}],
         "name": "balanceOf",
         "outputs": [{"name": "balance", "type": "uint256"}],
-        "type": "function",
+        "type": "function"
     }
 ]
 
-# Comando /wallet
-async def wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    eth_balance = web3.eth.get_balance(address)
-    eth_formatted = web3.fromWei(eth_balance, 'ether')
+# Endereço da sua carteira
+wallet_address = "0x3a94c149332d54481e9e956c4f38862b5329e52b947e7942a32463db1e192c56"
 
-    message = f"🔗 Endereço: `{address}`\n"
-    message += f"💰 ETH: `{eth_formatted:.4f}` ETH\n"
+# Instancia o contrato
+token = TOKENS["TOSHI"]
+contract = web3.eth.contract(address=Web3.toChecksumAddress(token["address"]), abi=ERC20_ABI)
 
-    for name, token in TOKENS.items():
-        contract = web3.eth.contract(address=Web3.to_checksum_address(token["address"]), abi=ERC20_ABI)
-        raw_balance = contract.functions.balanceOf(address).call()
-        formatted = raw_balance / (10 ** token["decimals"])
-        message += f"💸 {name}: `{formatted:.4f}` {name}\n"
+# Consulta o saldo
+raw_balance = contract.functions.balanceOf(wallet_address).call()
+formatted_balance = raw_balance / (10 ** token["decimals"])
 
-    await update.message.reply_text(message, parse_mode="Markdown")
-
-# Inicializar bot
-app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-app.add_handler(CommandHandler("wallet", wallet))
-app.run_polling()
+print(f"Saldo de TOSHI na carteira {wallet_address}: {formatted_balance:.4f} TOSHI")
