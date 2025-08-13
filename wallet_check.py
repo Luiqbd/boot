@@ -1,17 +1,25 @@
 from web3 import Web3
 from dotenv import load_dotenv
 import os
+import telebot
 
 # Carrega variáveis do .env
 load_dotenv()
 RPC_URL = os.getenv("RPC_URL")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+# Inicializa o bot
+bot = telebot.TeleBot(BOT_TOKEN)
 
 # Conecta à rede Base
 web3 = Web3(Web3.HTTPProvider(RPC_URL))
 if not web3.isConnected():
     raise Exception("Não foi possível conectar à rede Base")
 
-# Define o contrato do TOSHI na Base
+# Sua carteira fixa
+WALLET_ADDRESS = "0x3a94c149332d54481e9e956c4f38862b5329e52b947e7942a32463db1e192c56"
+
+# Contrato do TOSHI
 TOKENS = {
     "TOSHI": {
         "address": "0x11FFd70009F195cFb1fb908dae04B9AD6b5630dD",
@@ -19,7 +27,7 @@ TOKENS = {
     }
 }
 
-# ABI mínima para saldo
+# ABI mínima ERC-20
 ERC20_ABI = [
     {
         "constant": True,
@@ -30,15 +38,32 @@ ERC20_ABI = [
     }
 ]
 
-# Endereço da sua carteira
-wallet_address = "0x3a94c149332d54481e9e956c4f38862b5329e52b947e7942a32463db1e192c56"
+# Função para consultar saldo
+def get_wallet_balances() -> str:
+    try:
+        # ETH
+        eth_balance = web3.eth.get_balance(WALLET_ADDRESS)
+        formatted_eth = web3.fromWei(eth_balance, 'ether')
 
-# Instancia o contrato
-token = TOKENS["TOSHI"]
-contract = web3.eth.contract(address=Web3.toChecksumAddress(token["address"]), abi=ERC20_ABI)
+        # TOSHI
+        token = TOKENS["TOSHI"]
+        contract = web3.eth.contract(address=Web3.toChecksumAddress(token["address"]), abi=ERC20_ABI)
+        raw_balance = contract.functions.balanceOf(WALLET_ADDRESS).call()
+        formatted_toshi = raw_balance / (10 ** token["decimals"])
 
-# Consulta o saldo
-raw_balance = contract.functions.balanceOf(wallet_address).call()
-formatted_balance = raw_balance / (10 ** token["decimals"])
+        return (
+            f"💼 Carteira: {WALLET_ADDRESS}\n"
+            f"🔹 ETH: {formatted_eth:.6f}\n"
+            f"🔸 TOSHI: {formatted_toshi:.4f}"
+        )
+    except Exception as e:
+        return f"❌ Erro ao consultar saldo: {str(e)}"
 
-print(f"Saldo de TOSHI na carteira {wallet_address}: {formatted_balance:.4f} TOSHI")
+# Comando /wallet
+@bot.message_handler(commands=['wallet'])
+def wallet_handler(message):
+    response = get_wallet_balances()
+    bot.reply_to(message, response)
+
+# Inicia o bot
+bot.polling()
