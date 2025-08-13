@@ -19,10 +19,10 @@ if not web3.isConnected():
 # Sua carteira fixa
 WALLET_ADDRESS = "0x3a94c149332d54481e9e956c4f38862b5329e52b947e7942a32463db1e192c56"
 
-# Contrato do TOSHI
+# Contrato correto do TOSHI na Base
 TOKENS = {
     "TOSHI": {
-        "address": "0x11FFd70009F195cFb1fb908dae04B9AD6b5630dD",
+        "address": "0xAC1Bd2486aAFB5C0fc3Fd868558b082a531B2B4",
         "decimals": 18
     }
 }
