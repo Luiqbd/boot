@@ -1,12 +1,14 @@
 from web3 import Web3
+from eth_account import Account
 from dotenv import load_dotenv
 import os
 import telebot
 
-# Carrega variáveis do .env
+# Carrega variáveis do .env (Render já injeta como variáveis de ambiente)
 load_dotenv()
 RPC_URL = os.getenv("RPC_URL")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 
 # Inicializa o bot
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -16,10 +18,11 @@ web3 = Web3(Web3.HTTPProvider(RPC_URL))
 if not web3.isConnected():
     raise Exception("Não foi possível conectar à rede Base")
 
-# Sua carteira fixa
-WALLET_ADDRESS = "0x3a94c149332d54481e9e956c4f38862b5329e52b947e7942a32463db1e192c56"
+# Gera endereço da carteira a partir da chave privada
+account = Account.from_key(PRIVATE_KEY)
+WALLET_ADDRESS = Web3.toChecksumAddress(account.address)
 
-# Contrato correto do TOSHI na Base
+# Contrato TOSHI na Base
 TOKENS = {
     "TOSHI": {
         "address": "0xAC1Bd2486aAFB5C0fc3Fd868558b082a531B2B4",
