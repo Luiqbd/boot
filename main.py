@@ -51,7 +51,7 @@ async def wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         web3 = Web3(Web3.HTTPProvider(RPC_URL))
         address = web3.eth.account.from_key(PRIVATE_KEY).address
-        checksum_address = web3.toChecksumAddress(address)  # ✅ Correção aqui
+        checksum_address = web3.toChecksumAddress(address)
 
         # Saldo ETH
         balance = web3.eth.get_balance(checksum_address)
@@ -84,80 +84,4 @@ async def wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("wallet", wallet))
 
-# ----------------------
-# Estratégia de trading
-# ----------------------
-def executar_bot():
-    logger.info("Bot de trading iniciado 🚀")
-    dex = DexClient(RPC_URL, PRIVATE_KEY)
-    strategy = TradingStrategy(dex)
-    while True:
-        try:
-            logger.info("Executando estratégia...")
-            strategy.run()
-        except Exception as e:
-            logger.error("Erro na estratégia: %s", str(e))
-        time.sleep(INTERVAL)
-
-# ----------------------
-# Telegram (assíncrono)
-# ----------------------
-def iniciar_telegram():
-    global telegram_loop
-
-    async def runner():
-        await application.initialize()
-        await application.start()
-        await application.bot.set_webhook(WEBHOOK_URL)
-        logger.info("Webhook configurado em %s", WEBHOOK_URL)
-        while True:
-            await asyncio.sleep(3600)
-
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    telegram_loop = loop
-    try:
-        loop.run_until_complete(runner())
-    finally:
-        loop.run_until_complete(application.stop())
-        loop.run_until_complete(application.shutdown())
-        loop.close()
-
-# ----------------------
-# Flask server
-# ----------------------
-flask_app = Flask(__name__)
-PORT = int(os.environ.get("PORT", 5000))
-
-@flask_app.route("/", methods=["GET", "HEAD", "POST"])
-def home():
-    if request.method == "POST":
-        return "ignored", 200
-    return "✅ Bot está rodando com Flask + Webhook"
-
-@flask_app.route("/status", methods=["GET"])
-def status():
-    return "🔍 Estratégia ativa, Telegram online."
-
-@flask_app.route(WEBHOOK_PATH, methods=["POST", "GET"])
-def webhook():
-    if request.method == "GET":
-        return "OK", 200
-    try:
-        data = request.get_json(force=True, silent=False)
-        update = Update.de_json(data, application.bot)
-        if telegram_loop is None:
-            logger.error("Loop do Telegram ainda não está pronto")
-            return "Loop não pronto", 503
-        fut = asyncio.run_coroutine_threadsafe(
-            application.process_update(update),
-            telegram_loop
-        )
-        fut.result(timeout=3)
-        return "OK", 200
-    except Exception as e:
-        logger.exception("Erro no webhook: %s", e)
-        return "Erro interno", 500
-
-def iniciar_flask():
-    flask_app.run(host="0.0.0.0", port=PORT
+# ----------------
