@@ -36,6 +36,11 @@ WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/webhook")
 WEBHOOK_URL = f"{PUBLIC_BASE_URL}{WEBHOOK_PATH}"
 
 # ----------------------
+# Web3 global (uma única instância)
+# ----------------------
+web3 = Web3(Web3.HTTPProvider(RPC_URL))
+
+# ----------------------
 # Telegram Application
 # ----------------------
 application = ApplicationBuilder().token(TOKEN).build()
@@ -51,16 +56,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        web3 = Web3(Web3.HTTPProvider(RPC_URL))
         address = web3.eth.account.from_key(PRIVATE_KEY).address
-        checksum_address = web3.toChecksumAddress(address)
+
+        # web3 v7 usa snake_case e pode ser chamado pela classe
+        checksum_address = Web3.to_checksum_address(address)
 
         # Saldo ETH
         balance = web3.eth.get_balance(checksum_address)
         eth_balance = web3.from_wei(balance, 'ether')
 
-        # Saldo TOSHI
-        token_address = web3.toChecksumAddress("0xAC1Bd2486aAf3B5C0fc3Fd868558b082a531B2B4")
+        # Saldo TOSHI (ERC-20)
+        token_address = Web3.to_checksum_address("0xAC1Bd2486aAf3B5C0fc3Fd868558b082a531B2B4")
         decimals = 18
         abi = [{
             "constant": True,
@@ -91,7 +97,8 @@ application.add_handler(CommandHandler("wallet", wallet))
 # ----------------------
 def executar_bot():
     logger.info("Bot de trading iniciado 🚀")
-    dex = DexClient(RPC_URL, PRIVATE_KEY)
+    # Passa a instância web3 conforme o DexClient espera
+    dex = DexClient(web3)
     strategy = TradingStrategy(dex)
     while True:
         try:
@@ -129,7 +136,7 @@ def iniciar_telegram():
 # Flask server
 # ----------------------
 flask_app = Flask(__name__)
-PORT = int(os.environ.get("PORT", 5000))  # ✅ Parêntese fechado
+PORT = int(os.environ.get("PORT", 5000))
 
 @flask_app.route("/", methods=["GET", "HEAD", "POST"])
 def home():
