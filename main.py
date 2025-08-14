@@ -45,7 +45,9 @@ telegram_loop: asyncio.AbstractEventLoop | None = None
 # Handlers do Telegram
 # ----------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Fala, Luis! Seu bot tá online via webhook 🚀\nUse /wallet para ver o saldo.")
+    await update.message.reply_text(
+        "Fala, Luis! Seu bot tá online via webhook 🚀\nUse /wallet para ver o saldo."
+    )
 
 async def wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -57,7 +59,7 @@ async def wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         balance = web3.eth.get_balance(checksum_address)
         eth_balance = web3.from_wei(balance, 'ether')
 
-        # Saldo TOSHI
+        # Saldo TOSHI (ERC-20)
         token_address = web3.toChecksumAddress("0xAC1Bd2486aAf3B5C0fc3Fd868558b082a531B2B4")
         decimals = 18
         abi = [{
@@ -84,4 +86,47 @@ async def wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("wallet", wallet))
 
-# ----------------
+# ----------------------
+# Estratégia de trading
+# ----------------------
+def executar_bot():
+    logger.info("Bot de trading iniciado 🚀")
+    dex = DexClient(RPC_URL, PRIVATE_KEY)
+    strategy = TradingStrategy(dex)
+    while True:
+        try:
+            logger.info("Executando estratégia...")
+            strategy.run()
+        except Exception as e:
+            logger.error("Erro na estratégia: %s", str(e))
+        time.sleep(INTERVAL)
+
+# ----------------------
+# Telegram (assíncrono)
+# ----------------------
+def iniciar_telegram():
+    global telegram_loop
+
+    async def runner():
+        await application.initialize()
+        await application.start()
+        await application.bot.set_webhook(WEBHOOK_URL)
+        logger.info("Webhook configurado em %s", WEBHOOK_URL)
+        while True:
+            await asyncio.sleep(3600)
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    telegram_loop = loop
+    try:
+        loop.run_until_complete(runner())
+    finally:
+        loop.run_until_complete(application.stop())
+        loop.run_until_complete(application.shutdown())
+        loop.close()
+
+# ----------------------
+# Flask server
+# ----------------------
+flask_app = Flask(__name__)
+PORT = int(os.environ
