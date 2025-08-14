@@ -51,14 +51,14 @@ async def wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         web3 = Web3(Web3.HTTPProvider(RPC_URL))
         address = web3.eth.account.from_key(PRIVATE_KEY).address
-        checksum_address = Web3.toChecksumAddress(address)
+        checksum_address = web3.toChecksumAddress(address)  # ✅ Correção aqui
 
         # Saldo ETH
         balance = web3.eth.get_balance(checksum_address)
         eth_balance = web3.from_wei(balance, 'ether')
 
         # Saldo TOSHI
-        token_address = Web3.toChecksumAddress("0xAC1Bd2486aAf3B5C0fc3Fd868558b082a531B2B4")
+        token_address = web3.toChecksumAddress("0xAC1Bd2486aAf3B5C0fc3Fd868558b082a531B2B4")
         decimals = 18
         abi = [{
             "constant": True,
@@ -160,12 +160,4 @@ def webhook():
         return "Erro interno", 500
 
 def iniciar_flask():
-    flask_app.run(host="0.0.0.0", port=PORT)
-
-# ----------------------
-# Main
-# ----------------------
-if __name__ == "__main__":
-    threading.Thread(target=executar_bot, daemon=True).start()
-    threading.Thread(target=iniciar_flask, daemon=True).start()
-    iniciar_telegram()
+    flask_app.run(host="0.0.0.0", port=PORT
