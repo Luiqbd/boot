@@ -51,10 +51,30 @@ async def wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         web3 = Web3(Web3.HTTPProvider(RPC_URL))
         address = web3.eth.account.from_key(PRIVATE_KEY).address
-        balance = web3.eth.get_balance(address)
-        eth_balance = web3.from_wei(balance, 'ether')  # corrigido
+        checksum_address = Web3.toChecksumAddress(address)
+
+        # Saldo ETH
+        balance = web3.eth.get_balance(checksum_address)
+        eth_balance = web3.from_wei(balance, 'ether')
+
+        # Saldo TOSHI
+        token_address = Web3.toChecksumAddress("0xAC1Bd2486aAf3B5C0fc3Fd868558b082a531B2B4")
+        decimals = 18
+        abi = [{
+            "constant": True,
+            "inputs": [{"name": "_owner", "type": "address"}],
+            "name": "balanceOf",
+            "outputs": [{"name": "balance", "type": "uint256"}],
+            "type": "function"
+        }]
+        contract = web3.eth.contract(address=token_address, abi=abi)
+        raw_balance = contract.functions.balanceOf(checksum_address).call()
+        toshi_balance = raw_balance / (10 ** decimals)
+
         await update.message.reply_text(
-            f"🪪 Endereço: `{address}`\n💰 Saldo: {eth_balance:.6f} ETH",
+            f"🪪 Endereço: `{checksum_address}`\n"
+            f"💰 ETH: {eth_balance:.6f}\n"
+            f"🔸 TOSHI: {toshi_balance:.4f}",
             parse_mode="Markdown"
         )
     except Exception as e:
