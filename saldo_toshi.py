@@ -1,7 +1,7 @@
 @bot.message_handler(commands=['saldo'])
 def saldo_handler(message):
     try:
-        # Dados do token TOSHI
+        # Contrato oficial do TOSHI na Base
         token_address = Web3.toChecksumAddress("0xAC1Bd2486aAf3B5C0fc3Fd868558b082a531B2B4")
         decimals = 18
 
@@ -12,13 +12,13 @@ def saldo_handler(message):
 
         # Resposta no Telegram
         response = (
-            f"📲 Saldo de TOSHI\n"
-            f"💼 Carteira: {WALLET_ADDRESS}\n"
-            f"🔸 TOSHI: {formatted_balance:.4f}"
+            f"💰 Saldo de TOSHI\n"
+            f"📍 Carteira: {WALLET_ADDRESS}\n"
+            f"🪙 TOSHI: {formatted_balance:.4f}"
         )
         print("✅ Comando /saldo executado com sucesso")
         bot.reply_to(message, response)
 
     except Exception as e:
-        print("❌ Erro no comando /saldo:", e)
+        print(f"❌ Erro ao comando /saldo: {str(e)}")
         bot.reply_to(message, f"❌ Erro ao consultar saldo: {str(e)}")
