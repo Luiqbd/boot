@@ -36,7 +36,7 @@ WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/webhook")
 WEBHOOK_URL = f"{PUBLIC_BASE_URL}{WEBHOOK_PATH}"
 
 # ----------------------
-# Web3 global (uma única instância)
+# Web3 global
 # ----------------------
 web3 = Web3(Web3.HTTPProvider(RPC_URL))
 
@@ -44,7 +44,6 @@ web3 = Web3(Web3.HTTPProvider(RPC_URL))
 # Telegram Application
 # ----------------------
 application = ApplicationBuilder().token(TOKEN).build()
-telegram_loop: asyncio.AbstractEventLoop | None = None
 
 # ----------------------
 # Handlers do Telegram
@@ -57,8 +56,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         address = web3.eth.account.from_key(PRIVATE_KEY).address
-
-        # web3 v7 usa snake_case e pode ser chamado pela classe
         checksum_address = Web3.to_checksum_address(address)
 
         # Saldo ETH
@@ -97,7 +94,6 @@ application.add_handler(CommandHandler("wallet", wallet))
 # ----------------------
 def executar_bot():
     logger.info("Bot de trading iniciado 🚀")
-    # Passa a instância web3 conforme o DexClient espera
     dex = DexClient(web3)
     strategy = TradingStrategy(dex)
     while True:
@@ -107,30 +103,6 @@ def executar_bot():
         except Exception as e:
             logger.error("Erro na estratégia: %s", str(e))
         time.sleep(INTERVAL)
-
-# ----------------------
-# Telegram (assíncrono)
-# ----------------------
-def iniciar_telegram():
-    global telegram_loop
-
-    async def runner():
-        await application.initialize()
-        await application.start()
-        await application.bot.set_webhook(WEBHOOK_URL)
-        logger.info("Webhook configurado em %s", WEBHOOK_URL)
-        while True:
-            await asyncio.sleep(3600)
-
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    telegram_loop = loop
-    try:
-        loop.run_until_complete(runner())
-    finally:
-        loop.run_until_complete(application.stop())
-        loop.run_until_complete(application.shutdown())
-        loop.close()
 
 # ----------------------
 # Flask server
@@ -155,12 +127,9 @@ def webhook():
     try:
         data = request.get_json(force=True, silent=False)
         update = Update.de_json(data, application.bot)
-        if telegram_loop is None:
-            logger.error("Loop do Telegram ainda não está pronto")
-            return "Loop não pronto", 503
         fut = asyncio.run_coroutine_threadsafe(
             application.process_update(update),
-            telegram_loop
+            asyncio.get_event_loop()
         )
         fut.result(timeout=3)
         return "OK", 200
@@ -176,9 +145,23 @@ def iniciar_flask():
 # ----------------------
 if __name__ == "__main__":
     logger.info("🚀 main.py iniciado")
+
     try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        async def iniciar_bot():
+            await application.initialize()
+            await application.bot.set_webhook(WEBHOOK_URL)
+            await application.start()
+            logger.info("✅ Webhook registrado com sucesso")
+            while True:
+                await asyncio.sleep(3600)
+
+        # Inicia threads paralelas
         threading.Thread(target=executar_bot, daemon=True).start()
         threading.Thread(target=iniciar_flask, daemon=True).start()
-        iniciar_telegram()
+
+        loop.run_until_complete(iniciar_bot())
     except Exception as e:
         logger.exception("Erro fatal no main: %s", e)
