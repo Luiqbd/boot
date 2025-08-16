@@ -2,8 +2,10 @@ services:
   - type: web
     name: bot-2025
     env: python
+    branch: main
     buildCommand: pip install -r requirements.txt
     startCommand: bash start.sh
-    branch: main
     environment:
       pythonVersion: 3.10.12
+    autoDeploy: true
+    plan: starter
