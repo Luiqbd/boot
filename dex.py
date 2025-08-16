@@ -1,61 +1,67 @@
+import os
 import json
-import random
+import logging
+from web3 import Web3
 from config import config
+
+logger = logging.getLogger(__name__)
 
 class DexClient:
     def __init__(self, web3):
         self.web3 = web3
-        self.account = web3.eth.account.from_key(config["PRIVATE_KEY"])
-        self.address = self.account.address
 
-        # Carrega ABI do DEX router
-        with open("abis/uniswap_router.json") as f:
+        # Carrega ABI do Uniswap Router
+        abi_path = os.path.join(os.path.dirname(__file__), "abis", "uniswap_router.json")
+        with open(abi_path) as f:
             router_abi = json.load(f)
-        self.router = web3.eth.contract(address=config["DEX_ROUTER"], abi=router_abi)
 
-    def get_token_price(self, token_address: str) -> float:
-        # Simulação de preço para TOSHI
-        # Em breve podemos trocar por Dexscreener ou outro agregador
-        return round(random.uniform(0.0005, 0.0015), 6)
+        # Corrige checksum do endereço do contrato
+        raw_address = config["DEX_ROUTER"]
+        router_address = Web3.to_checksum_address(raw_address)
 
-    def sell(self):
+        self.router = web3.eth.contract(address=router_address, abi=router_abi)
+
+    def get_token_price(self, token_address):
+        """
+        Simula o preço do token. Em produção, você pode usar Dex Screener ou consultar o par via Uniswap.
+        """
         try:
-            with open("abis/erc20.json") as f:
-                erc20_abi = json.load(f)
-            usdc = self.web3.eth.contract(address=config["USDC"], abi=erc20_abi)
+            # Aqui você pode implementar lógica real com chamadas ao contrato
+            # Exemplo: consultar reserves do par WETH/token
+            return 0.000123  # Simulação
+        except Exception as e:
+            logger.error(f"Erro ao obter preço do token: {e}")
+            return None
 
-            amount_in = usdc.functions.allowance(self.address, config["DEX_ROUTER"]).call()
-            if amount_in == 0:
-                balance = usdc.functions.balanceOf(self.address).call()
-                approve_tx = usdc.functions.approve(config["DEX_ROUTER"], balance).build_transaction({
-                    'from': self.address,
-                    'gas': 60000,
-                    'gasPrice': self.web3.to_wei('5', 'gwei'),
-                    'nonce': self.web3.eth.get_transaction_count(self.address),
-                    'chainId': config["CHAIN_ID"]
-                })
-                signed_approve = self.account.sign_transaction(approve_tx)
-                approve_hash = self.web3.eth.send_raw_transaction(signed_approve.rawTransaction)
-                print(f"✅ Aprovação enviada: {self.web3.to_hex(approve_hash)}")
-                return
+    def swap_exact_eth_for_tokens(self, token_address, amount_eth, recipient_address):
+        """
+        Executa swap real via Uniswap Router. Requer saldo e gas.
+        """
+        try:
+            path = [
+                Web3.to_checksum_address(config["WETH"]),
+                Web3.to_checksum_address(token_address)
+            ]
+            deadline = int(self.web3.eth.get_block("latest")["timestamp"]) + 300  # 5 min
+            amount_out_min = 0  # Pode ser ajustado com slippage
 
-            tx = self.router.functions.swapExactTokensForETH(
-                amount_in,
-                0,
-                [config["USDC"], config["WETH"]],
-                self.address,
-                int(self.web3.eth.get_block('latest')['timestamp']) + config["TX_DEADLINE_SEC"]
+            tx = self.router.functions.swapExactETHForTokens(
+                amount_out_min,
+                path,
+                recipient_address,
+                deadline
             ).build_transaction({
-                'from': self.address,
-                'gas': 250000,
-                'gasPrice': self.web3.to_wei('5', 'gwei'),
-                'nonce': self.web3.eth.get_transaction_count(self.address),
-                'chainId': config["CHAIN_ID"]
+                "from": recipient_address,
+                "value": self.web3.to_wei(amount_eth, "ether"),
+                "gas": 250000,
+                "gasPrice": self.web3.eth.gas_price,
+                "nonce": self.web3.eth.get_transaction_count(recipient_address)
             })
 
-            signed_tx = self.account.sign_transaction(tx)
+            signed_tx = self.web3.eth.account.sign_transaction(tx, config["PRIVATE_KEY"])
             tx_hash = self.web3.eth.send_raw_transaction(signed_tx.rawTransaction)
-            print(f"✅ Venda enviada: {self.web3.to_hex(tx_hash)}")
-
+            logger.info(f"Swap enviado: {tx_hash.hex()}")
+            return tx_hash.hex()
         except Exception as e:
-            print(f"❌ Erro ao vender: {e}")
+            logger.error(f"Erro ao executar swap: {e}")
+            return None
