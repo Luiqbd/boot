@@ -42,6 +42,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# 🔁 Controle de execução
+sniper_active = True
+
+def stop_discovery():
+    """Interrompe o loop de monitoramento."""
+    global sniper_active
+    sniper_active = False
+    logger.info("🛑 Monitoramento interrompido manualmente.")
+
 def scan_new_pairs(web3, from_block: int, to_block: int):
     """Busca eventos PairCreated no intervalo de blocos."""
     factory = Web3.to_checksum_address(config["DEX_FACTORY"])
@@ -56,7 +65,7 @@ def scan_new_pairs(web3, from_block: int, to_block: int):
     for log in logs:
         token0 = Web3.to_checksum_address("0x" + log["topics"][1].hex()[-40:])
         token1 = Web3.to_checksum_address("0x" + log["topics"][2].hex()[-40:])
-        data = log["data"]  # pair address está no data no V2
+        data = log["data"]
         pair_address = Web3.to_checksum_address("0x" + data[-40:])
         found.append((pair_address, token0, token1))
     return found
@@ -68,15 +77,14 @@ def has_min_liquidity(web3, pair_address, weth_address, min_weth_wei):
     t0 = pair.functions.token0().call()
     t1 = pair.functions.token1().call()
 
-    if t0.lower() == weth_address.lower():
-        weth_reserve = int(r0)
-    else:
-        weth_reserve = int(r1)
-
+    weth_reserve = int(r0) if t0.lower() == weth_address.lower() else int(r1)
     return weth_reserve >= min_weth_wei
 
 def run_discovery(callback_on_pair):
     """Loop contínuo para encontrar novos pares e acionar callback."""
+    global sniper_active
+    sniper_active = True
+
     web3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
     last_block = web3.eth.block_number
 
@@ -85,14 +93,13 @@ def run_discovery(callback_on_pair):
 
     logger.info("🔍 Iniciando monitoramento de novos pares na Base...")
 
-    while True:
+    while sniper_active:
         latest = web3.eth.block_number
         if latest > last_block:
             pairs = scan_new_pairs(web3, last_block + 1, latest)
             last_block = latest
 
             for pair_addr, token0, token1 in pairs:
-                # Apenas pares que envolvem WETH
                 if weth not in (token0, token1):
                     continue
 
