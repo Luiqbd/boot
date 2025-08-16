@@ -4,7 +4,13 @@ import logging
 import requests
 from flask import Flask, request
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters
+)
 from threading import Thread
 import time
 
@@ -14,26 +20,28 @@ logging.basicConfig(
     level=logging.INFO
 )
 
+# --- Flask app ---
 app = Flask(__name__)
 
 # --- Variáveis globais ---
-loop = None
+loop = asyncio.new_event_loop()
 application = None
 
-# --- Configurações via variáveis de ambiente ---
+# --- Configurações via ambiente ---
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 WEBHOOK_URL = os.environ["WEBHOOK_URL"]
 
 # --- Handler /start ---
-async def start_cmd(update: Update, context):
-    await update.message.reply_text(
-        "Olá, eu estou vivo 🚀! Pode me enviar comandos e mensagens que eu já respondo."
-    )
+async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Olá, eu estou vivo 🚀! Pode me enviar comandos e mensagens que eu já respondo.")
+
+# --- Handler para mensagens comuns ---
+async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"Você disse: {update.message.text}")
 
 # --- Endpoint do webhook ---
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    global loop, application
     try:
         data = request.get_json(force=True)
         update = Update.de_json(data, application.bot)
@@ -46,36 +54,42 @@ def webhook():
         app.logger.error(f"Erro no webhook: {e}", exc_info=True)
         return 'error', 500
 
-# --- Registro do webhook no Telegram ---
-def set_webhook():
+# --- Registro do webhook com retry ---
+def set_webhook_with_retry(max_attempts=5, delay=3):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
-    resp = requests.post(url, json={"url": WEBHOOK_URL})
-    if resp.status_code == 200 and resp.json().get("ok"):
-        logging.info(f"✅ Webhook registrado com sucesso: {WEBHOOK_URL}")
-    else:
-        logging.error(f"❌ Falha ao registrar webhook: {resp.text}")
+    for attempt in range(1, max_attempts + 1):
+        resp = requests.post(url, json={"url": WEBHOOK_URL})
+        if resp.status_code == 200 and resp.json().get("ok"):
+            logging.info(f"✅ Webhook registrado com sucesso: {WEBHOOK_URL}")
+            return
+        logging.warning(f"Tentativa {attempt} falhou: {resp.text}")
+        time.sleep(delay)
+    logging.error("❌ Todas as tentativas de registrar o webhook falharam.")
 
-# --- Função para iniciar Flask e registrar depois ---
-def run_flask():
-    # Espera 2 segundos para garantir que o Render levantou o serviço
-    def delayed_webhook():
-        time.sleep(2)
-        set_webhook()
-
-    Thread(target=delayed_webhook).start()
+# --- Iniciar Flask em thread separada ---
+def start_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
 # --- Inicialização principal ---
 if __name__ == "__main__":
-    loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
+    # Criar bot Telegram
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("start", start_cmd))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
+    # Iniciar bot no loop principal
     loop.create_task(application.initialize())
     loop.create_task(application.start())
 
-    logging.info("🚀 Bot iniciado, iniciando servidor Flask e preparando registro do webhook...")
-    run_flask()
+    # Iniciar Flask em thread separada
+    flask_thread = Thread(target=start_flask)
+    flask_thread.start()
+
+    # Registrar webhook com retry
+    Thread(target=set_webhook_with_retry).start()
+
+    logging.info("🚀 Bot e servidor Flask iniciados")
+    loop.run_forever()
