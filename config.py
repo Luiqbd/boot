@@ -15,6 +15,7 @@ config = {
     "INTERVAL": int(os.getenv("INTERVAL", "10")),
     "DRY_RUN": str_to_bool(os.getenv("DRY_RUN", "true")),
     "TELEGRAM_TOKEN": os.getenv("TELEGRAM_TOKEN"),
+    "TELEGRAM_CHAT_ID": int(os.getenv("TELEGRAM_CHAT_ID", "6061309909")),  # ← seu ID aqui
 }
 
 # Checagens rápidas (opcional)
@@ -23,8 +24,4 @@ def _require(name: str, cond: bool):
         raise ValueError(f"Config inválida: {name}")
 
 _require("RPC_URL", bool(config["RPC_URL"]))
-_require("PRIVATE_KEY", bool(config["PRIVATE_KEY"]))
-_require("DEX_ROUTER length", config["DEX_ROUTER"] and len(config["DEX_ROUTER"]) == 42)
-_require("WETH length", config["WETH"] and len(config["WETH"]) == 42)
-_require("CHAIN_ID", config["CHAIN_ID"] == 8453)
-
+_require("PRIVATE_KEY", bool(config
