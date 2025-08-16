@@ -39,7 +39,9 @@ WEBHOOK_URL = os.environ["WEBHOOK_URL"]
 
 # --- Handler /start ---
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Olá, eu estou vivo 🚀! Use /snipe para iniciar o sniper ou /stop para parar.")
+    await update.message.reply_text(
+        "Olá, eu estou vivo 🚀!\nUse:\n/snipe — iniciar sniper\n/stop — parar sniper\n/status <carteira> — ver saldo"
+    )
 
 # --- Handler /status ---
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -62,7 +64,11 @@ async def snipe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text("🎯 Iniciando sniper... Monitorando novos pares com liquidez.")
-    sniper_thread = Thread(target=run_discovery, args=(on_new_pair,))
+
+    def start_sniper():
+        run_discovery(lambda pair, t0, t1: on_new_pair(pair, t0, t1, bot=application.bot))
+
+    sniper_thread = Thread(target=start_sniper)
     sniper_thread.start()
 
 # --- Handler /stop ---
