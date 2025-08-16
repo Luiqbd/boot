@@ -9,7 +9,7 @@ class DexClient:
         self.address = self.account.address
 
         # Carrega ABI do DEX router
-        with open("abis/router.json") as f:
+        with open("abis/uniswap_router.json") as f:
             router_abi = json.load(f)
         self.router = web3.eth.contract(address=config["DEX_ROUTER"], abi=router_abi)
 
