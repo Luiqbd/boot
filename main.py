@@ -19,9 +19,9 @@ app = Flask(__name__)
 loop = None
 application = None
 
-# --- Configurações ---
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "SEU_TOKEN_AQUI")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://SEU-PROJETO.onrender.com/webhook")
+# --- Configurações vindas do ambiente (Render) ---
+TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]  # se não existir, Render dará erro de env faltante
+WEBHOOK_URL = os.environ["WEBHOOK_URL"]        # ex: https://meu-bot.onrender.com/webhook
 
 # --- Handler /start ---
 async def start_cmd(update: Update, context):
