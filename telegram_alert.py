@@ -1,4 +1,5 @@
 import logging
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -9,7 +10,10 @@ class TelegramAlert:
 
     def send(self, message: str):
         try:
-            self.bot.send_message(chat_id=self.chat_id, text=message)
-            logger.info(f"Alerta enviado: {message}")
+            asyncio.run(self._send_async(message))
         except Exception as e:
             logger.error(f"Erro ao enviar alerta: {e}")
+
+    async def _send_async(self, message: str):
+        await self.bot.send_message(chat_id=self.chat_id, text=message)
+        logger.info(f"Alerta enviado: {message}")
