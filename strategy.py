@@ -3,11 +3,10 @@ from exchange_client import ExchangeClient
 from trade_executor import TradeExecutor
 from risk_manager import RiskManager
 from safe_trade_executor import SafeTradeExecutor
-
-from web3 import Web3
+import requests
 
 # =========================
-# Configurações de Logging
+# Logging
 # =========================
 logging.basicConfig(
     level=logging.INFO,
@@ -17,13 +16,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # =========================
-# Configurações do Bot
+# Configurações
 # =========================
 RPC_URL = "https://mainnet.infura.io/v3/SUA_KEY"
 PRIVATE_KEY = "SUA_PRIVATE_KEY"
-
-WETH_ADDRESS = Web3.to_checksum_address("0xC02aaa39b223FE8D0A0e5C4F27eAD9083C756Cc2")
-TOSHI_ADDRESS = Web3.to_checksum_address("0x...")  # Substitua pelo endereço real
 
 CAPITAL_INICIAL_ETH = 1.0
 MAX_EXPOSURE_PCT = 0.1
@@ -34,69 +30,27 @@ TRADE_SIZE_ETH = 0.02
 # =========================
 # Funções auxiliares
 # =========================
-def get_price_uniswap_v2(web3, token_in, token_out):
-    """
-    Lê preço direto de um par Uniswap V2.
-    """
-    # ABI mínima para Uniswap V2 Pair
-    pair_abi = [
-        {
-            "constant": True,
-            "inputs": [],
-            "name": "getReserves",
-            "outputs": [
-                {"internalType": "uint112", "name": "_reserve0", "type": "uint112"},
-                {"internalType": "uint112", "name": "_reserve1", "type": "uint112"},
-                {"internalType": "uint32", "name": "_blockTimestampLast", "type": "uint32"}
-            ],
-            "stateMutability": "view",
-            "type": "function"
-        },
-        {
-            "constant": True,
-            "inputs": [],
-            "name": "token0",
-            "outputs": [{"internalType": "address", "name": "", "type": "address"}],
-            "stateMutability": "view",
-            "type": "function"
-        },
-        {
-            "constant": True,
-            "inputs": [],
-            "name": "token1",
-            "outputs": [{"internalType": "address", "name": "", "type": "address"}],
-            "stateMutability": "view",
-            "type": "function"
-        }
-    ]
-
-    # Endereço do par — você pode obter via subgraph ou hardcodear se já souber
-    pair_address = Web3.to_checksum_address("0x...")  # Endereço do par WETH/TOSHI
-    pair_contract = web3.eth.contract(address=pair_address, abi=pair_abi)
-
-    token0 = pair_contract.functions.token0().call()
-    token1 = pair_contract.functions.token1().call()
-    reserves = pair_contract.functions.getReserves().call()
-
-    if token0.lower() == token_in.lower():
-        reserve_in, reserve_out = reserves[0], reserves[1]
-    else:
-        reserve_in, reserve_out = reserves[1], reserves[0]
-
-    price = reserve_out / reserve_in
-    return price
+def get_eth_price_usd():
+    """Retorna o preço do ETH/USD usando CoinGecko."""
+    url = "https://api.coingecko.com/api/v3/simple/price"
+    params = {"ids": "ethereum", "vs_currencies": "usd"}
+    try:
+        data = requests.get(url, params=params, timeout=5).json()
+        return data["ethereum"]["usd"]
+    except Exception as e:
+        logger.error(f"Erro ao buscar preço ETH: {e}")
+        return None
 
 # =========================
-# Função Principal
+# Função principal
 # =========================
 def main():
-    logger.info("🚀 Iniciando estratégia com preço ao vivo...")
+    logger.info("🚀 Bot ETH iniciando...")
 
-    # 1️⃣ Instanciar cliente Web3 + Exchange
+    # 1️⃣ Cliente exchange
     exchange_client = ExchangeClient(rpc_url=RPC_URL, private_key=PRIVATE_KEY)
-    web3 = exchange_client.web3
 
-    # 2️⃣ Criar gestor de risco
+    # 2️⃣ Gestor de risco
     risk = RiskManager(
         capital=CAPITAL_INICIAL_ETH,
         max_exposure_pct=MAX_EXPOSURE_PCT,
@@ -104,25 +58,30 @@ def main():
         loss_limit=LIMITE_PERDAS_SEGUIDAS
     )
 
-    # 3️⃣ Criar executor protegido
+    # 3️⃣ Executor protegido
     executor = TradeExecutor(exchange_client)
     safe_executor = SafeTradeExecutor(executor, risk)
 
-    # 4️⃣ Obter preços ao vivo
-    current_price = get_price_uniswap_v2(web3, WETH_ADDRESS, TOSHI_ADDRESS)
-    last_trade_price = current_price * 0.95  # Simulação: último trade foi mais barato
+    # 4️⃣ Preço atual ETH/USD
+    current_price = get_eth_price_usd()
+    if not current_price:
+        logger.error("❌ Sem preço do ETH — abortando")
+        return
 
-    logger.info(f"💹 Preço atual: {current_price:.8f} | Último: {last_trade_price:.8f}")
+    # Exemplo: Último preço foi armazenado em algum lugar; simulando:
+    last_trade_price = current_price * 0.98
 
-    # 5️⃣ Lógica de compra
+    logger.info(f"💹 ETH agora: ${current_price:.2f} | Última operação: ${last_trade_price:.2f}")
+
+    # 5️⃣ Lógica de exemplo
     if current_price < last_trade_price * 1.05:
-        tx = safe_executor.buy(WETH_ADDRESS, TOSHI_ADDRESS, TRADE_SIZE_ETH, current_price, last_trade_price)
+        tx = safe_executor.buy("ETH", "ETH", TRADE_SIZE_ETH, current_price, last_trade_price)
         if tx:
             logger.info(f"✅ Compra enviada — TX: {tx}")
         else:
-            logger.info("⚠️ Bloqueado pelo RiskManager")
+            logger.info("⚠️ Bloqueada pelo RiskManager")
     else:
-        logger.info("🕒 Sem entrada agora")
+        logger.info("🕒 Sem entrada no momento")
 
 if __name__ == "__main__":
     main()
