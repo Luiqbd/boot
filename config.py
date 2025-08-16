@@ -14,7 +14,7 @@ config = {
 
     # Aerodrome (Base) — V2-like AMM
     "DEX_ROUTER": os.getenv("DEX_ROUTER", "0xcF77a3D4A6f1C6a7D5cb06B52F474BeCC5123e29"),
-    "DEX_FACTORY": os.getenv("DEX_FACTORY", "0x420DD381b31aef6683db6B902084028320457d22"),
+    "DEX_FACTORY": os.getenv("DEX_FACTORY", "0x327Df1e6de05895d2ab08513aaDD9313Fe505d86"),
 
     # WETH oficial na Base
     "WETH": os.getenv("WETH", Web3.to_checksum_address("0x4200000000000000000000000000000000000006")),
