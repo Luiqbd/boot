@@ -1,51 +1,49 @@
 import logging
+from exchange_client import ExchangeClient
+from trade_executor import TradeExecutor
 from risk_manager import RiskManager
+from safe_trade_executor import SafeTradeExecutor  # Wrapper que criamos
 
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class TradingStrategy:
-    def __init__(self, dex_client, trader, alert, capital=1.0, amount_eth=0.01):
-        self.dex = dex_client
-        self.trader = trader
-        self.alert = alert
-        self.last_price = None
-        self.token_address = "0xAC1Bd2486aAf3B5C0fc3Fd868558b082a531B2B4"  # TOSHI
-        self.token_base = "0x4200000000000000000000000000000000000006"  # WETH (Base)
-        self.risk = RiskManager(capital=capital)
-        self.amount_eth = amount_eth
+# Endereços de exemplo
+WETH_ADDRESS = "0x..."
+TOSHI_ADDRESS = "0x..."
 
-    def run(self):
-        price = self.dex.get_token_price(self.token_address)
+def main():
+    # 1️⃣ Configurar cliente de exchange
+    exchange_client = ExchangeClient(
+        rpc_url="https://mainnet.infura.io/v3/SUA_KEY",
+        private_key="SUA_PRIVATE_KEY"
+    )
 
-        if price is None:
-            logger.warning("Preço não disponível")
-            return
+    # 2️⃣ Criar gestor de risco
+    risk = RiskManager(
+        capital=1.0,
+        max_exposure_pct=0.1,
+        max_trades_per_day=10,
+        loss_limit=3
+    )
 
-        logger.info(f"Preço atual do token: {price:.6f}")
+    # 3️⃣ Criar executor protegido
+    executor = TradeExecutor(exchange_client)
+    safe_executor = SafeTradeExecutor(executor, risk)
 
-        if self.last_price is None:
-            self.last_price = price
-            self.alert.send(f"📊 Monitorando TOSHI — Preço inicial: {price:.6f}")
-            return
+    # 4️⃣ Lógica simplificada de estratégia
+    last_trade_price = 0.0022
+    current_price = 0.0025
+    trade_size_eth = 0.02
 
-        change = (price - self.last_price) / self.last_price
+    # Exemplo: Comprar se preço caiu pouco desde último trade
+    if current_price < last_trade_price * 1.05:
+        tx = safe_executor.buy(WETH_ADDRESS, TOSHI_ADDRESS, trade_size_eth, current_price, last_trade_price)
+        if tx:
+            logger.info(f"📈 Compra enviada: {tx}")
+        else:
+            logger.info("⚠️ Compra bloqueada pelo RiskManager")
+    else:
+        logger.info("🕒 Sem entrada no momento — aguardando oportunidade")
 
-        # Verifica se pode comprar
-        if change <= -0.05:
-            if self.risk.can_trade(price, self.last_price, "buy"):
-                tx_hash = self.trader.buy(self.token_base, self.token_address, self.amount_eth)
-                self.alert.send(f"📉 TOSHI caiu {change*100:.2f}% — COMPRA enviada: {tx_hash}")
-                self.risk.register_trade(success=True)
-            else:
-                self.alert.send("🚫 Compra bloqueada pelo gestor de risco")
-
-        # Verifica se pode vender
-        elif change >= 0.05:
-            if self.risk.can_trade(price, self.last_price, "sell"):
-                tx_hash = self.trader.sell(self.token_address, self.token_base, self.amount_eth)
-                self.alert.send(f"📈 TOSHI subiu {change*100:.2f}% — VENDA enviada: {tx_hash}")
-                self.risk.register_trade(success=True)
-            else:
-                self.alert.send("🚫 Venda bloqueada pelo gestor de risco")
-
-        self.last_price = price
+if __name__ == "__main__":
+    main()
