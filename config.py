@@ -4,13 +4,28 @@ from web3 import Web3
 def str_to_bool(v: str) -> bool:
     return str(v).strip().lower() in {"1", "true", "t", "yes", "y"}
 
-# Config carregada do ambiente (Render ou local)
+def normalize_private_key(pk: str) -> str:
+    """Remove prefixo 0x se existir e valida formato."""
+    if not pk:
+        raise ValueError("Chave privada não informada")
+    pk = pk.strip()
+    if pk.startswith("0x"):
+        pk = pk[2:]
+    # Validação: exatamente 64 caracteres hexadecimais
+    if len(pk) != 64 or not all(c in "0123456789abcdefABCDEF" for c in pk):
+        raise ValueError("Chave privada inválida: formato incorreto")
+    return pk
+
+# Carrega variáveis de ambiente
+raw_private_key = os.getenv("PRIVATE_KEY")
+PRIVATE_KEY = normalize_private_key(raw_private_key)
+
 config = {
     "PYTHON_VERSION": os.getenv("PYTHON_VERSION", "3.10.12"),
 
     # RPC e credenciais
     "RPC_URL": os.getenv("RPC_URL", "https://mainnet.base.org"),
-    "PRIVATE_KEY": os.getenv("PRIVATE_KEY"),  # definida no Render como variável de ambiente
+    "PRIVATE_KEY": PRIVATE_KEY,  # chave normalizada
     "CHAIN_ID": int(os.getenv("CHAIN_ID", "8453")),
 
     # Aerodrome (Base) — V2-like AMM
@@ -31,7 +46,7 @@ config = {
     "TELEGRAM_CHAT_ID": int(os.getenv("TELEGRAM_CHAT_ID", "0")),
 }
 
-# Checagens para garantir que não está faltando nada essencial
+# Checagens
 def _require(name: str, cond: bool):
     if not cond:
         raise ValueError(f"Config inválida: {name}")
@@ -42,3 +57,6 @@ _require("DEX_ROUTER length", config["DEX_ROUTER"] and len(config["DEX_ROUTER"])
 _require("DEX_FACTORY length", config["DEX_FACTORY"] and len(config["DEX_FACTORY"]) == 42)
 _require("WETH length", config["WETH"] and len(config["WETH"]) == 42)
 _require("CHAIN_ID", config["CHAIN_ID"] == 8453)
+
+# Log opcional para debug (com máscara de segurança)
+print("Signer Address:", Web3().eth.account.from_key(PRIVATE_KEY).address)
