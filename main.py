@@ -40,7 +40,13 @@ WEBHOOK_URL = os.environ["WEBHOOK_URL"]
 # --- Handler /start ---
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Olá, eu estou vivo 🚀!\nUse:\n/snipe — iniciar sniper\n/stop — parar sniper\n/status <carteira> — ver saldo"
+        "👋 Olá! Eu sou seu bot sniper na rede Base.\n\n"
+        "📌 Comandos disponíveis:\n"
+        "🔍 /snipe — Inicia o sniper e começa a monitorar novos pares com liquidez\n"
+        "🛑 /stop — Interrompe o sniper imediatamente\n"
+        "💼 /status <carteira> — Mostra o saldo de ETH e WETH da carteira informada\n"
+        "💬 /start — Exibe esta lista de comandos\n\n"
+        "📎 Exemplo:\n/status 0x03D46882cdBE9dEd146C05880A315C898a3Db600"
     )
 
 # --- Handler /status ---
