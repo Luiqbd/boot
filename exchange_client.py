@@ -16,24 +16,28 @@ def _now():
 
 class ExchangeClient:
     def __init__(self):
-        self.web3 = Web3(Web3.HTTPProvider(os.getenv("RPC_URL")))
-        self.wallet = os.getenv("WALLET_ADDRESS")
-        self.private_key = os.getenv("PRIVATE_KEY")
+        self.web3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
+        self.wallet = config.get("WALLET_ADDRESS")
+        self.private_key = config.get("PRIVATE_KEY")
 
         if not self.wallet or not self.private_key:
             raise ValueError("❌ WALLET_ADDRESS ou PRIVATE_KEY não definidos no ambiente.")
 
-        # AUTOPSY LOG — info de chave e RPC
         signer_addr = Account.from_key(self.private_key).address
         log.warning(f"[{_now()}][autopsy][ExchangeClient.__init__] RPC={self.web3.provider.endpoint_uri}")
         log.warning(f"[{_now()}][autopsy][ExchangeClient.__init__] signer={signer_addr}")
 
-        # ORIGINAL: Router hardcoded Uniswap V3 Ethereum
-        self.router_address = Web3.to_checksum_address("0xE592427A0AEce92De3Edee1F18E0157C05861564")
-        log.warning(f"[{_now()}][autopsy][ExchangeClient.__init__] router_address(HARDCODED)={self.router_address}")
+        # Usa router da config (BaseSwap ou outro legítimo)
+        self.router_address = Web3.to_checksum_address(config["DEX_ROUTER"])
+        log.warning(f"[{_now()}][autopsy][ExchangeClient.__init__] router_address(CONFIG)={self.router_address}")
+
+        # Verifica se o contrato está implantado
+        code = self.web3.eth.get_code(self.router_address)
+        if code == b'0x':
+            raise ValueError(f"❌ Roteador {self.router_address} não está implantado na rede.")
 
         try:
-            with open("abi/uniswap_v3_router_abi.json") as f:
+            with open("abi/uniswap_router.json") as f:
                 self.router_abi = json.load(f)
             with open("abi/erc20.json") as f:
                 self.erc20_abi = json.load(f)
@@ -66,24 +70,20 @@ class ExchangeClient:
             log.error(f"❌ Erro ao aprovar token: {e}", exc_info=True)
             raise
 
-    def buy_token(self, token_in, token_out, amount_in_wei):
+    def buy_token(self, token_in, token_out, amount_in_wei, amount_out_min=0):
         try:
             log.warning(f"[{_now()}][autopsy][buy_token] token_in={token_in} token_out={token_out} amount_in_wei={amount_in_wei} router={self.router_address}")
             if config.get("DRY_RUN"):
                 log.warning(f"[{_now()}][DRY_RUN] Compra NÃO enviada")
                 return {"dry_run": True}
 
-            deadline = self.web3.eth.get_block("latest")["timestamp"] + 300
-            tx = self.router.functions.exactInputSingle({
-                "tokenIn": token_in,
-                "tokenOut": token_out,
-                "fee": 3000,
-                "recipient": self.wallet,
-                "deadline": deadline,
-                "amountIn": amount_in_wei,
-                "amountOutMinimum": 0,
-                "sqrtPriceLimitX96": 0
-            }).build_transaction({
+            deadline = self.web3.eth.get_block("latest")["timestamp"] + config.get("TX_DEADLINE_SEC", 300)
+            tx = self.router.functions.swapExactETHForTokens(
+                amount_out_min,
+                [token_in, token_out],
+                self.wallet,
+                deadline
+            ).build_transaction({
                 "from": self.wallet,
                 "value": amount_in_wei,
                 "gas": 300000,
@@ -99,7 +99,7 @@ class ExchangeClient:
             log.error(f"❌ Erro na compra: {e}", exc_info=True)
             raise
 
-    def sell_token(self, token_in, token_out, amount_in_wei):
+    def sell_token(self, token_in, token_out, amount_in_wei, amount_out_min=0):
         try:
             log.warning(f"[{_now()}][autopsy][sell_token] token_in={token_in} token_out={token_out} amount_in_wei={amount_in_wei} router={self.router_address}")
             if config.get("DRY_RUN"):
@@ -107,18 +107,15 @@ class ExchangeClient:
                 return {"dry_run": True}
 
             self.approve_token(token_in, amount_in_wei)
-            deadline = self.web3.eth.get_block("latest")["timestamp"] + 300
+            deadline = self.web3.eth.get_block("latest")["timestamp"] + config.get("TX_DEADLINE_SEC", 300)
 
-            tx = self.router.functions.exactInputSingle({
-                "tokenIn": token_in,
-                "tokenOut": token_out,
-                "fee": 3000,
-                "recipient": self.wallet,
-                "deadline": deadline,
-                "amountIn": amount_in_wei,
-                "amountOutMinimum": 0,
-                "sqrtPriceLimitX96": 0
-            }).build_transaction({
+            tx = self.router.functions.swapExactTokensForETH(
+                amount_in_wei,
+                amount_out_min,
+                [token_in, token_out],
+                self.wallet,
+                deadline
+            ).build_transaction({
                 "from": self.wallet,
                 "gas": 300000,
                 "gasPrice": self.web3.to_wei("5", "gwei"),
