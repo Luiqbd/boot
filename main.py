@@ -1,10 +1,8 @@
 import os
 import asyncio
 import logging
-
 from flask import Flask, request
 from web3 import Web3
-
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
@@ -40,6 +38,9 @@ WEBHOOK_URL = f"{PUBLIC_BASE_URL}{WEBHOOK_PATH}"
 # Web3 global
 # ----------------------
 web3 = Web3(Web3.HTTPProvider(RPC_URL))
+if not PRIVATE_KEY:
+    raise RuntimeError("PRIVATE_KEY não definida no ambiente ou config")
+wallet_address = web3.eth.account.from_key(PRIVATE_KEY).address
 
 # ----------------------
 # Telegram Application
@@ -51,29 +52,27 @@ application = ApplicationBuilder().token(TOKEN).build()
 # ----------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Fala, Luis! Seu bot tá online via webhook 🚀\nUse /wallet para ver o saldo."
+        "Fala, Luis! 🤖 Seu bot tá online via webhook 🚀\n"
+        "Comandos disponíveis:\n"
+        "/wallet → saldo de ETH e TOSHI\n"
+        "/saldo → saldo de ETH e WETH"
     )
 
 async def wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        address = web3.eth.account.from_key(PRIVATE_KEY).address
-        checksum_address = Web3.to_checksum_address(address)
-
+        checksum_address = Web3.to_checksum_address(wallet_address)
         balance = web3.eth.get_balance(checksum_address)
         eth_balance = web3.from_wei(balance, 'ether')
 
-        token_address = Web3.to_checksum_address("0xAC1Bd2486aAf3B5C0fc3Fd868558b082a531B2B4")
-        decimals = 18
+        token_address = Web3.to_checksum_address("0xAC1Bd2486aAf3B5C0fc3Fd868558b082a531B2B4")  # TOSHI
         abi = [{
-            "constant": True,
-            "inputs": [{"name": "_owner", "type": "address"}],
-            "name": "balanceOf",
-            "outputs": [{"name": "balance", "type": "uint256"}],
+            "constant": True, "inputs": [{"name": "_owner", "type": "address"}],
+            "name": "balanceOf", "outputs": [{"name": "balance", "type": "uint256"}],
             "type": "function"
         }]
         contract = web3.eth.contract(address=token_address, abi=abi)
         raw_balance = contract.functions.balanceOf(checksum_address).call()
-        toshi_balance = raw_balance / (10 ** decimals)
+        toshi_balance = raw_balance / (10 ** 18)
 
         await update.message.reply_text(
             f"🪪 Endereço: `{checksum_address}`\n"
@@ -85,8 +84,32 @@ async def wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.exception("Erro no /wallet: %s", e)
         await update.message.reply_text(f"❌ Erro ao verificar carteira: {str(e)}")
 
+async def saldo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Mostra saldo de ETH e WETH"""
+    try:
+        checksum_address = Web3.to_checksum_address(wallet_address)
+        eth_balance = web3.eth.get_balance(checksum_address) / 1e18
+
+        weth_address = Web3.to_checksum_address("0x4200000000000000000000000000000000000006")
+        abi = [{"name": "balanceOf", "type": "function", "stateMutability": "view",
+                "inputs": [{"name": "owner", "type": "address"}],
+                "outputs": [{"type": "uint256"}]}]
+        weth_contract = web3.eth.contract(address=weth_address, abi=abi)
+        weth_balance = weth_contract.functions.balanceOf(checksum_address).call() / 1e18
+
+        await update.message.reply_text(
+            f"📍 Carteira: `{checksum_address}`\n"
+            f"💰 ETH: {eth_balance:.6f}\n"
+            f"💰 WETH: {weth_balance:.6f}",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.exception("Erro no /saldo: %s", e)
+        await update.message.reply_text(f"❌ Erro ao verificar saldo: {str(e)}")
+
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("wallet", wallet))
+application.add_handler(CommandHandler("saldo", saldo))
 
 # ----------------------
 # Estratégia assíncrona
