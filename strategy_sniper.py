@@ -163,4 +163,4 @@ def on_new_pair(pair_addr, token0, token1, bot=None):
             highest_price = current_price
             stop_price = highest_price * (1 - trail_pct)
             log.info(f"📈 Novo topo: {highest_price:.6f} WETH | SL ajustado: {stop_price:.6f} WETH")
-            if alert
+            if alert:
