@@ -24,4 +24,8 @@ def _require(name: str, cond: bool):
         raise ValueError(f"Config inválida: {name}")
 
 _require("RPC_URL", bool(config["RPC_URL"]))
-_require("PRIVATE_KEY", bool(config
+_require("PRIVATE_KEY", bool(config["PRIVATE_KEY"]))
+_require("DEX_ROUTER length", config["DEX_ROUTER"] and len(config["DEX_ROUTER"]) == 42)
+_require("WETH length", config["WETH"] and len(config["WETH"]) == 42)
+_require("CHAIN_ID", config["CHAIN_ID"] == 8453)
+_require("TELEGRAM_CHAT_ID", bool(config["TELEGRAM_CHAT_ID"]))
