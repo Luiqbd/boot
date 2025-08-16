@@ -14,6 +14,9 @@ from telegram.ext import (
 from threading import Thread
 import time
 
+# --- Importação da função de status ---
+from check_balance import get_wallet_status
+
 # --- Configuração de log ---
 logging.basicConfig(
     format='[%(asctime)s] %(levelname)s - %(message)s',
@@ -34,6 +37,19 @@ WEBHOOK_URL = os.environ["WEBHOOK_URL"]
 # --- Handler /start ---
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Olá, eu estou vivo 🚀! Pode me enviar comandos e mensagens que eu já respondo.")
+
+# --- Handler /status ---
+async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        if context.args:
+            wallet_address = context.args[0]
+            status = get_wallet_status(wallet_address)
+            await update.message.reply_text(status)
+        else:
+            await update.message.reply_text("❗ Você precisa informar o endereço da carteira.\nExemplo: /status 0x123...")
+    except Exception as e:
+        logging.error(f"Erro no /status: {e}", exc_info=True)
+        await update.message.reply_text("⚠️ Ocorreu um erro ao verificar o status da carteira.")
 
 # --- Handler para mensagens comuns ---
 async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -78,6 +94,7 @@ if __name__ == "__main__":
     # Criar bot Telegram
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("start", start_cmd))
+    application.add_handler(CommandHandler("status", status_cmd))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
     # Iniciar bot no loop principal
