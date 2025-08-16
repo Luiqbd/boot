@@ -19,9 +19,12 @@ app = Flask(__name__)
 loop = None
 application = None
 
-# --- Configurações vindas do ambiente (Render) ---
-TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]  # se não existir, Render dará erro de env faltante
-WEBHOOK_URL = os.environ["WEBHOOK_URL"]        # ex: https://meu-bot.onrender.com/webhook
+# --- Lendo variáveis do ambiente (Render) ---
+# Defina no painel do Render:
+# TELEGRAM_TOKEN=8371449683:AAE7QuWfdpDqVhdUCVy8N2nBdEqo4k8sRXo
+# WEBHOOK_URL=https://boot-no4o.onrender.com/webhook
+TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
+WEBHOOK_URL = os.environ["WEBHOOK_URL"]
 
 # --- Handler /start ---
 async def start_cmd(update: Update, context):
@@ -29,7 +32,7 @@ async def start_cmd(update: Update, context):
         "Olá, eu estou vivo 🚀! Pode me enviar comandos e mensagens que eu já respondo."
     )
 
-# --- Webhook ---
+# --- Webhook Flask ---
 @app.route('/webhook', methods=['POST'])
 def webhook():
     global loop, application
@@ -60,13 +63,13 @@ if __name__ == "__main__":
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    # Criar Application do Telegram
+    # Criar aplicação do Telegram
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
-    # Adicionar handlers
+    # Adicionar comandos
     application.add_handler(CommandHandler("start", start_cmd))
 
-    # Iniciar bot no loop
+    # Iniciar o bot no loop
     loop.create_task(application.initialize())
     loop.create_task(application.start())
 
