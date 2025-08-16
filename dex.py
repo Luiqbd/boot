@@ -19,6 +19,11 @@ class DexClient:
         raw_address = config["DEX_ROUTER"]
         router_address = Web3.to_checksum_address(raw_address)
 
+        # (Opcional) Validação básica do contrato
+        # code = web3.eth.get_code(router_address)
+        # if code == b'0x':
+        #     raise ValueError(f"Contrato DEX_ROUTER inválido ou inexistente: {router_address}")
+
         self.router = web3.eth.contract(address=router_address, abi=router_abi)
 
     def get_token_price(self, token_address):
@@ -30,14 +35,19 @@ class DexClient:
             return None
 
     def swap_exact_eth_for_tokens(self, token_address, amount_eth, recipient_address):
-        """Executa swap real via Uniswap Router."""
+        """Executa swap real via Uniswap Router com proteção de slippage."""
         try:
             path = [
                 Web3.to_checksum_address(config["WETH"]),
                 Web3.to_checksum_address(token_address)
             ]
             deadline = int(self.web3.eth.get_block("latest")["timestamp"]) + config.get("TX_DEADLINE_SEC", 300)
-            amount_out_min = 0  # Pode ser ajustado com slippage
+
+            # Calcula amountOutMin com slippage
+            amount_in_wei = self.web3.to_wei(amount_eth, "ether")
+            expected_out = self.router.functions.getAmountsOut(amount_in_wei, path).call()[-1]
+            slippage = config["DEFAULT_SLIPPAGE_BPS"] / 10000  # ex: 1200 → 0.12
+            amount_out_min = int(expected_out * (1 - slippage))
 
             tx = self.router.functions.swapExactETHForTokens(
                 amount_out_min,
@@ -46,7 +56,7 @@ class DexClient:
                 deadline
             ).build_transaction({
                 "from": recipient_address,
-                "value": self.web3.to_wei(amount_eth, "ether"),
+                "value": amount_in_wei,
                 "gas": 250000,
                 "gasPrice": self.web3.eth.gas_price,
                 "nonce": self.web3.eth.get_transaction_count(recipient_address)
@@ -54,10 +64,10 @@ class DexClient:
 
             signed_tx = self.web3.eth.account.sign_transaction(tx, config["PRIVATE_KEY"])
             tx_hash = self.web3.eth.send_raw_transaction(signed_tx.rawTransaction)
-            logger.info(f"Swap enviado: {tx_hash.hex()}")
+            logger.info(f"✅ Swap enviado: {tx_hash.hex()} | Slippage: {slippage*100:.2f}% | MinOut: {amount_out_min}")
             return tx_hash.hex()
         except Exception as e:
-            logger.error(f"Erro ao executar swap: {e}")
+            logger.error(f"❌ Erro ao executar swap: {e}")
             return None
 
     def is_honeypot(self, token_address):
