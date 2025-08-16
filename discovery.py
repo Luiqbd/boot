@@ -48,6 +48,12 @@ sniper_start_time = None
 sniper_pair_count = 0
 last_pair_info = None
 
+def safe_checksum(address: str) -> str:
+    """Garante que o endereço tenha prefixo 0x e converte para checksum."""
+    if not address.startswith("0x"):
+        address = "0x" + address
+    return Web3.to_checksum_address(address)
+
 def stop_discovery():
     """Interrompe o loop de monitoramento."""
     global sniper_active
@@ -86,7 +92,7 @@ def get_discovery_status():
 
 def scan_new_pairs(web3, from_block: int, to_block: int):
     """Busca eventos PairCreated no intervalo de blocos."""
-    factory = Web3.to_checksum_address(config["DEX_FACTORY"])
+    factory = safe_checksum(config["DEX_FACTORY"])
     logs = web3.eth.get_logs({
         "fromBlock": from_block,
         "toBlock": to_block,
@@ -96,10 +102,10 @@ def scan_new_pairs(web3, from_block: int, to_block: int):
 
     found = []
     for log in logs:
-        token0 = Web3.to_checksum_address("0x" + log["topics"][1].hex()[-40:])
-        token1 = Web3.to_checksum_address("0x" + log["topics"][2].hex()[-40:])
+        token0 = safe_checksum("0x" + log["topics"][1].hex()[-40:])
+        token1 = safe_checksum("0x" + log["topics"][2].hex()[-40:])
         data = log["data"]
-        pair_address = Web3.to_checksum_address("0x" + data[-40:])
+        pair_address = safe_checksum("0x" + data[-40:])
         found.append((pair_address, token0, token1))
     return found
 
@@ -124,7 +130,7 @@ def run_discovery(callback_on_pair):
     web3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
     last_block = web3.eth.block_number
 
-    weth = Web3.to_checksum_address(config["WETH"])
+    weth = safe_checksum(config["WETH"])
     min_weth_wei = web3.to_wei(config.get("MIN_LIQ_WETH", 1.0), "ether")
 
     logger.info("🔍 Iniciando monitoramento de novos pares na Base...")
