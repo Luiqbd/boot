@@ -54,12 +54,9 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- Handler /status ---
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        if context.args:
-            wallet_address = context.args[0]
-            status = get_wallet_status(wallet_address)
-            await update.message.reply_text(status)
-        else:
-            await update.message.reply_text("❗ Você precisa informar o endereço da carteira.\nExemplo: /status 0x123...")
+        wallet_address = context.args[0] if context.args else None
+        status = get_wallet_status(wallet_address)
+        await update.message.reply_text(status)
     except Exception as e:
         logging.error(f"Erro no /status: {e}", exc_info=True)
         await update.message.reply_text("⚠️ Ocorreu um erro ao verificar o status da carteira.")
