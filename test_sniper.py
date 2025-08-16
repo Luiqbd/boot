@@ -1,7 +1,22 @@
-from strategy_sniper import on_new_pair
+import os
+from web3 import Web3
+import requests
 
-on_new_pair(
-    pair_addr="0x78b9a3e9b16391df3a379ea0c5b9c1aef4b55ab7",
-    token0="0x4200000000000000000000000000000000000006",
-    token1="0x532f27101965dd16442e59d40670faf5ebb142e4"
-)
+# Lê variáveis de ambiente
+PRIVATE_KEY = os.getenv("PRIVATE_KEY")
+if PRIVATE_KEY.startswith("0x"):
+    PRIVATE_KEY = PRIVATE_KEY[2:]
+
+# Gera endereço
+address = Web3().eth.account.from_key(PRIVATE_KEY).address
+
+# Monta mensagem para o Telegram
+message = f"🔑 Endereço carregado no bot: {address}"
+
+# Envia para o seu chat no Telegram
+token = os.getenv("TELEGRAM_TOKEN")
+chat_id = os.getenv("TELEGRAM_CHAT_ID")
+url = f"https://api.telegram.org/bot{token}/sendMessage"
+requests.post(url, data={"chat_id": chat_id, "text": message})
+
+print("Mensagem enviada para o Telegram:", message)
