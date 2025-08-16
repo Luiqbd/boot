@@ -1,4 +1,5 @@
 import json
+import random
 from config import config
 
 class DexClient:
@@ -12,14 +13,17 @@ class DexClient:
             router_abi = json.load(f)
         self.router = web3.eth.contract(address=config["DEX_ROUTER"], abi=router_abi)
 
+    def get_token_price(self, token_address: str) -> float:
+        # Simulação de preço para TOSHI
+        # Em breve podemos trocar por Dexscreener ou outro agregador
+        return round(random.uniform(0.0005, 0.0015), 6)
+
     def sell(self):
         try:
-            # Carrega contrato ERC20 do USDC
             with open("abis/erc20.json") as f:
                 erc20_abi = json.load(f)
             usdc = self.web3.eth.contract(address=config["USDC"], abi=erc20_abi)
 
-            # Define quanto vender
             amount_in = usdc.functions.allowance(self.address, config["DEX_ROUTER"]).call()
             if amount_in == 0:
                 balance = usdc.functions.balanceOf(self.address).call()
@@ -35,7 +39,6 @@ class DexClient:
                 print(f"✅ Aprovação enviada: {self.web3.to_hex(approve_hash)}")
                 return
 
-            # Executa venda USDC → ETH
             tx = self.router.functions.swapExactTokensForETH(
                 amount_in,
                 0,
