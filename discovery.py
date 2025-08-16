@@ -42,8 +42,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 🔁 Controle de execução
-sniper_active = True
+# 🔁 Controle de execução e status
+sniper_active = False
+sniper_start_time = None
+sniper_pair_count = 0
+last_pair_info = None
 
 def stop_discovery():
     """Interrompe o loop de monitoramento."""
@@ -51,8 +54,27 @@ def stop_discovery():
     sniper_active = False
     logger.info("🛑 Monitoramento interrompido manualmente.")
 
+def is_discovery_running():
+    """Retorna True se o sniper estiver ativo."""
+    return sniper_active
+
+def get_discovery_status():
+    """Retorna informações detalhadas sobre o estado atual do sniper."""
+    if not sniper_active:
+        return "⛔ Sniper está parado."
+
+    uptime = int(time.time() - sniper_start_time)
+    minutes, seconds = divmod(uptime, 60)
+    status = f"🔄 Sniper está ativo há {minutes}m{seconds}s\n"
+    status += f"🔢 Pares encontrados: {sniper_pair_count}\n"
+    if last_pair_info:
+        addr, t0, t1 = last_pair_info
+        status += f"🆕 Último par: {addr}\n🧬 Tokens: {t0[:6]}... / {t1[:6]}..."
+    else:
+        status += "🆕 Nenhum par encontrado ainda."
+    return status
+
 def scan_new_pairs(web3, from_block: int, to_block: int):
-    """Busca eventos PairCreated no intervalo de blocos."""
     factory = Web3.to_checksum_address(config["DEX_FACTORY"])
     logs = web3.eth.get_logs({
         "fromBlock": from_block,
@@ -71,7 +93,6 @@ def scan_new_pairs(web3, from_block: int, to_block: int):
     return found
 
 def has_min_liquidity(web3, pair_address, weth_address, min_weth_wei):
-    """Confere se o par já tem a liquidez mínima em WETH."""
     pair = web3.eth.contract(address=pair_address, abi=PAIR_ABI)
     r0, r1, _ = pair.functions.getReserves().call()
     t0 = pair.functions.token0().call()
@@ -81,9 +102,11 @@ def has_min_liquidity(web3, pair_address, weth_address, min_weth_wei):
     return weth_reserve >= min_weth_wei
 
 def run_discovery(callback_on_pair):
-    """Loop contínuo para encontrar novos pares e acionar callback."""
-    global sniper_active
+    global sniper_active, sniper_start_time, sniper_pair_count, last_pair_info
     sniper_active = True
+    sniper_start_time = time.time()
+    sniper_pair_count = 0
+    last_pair_info = None
 
     web3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
     last_block = web3.eth.block_number
@@ -107,6 +130,8 @@ def run_discovery(callback_on_pair):
 
                 if has_min_liquidity(web3, pair_addr, weth, min_weth_wei):
                     logger.info("💧 Liquidez mínima atingida — disparando execução...")
+                    sniper_pair_count += 1
+                    last_pair_info = (pair_addr, token0, token1)
                     callback_on_pair(pair_addr, token0, token1)
                 else:
                     logger.info("⏳ Ainda sem liquidez mínima, ignorando.")
