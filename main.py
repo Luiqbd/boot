@@ -3,11 +3,12 @@ import asyncio
 import logging
 import requests
 from flask import Flask, request
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters
 )
@@ -17,7 +18,7 @@ import time
 # --- Importações sniper ---
 from check_balance import get_wallet_status
 from strategy_sniper import on_new_pair
-from discovery import run_discovery, stop_discovery
+from discovery import run_discovery, stop_discovery, get_discovery_status
 
 # --- Configuração de log ---
 logging.basicConfig(
@@ -44,6 +45,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📌 Comandos disponíveis:\n"
         "🔍 /snipe — Inicia o sniper e começa a monitorar novos pares com liquidez\n"
         "🛑 /stop — Interrompe o sniper imediatamente\n"
+        "📊 /sniperstatus — Mostra o status atual do sniper (tempo, pares, último par)\n"
         "💼 /status <carteira> — Mostra o saldo de ETH e WETH da carteira informada\n"
         "💬 /start — Exibe esta lista de comandos\n\n"
         "📎 Exemplo:\n/status 0x03D46882cdBE9dEd146C05880A315C898a3Db600"
@@ -81,6 +83,42 @@ async def snipe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stop_discovery()
     await update.message.reply_text("🛑 Sniper interrompido.")
+
+# --- Handler /sniperstatus ---
+async def sniper_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        status = get_discovery_status()
+        if status["active"]:
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(status["button"], callback_data="confirm_stop")]
+            ])
+            await update.message.reply_text(status["text"], reply_markup=keyboard)
+        else:
+            await update.message.reply_text(status["text"])
+    except Exception as e:
+        logging.error(f"Erro no /sniperstatus: {e}", exc_info=True)
+        await update.message.reply_text("⚠️ Ocorreu um erro ao verificar o status do sniper.")
+
+# --- Handler de botões inline ---
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "confirm_stop":
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Sim, parar", callback_data="stop_sniper"),
+                InlineKeyboardButton("❌ Cancelar", callback_data="cancel_stop")
+            ]
+        ])
+        await query.edit_message_text("❓ Tem certeza que deseja parar o sniper?", reply_markup=keyboard)
+
+    elif query.data == "stop_sniper":
+        stop_discovery()
+        await query.edit_message_text("🛑 Sniper interrompido com sucesso.")
+
+    elif query.data == "cancel_stop":
+        await query.edit_message_text("⏳ Ação cancelada. Sniper continua rodando.")
 
 # --- Handler para mensagens comuns ---
 async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -128,6 +166,8 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("status", status_cmd))
     application.add_handler(CommandHandler("snipe", snipe_cmd))
     application.add_handler(CommandHandler("stop", stop_cmd))
+    application.add_handler(CommandHandler("sniperstatus", sniper_status_cmd))
+    application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
     # Iniciar bot no loop principal
