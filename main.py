@@ -36,8 +36,8 @@ application = None
 sniper_thread = None
 
 # --- Configurações via ambiente ---
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
+TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
+WEBHOOK_URL = os.environ["WEBHOOK_URL"]
 
 # --- Helpers ---
 def str_to_bool(v: str) -> bool:
@@ -50,21 +50,23 @@ def normalize_private_key(pk: str) -> str:
     if pk.startswith("0x"):
         pk = pk[2:]
     if len(pk) != 64 or not all(c in "0123456789abcdefABCDEF" for c in pk):
-        raise ValueError("PRIVATE incorreto.")
-   _KEY inválida: formato return pk
+        raise ValueError("PRIVATE_KEY inválida: formato incorreto.")
+    return pk
 
 def get_active_address() -> str:
     pk_raw = os.getenv("PRIVATE_KEY")
     pk = normalize_private_key(pk_raw)
-    return Web3().eth.account.from_key(pk).address_menu() -> Inline
+    return Web3().eth.account.from_key(pk).address
 
-def build_mainKeyboardMarkup:
+def build_main_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🔑 Endereço ativo", callback_data="show_addr"),
             InlineKeyboardButton("⚙️ Configuração", callback_data="show_env")
         ],
-        [InlineKeyboardButton("💼 Saldo da carteira", callback_data="show_balance_self")],
+        [
+            InlineKeyboardButton("💼 Saldo da carteira", callback_data="show_balance_self"),
+        ],
         [
             InlineKeyboardButton("📊 Status do sniper", callback_data="show_sniper_status"),
             InlineKeyboardButton("🛑 Parar sniper", callback_data="confirm_stop")
@@ -73,35 +75,47 @@ def build_mainKeyboardMarkup:
 
 def env_summary_text() -> str:
     try:
-        addr = get_active Exception as e:
-_address()
-    except        addr = f"Erro ao obter: {e}"
+        addr = get_active_address()
+    except Exception as e:
+        addr = f"Erro ao obter: {e}"
+
+    chain_id = os.getenv("CHAIN_ID", "8453")
+    rpc_url = os.getenv("RPC_URL", "https://mainnet.base.org")
+    router = os.getenv("DEX_ROUTER", "")
+    factory = os.getenv("DEX_FACTORY", "")
+    weth = os.getenv("WETH", "0x4200000000000000000000000000000000000006")
+    dry_run = str_to_bool(os.getenv("DRY_RUN", "true"))
+    trade_size = os.getenv("TRADE_SIZE_ETH", "0.01")
+    slippage_bps = os.getenv("SLIPPAGE_BPS", "50")
+    tx_deadline = os.getenv("TX_DEADLINE_SEC", "300")
+    interval = os.getenv("INTERVAL", "10")
+    webhook = os.getenv("WEBHOOK_URL", "")
 
     return (
         "⚙️ Configuração atual\n"
         f"- Endereço ativo: {addr}\n"
-        f"- CHAIN_ID: {os.getenv('CHAIN_ID', '8453')}\n"
-        f"- RPC_URL: {os.getenv('RPC_URL', 'https://mainnet.base.org')}\n"
-        f"- DEX_ROUTER: {os.getenv('DEX_ROUTER', '')}\n"
-        f"- DEX_FACTORY_FACTORY', '')}\: {os.getenv('DEXn"
-        f"- WETH: {os.getenv('WETH', '0x4200000000000000000000000000000000000006')}\n"
-        f"- DRY_RUN: {str_to_bool(os.getenv('DRY_RUN', 'true'))}\n"
-        f"- TRADE_SIZE_ETHDE_SIZE_ETH', '0: {os.getenv('TRA.01')}\n"
-        f"- SLIPPAGE_BPS: {os.getenv('SLIPPAGE_BPS', '50')}\n"
-        f"- TX_DEADLINE_SEC: {os.getenv('TX_DEADLINE_SEC', '300')}\n"
-        f"- INTERVAL: {os.getenv('INTERVAL', '10')}\n"
-        f"- WEBHOOK_URL: {os.getenv('WEBHOOK_URL', '')}"
+        f"- CHAIN_ID: {chain_id}\n"
+        f"- RPC_URL: {rpc_url}\n"
+        f"- DEX_ROUTER: {router}\n"
+        f"- DEX_FACTORY: {factory}\n"
+        f"- WETH: {weth}\n"
+        f"- DRY_RUN: {dry_run}\n"
+        f"- TRADE_SIZE_ETH: {trade_size}\n"
+        f"- SLIPPAGE_BPS: {slippage_bps}\n"
+        f"- TX_DEADLINE_SEC: {tx_deadline}\n"
+        f"- INTERVAL: {interval}\n"
+        f"- WEBHOOK_URL: {webhook}"
     )
 
 # --- Handlers de comando ---
-async def start_cmd context: Context(update: Update,Types.DEFAULT_TYPE):
+async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "👋 Olá, Luis! Eu sou seu bot sniper na rede Base.\n\n"
         "📌 Comandos disponíveis:\n"
-        "🔍 /snipe — Inicia o sniper e começa a monitorar novos pares com liquidezstop — Interrompe\n"
-        "🛑 / o sniper imediatamente\n"
-        "📊 /ra o status atualsniperstatus — Most do sniper\n"
-        "💼 /status <carteira> — Mostra saldo de ETH e WETH\n"
+        "🔍 /snipe — Inicia o sniper e começa a monitorar novos pares com liquidez\n"
+        "🛑 /stop — Interrompe o sniper imediatamente\n"
+        "📊 /sniperstatus — Mostra o status atual do sniper (tempo, pares, último par)\n"
+        "💼 /status <carteira> — Mostra o saldo de ETH e WETH da carteira informada\n"
         "🧭 /menu — Abre o menu com botões\n"
     )
     await update.message.reply_text(text, reply_markup=build_main_menu())
@@ -116,20 +130,20 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(status)
     except Exception as e:
         logging.error(f"Erro no /status: {e}", exc_info=True)
-        await update.message.reply_text("⚠️ Erro ao verificar o status da carteira.")
+        await update.message.reply_text("⚠️ Ocorreu um erro ao verificar o status da carteira.")
 
-(update: Update,async def snipe_cmd context: ContextTypes.DEFAULT_TYPE):
+async def snipe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global sniper_thread
     if sniper_thread and sniper_thread.is_alive():
         await update.message.reply_text("⚠️ O sniper já está rodando.")
-        return.message.reply_text
+        return
 
-    await update("🎯 Iniciando sniper...")
+    await update.message.reply_text("🎯 Iniciando sniper... Monitorando novos pares com liquidez.")
 
     def start_sniper():
-        run_discovery(lambda_new_pair(pair, t pair, t0, t1: on0, t1, bot=application_thread = Thread.bot))
+        run_discovery(lambda pair, t0, t1: on_new_pair(pair, t0, t1, bot=application.bot))
 
-    sniper(target=start_sniper, daemon=True)
+    sniper_thread = Thread(target=start_sniper)
     sniper_thread.start()
 
 async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -140,33 +154,36 @@ async def sniper_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         status = get_discovery_status()
         if status["active"]:
-            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(status["button"], callback_data="confirm_stop")]])
-            await update.message.reply reply_markup=keyboard_text(status["text"],)
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(status["button"], callback_data="confirm_stop")]
+            ])
+            await update.message.reply_text(status["text"], reply_markup=keyboard)
         else:
             await update.message.reply_text(status["text"])
     except Exception as e:
         logging.error(f"Erro no /sniperstatus: {e}", exc_info=True)
-        await update.message.reply_text("⚠️ Erro ao verificar o status do sniper.")
+        await update.message.reply_text("⚠️ Ocorreu um erro ao verificar o status do sniper.")
 
 # --- Handler de botões inline ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback query.answer()
-    data = query_query
-    await.data
+    query = update.callback_query
+    await query.answer()
 
-    if data == "confirm_stop = InlineKeyboard":
-        keyboardMarkup([
-            [InlineKeyboardButton("✅ Sim, parar", callback_data="stop_sniper"),
-             InlineKeyboardButton("❌ Cancelar", callback_data="cancel_stop")]
-        ])
+    data = query.data
+
+    if data == "confirm_stop":
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Sim, parar", callback_data="stop_sniper"),
+            InlineKeyboardButton("❌ Cancelar", callback_data="cancel_stop")
+        ]])
         await query.edit_message_text("❓ Tem certeza que deseja parar o sniper?", reply_markup=keyboard)
 
-    elif data":
-        stop_dis == "stop_snipercovery()
-        await query.edit Sniper interrom_message_text("🛑pido com sucesso.", reply_markup=build_main_menu())
+    elif data == "stop_sniper":
+        stop_discovery()
+        await query.edit_message_text("🛑 Sniper interrompido com sucesso.", reply_markup=build_main_menu())
 
     elif data == "cancel_stop":
-        await query.edit_message_text("⏳ Ação cancel rodando.", replyada. Sniper continua_markup=build_main_menu())
+        await query.edit_message_text("⏳ Ação cancelada. Sniper continua rodando.", reply_markup=build_main_menu())
 
     elif data == "show_addr":
         try:
@@ -176,34 +193,105 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"⚠️ Não foi possível obter o endereço: {e}", reply_markup=build_main_menu())
 
     elif data == "show_env":
-        await query.edit_message_text(env_summary_text(), reply_markup=build_main_menu())
+        try:
+            text = env_summary_text()
+            await query.edit_message_text(text, reply_markup=build_main_menu())
+        except Exception as e:
+            await query.edit_message_text(f"⚠️ Erro ao ler configuração: {e}", reply_markup=build_main_menu())
 
     elif data == "show_balance_self":
         try:
             addr = get_active_address()
-            status = get_wallet_status await query.edit(addr)
-           _message_text(status, reply_markup=build except Exception_main_menu())
-        as e:
-            await query.edit_message_text(f"⚠️ Erro ao consultar_markup=build_main saldo: {e}", reply_menu())
+            status = get_wallet_status(addr)
+            await query.edit_message_text(status, reply_markup=build_main_menu())
+        except Exception as e:
+            await query.edit_message_text(f"⚠️ Erro ao consultar saldo: {e}", reply_markup=build_main_menu())
 
-    elif data == "show_sn status = get_disiper_status":
-       covery_status()
-        await query(status["text"],.edit_message_text reply_markup=build_main_menu())
+    elif data == "show_sniper_status":
+        try:
+            status = get_discovery_status()
+            if status["active"]:
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton(status["button"], callback_data="confirm_stop")],
+                    [InlineKeyboardButton("🧭 Voltar ao menu", callback_data="back_to_menu")]
+                ])
+                await query.edit_message_text(status["text"], reply_markup=keyboard)
+            else:
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🧭 Voltar ao menu", callback_data="back_to_menu")]
+                ])
+                await query.edit_message_text(status["text"], reply_markup=keyboard)
+        except Exception as e:
+            await query.edit_message_text(f"⚠️ Erro ao verificar status do sniper: {e}", reply_markup=build_main_menu())
 
     elif data == "back_to_menu":
-        await query.edit_message_text("🧭 Menu principal", reply_markup=build --- Handler para_main_menu())
+        await query.edit_message_text("🧭 Menu principal", reply_markup=build_main_menu())
 
-# mensagens comuns(update: Update, ---
-async def echoTypes.DEFAULT_TYPE context: Context):
+# --- Handler para mensagens comuns ---
+async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Você disse: {update.message.text}")
 
 # --- Endpoint do webhook ---
 @app.route('/webhook', methods=['POST'])
 def webhook():
     try:
-        data = request.get_json update = Update(force=True)
-       .de_json(data, application.bot)
-        asyncio.run_coroutine_threadsafe(application.process_update(update), loop)
+        data = request.get_json(force=True)
+        update = Update.de_json(data, application.bot)
+        asyncio.run_coroutine_threadsafe(
+            application.process_update(update),
+            loop
+        )
         return 'ok', 200
     except Exception as e:
-        app.logger.error(f"Erro no webhook: {e}", exc_info
+        app.logger.error(f"Erro no webhook: {e}", exc_info=True)
+        return 'error', 500
+
+# --- Registro do webhook com retry ---
+def set_webhook_with_retry(max_attempts=5, delay=3):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
+    for attempt in range(1, max_attempts + 1):
+        resp = requests.post(url, json={"url": WEBHOOK_URL})
+        if resp.status_code == 200 and resp.json().get("ok"):
+            logging.info(f"✅ Webhook registrado com sucesso: {WEBHOOK_URL}")
+            return
+        logging.warning(f"Tentativa {attempt} falhou: {resp.text}")
+        time.sleep(delay)
+    logging.error("❌ Todas as tentativas de registrar o webhook falharam.")
+
+# --- Iniciar Flask em thread separada ---
+def start_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
+# --- Inicialização principal ---
+if __name__ == "__main__":
+    asyncio.set_event_loop(loop)
+
+    # Criar bot Telegram
+    application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    application.add_handler(CommandHandler("start", start_cmd))
+    application.add_handler(CommandHandler("menu", menu_cmd))
+    application.add_handler(CommandHandler("status", status_cmd))
+    application.add_handler(CommandHandler("snipe", snipe_cmd))
+    application.add_handler(CommandHandler("stop", stop_cmd))
+    application.add_handler(CommandHandler("sniperstatus", sniper_status_cmd))
+    application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
+
+    # Função assíncrona para iniciar o bot corretamente
+    async def start_bot():
+        await application.initialize()
+        await application.start()
+
+    # Iniciar bot no loop principal
+    loop.create_task(start_bot())
+
+    # Iniciar Flask em thread separada
+    flask_thread = Thread(target=start_flask)
+    flask_thread.start()
+
+    # Registrar webhook com retry
+    Thread(target=set_webhook_with_retry).start()
+
+    logging.info("🚀 Bot e servidor Flask iniciados")
+    loop.run_forever()
