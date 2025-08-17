@@ -11,52 +11,60 @@ def normalize_private_key(pk: str) -> str:
     pk = pk.strip()
     if pk.startswith("0x"):
         pk = pk[2:]
-    # Validação: exatamente 64 caracteres hexadecimais
     if len(pk) != 64 or not all(c in "0123456789abcdefABCDEF" for c in pk):
-        raise ValueError("Chave privada inválida: formato incorreto")
+        raise ValueError(f"Chave privada inválida: {pk[:4]}... (formato incorreto)")
     return pk
 
-# Carrega variáveis de ambiente
+# === Carrega variáveis de ambiente ===
 raw_private_key = os.getenv("PRIVATE_KEY")
-PRIVATE_KEY = normalize_private_key(raw_private_key)
+try:
+    PRIVATE_KEY = normalize_private_key(raw_private_key)
+except ValueError as e:
+    raise RuntimeError(f"Erro ao processar PRIVATE_KEY: {e}")
+
+# Converte WETH sempre para checksum address
+weth_env = os.getenv("WETH", "0x4200000000000000000000000000000000000006")
+WETH = Web3.to_checksum_address(weth_env)
 
 config = {
     "PYTHON_VERSION": os.getenv("PYTHON_VERSION", "3.10.12"),
 
     # RPC e credenciais
     "RPC_URL": os.getenv("RPC_URL", "https://mainnet.base.org"),
-    "PRIVATE_KEY": PRIVATE_KEY,  # chave normalizada
+    "PRIVATE_KEY": PRIVATE_KEY,
     "CHAIN_ID": int(os.getenv("CHAIN_ID", "8453")),
 
     # Aerodrome (Base) — V2-like AMM
-    "DEX_ROUTER": os.getenv("DEX_ROUTER", "0xcF77a3D4A6f1C6a7D5cb06B52F474BeCC5123e29"),
-    "DEX_FACTORY": os.getenv("DEX_FACTORY", "0x327Df1e6de05895d2ab08513aaDD9313Fe505d86"),
+    "DEX_ROUTER": Web3.to_checksum_address(os.getenv("DEX_ROUTER", "0xcF77a3D4A6f1C6a7D5cb06B52F474BeCC5123e29")),
+    "DEX_FACTORY": Web3.to_checksum_address(os.getenv("DEX_FACTORY", "0x327Df1e6de05895d2ab08513aaDD9313Fe505d86")),
 
-    # WETH oficial na Base
-    "WETH": os.getenv("WETH", Web3.to_checksum_address("0x4200000000000000000000000000000000000006")),
+    # WETH oficial
+    "WETH": WETH,
 
     # Execução
-    "DEFAULT_SLIPPAGE_BPS": int(os.getenv("SLIPPAGE_BPS", "1200")),  # 12% padrão
+    "DEFAULT_SLIPPAGE_BPS": int(os.getenv("SLIPPAGE_BPS", "1200")),
     "TX_DEADLINE_SEC": int(os.getenv("TX_DEADLINE_SEC", "45")),
-    "INTERVAL": int(os.getenv("INTERVAL", "3")),  # tempo entre scans (s)
+    "INTERVAL": int(os.getenv("INTERVAL", "3")),
     "DRY_RUN": str_to_bool(os.getenv("DRY_RUN", "true")),
 
-    # Telegram (opcional)
+    # Telegram
     "TELEGRAM_TOKEN": os.getenv("TELEGRAM_TOKEN"),
     "TELEGRAM_CHAT_ID": int(os.getenv("TELEGRAM_CHAT_ID", "0")),
 }
 
-# Checagens
+# === Validações ===
 def _require(name: str, cond: bool):
     if not cond:
-        raise ValueError(f"Config inválida: {name}")
+        raise ValueError(f"Config inválida: {name} — valor atual: {config.get(name)}")
 
 _require("RPC_URL", bool(config["RPC_URL"]))
 _require("PRIVATE_KEY", bool(config["PRIVATE_KEY"]))
-_require("DEX_ROUTER length", config["DEX_ROUTER"] and len(config["DEX_ROUTER"]) == 42)
-_require("DEX_FACTORY length", config["DEX_FACTORY"] and len(config["DEX_FACTORY"]) == 42)
-_require("WETH length", config["WETH"] and len(config["WETH"]) == 42)
+_require("DEX_ROUTER", len(config["DEX_ROUTER"]) == 42)
+_require("DEX_FACTORY", len(config["DEX_FACTORY"]) == 42)
+_require("WETH", len(config["WETH"]) == 42)
 _require("CHAIN_ID", config["CHAIN_ID"] == 8453)
 
-# Log opcional para debug (com máscara de segurança)
-print("Signer Address:", Web3().eth.account.from_key(PRIVATE_KEY).address)
+# === Debug opcional ===
+if str_to_bool(os.getenv("DEBUG_CONFIG", "false")):
+    signer_addr = Web3().eth.account.from_key(PRIVATE_KEY).address
+    print(f"Signer Address: {signer_addr}")
