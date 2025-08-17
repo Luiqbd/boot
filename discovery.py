@@ -143,7 +143,7 @@ def has_min_liquidity(web3, pair_address, weth_address, min_weth_wei):
     return weth_reserve >= min_weth_wei
 
 # === Callback integrado para simulação ou execução real ===
-def callback_on_pair(pair_addr, token0, token1):
+def default_callback_on_pair(pair_addr, token0, token1):
     global pnl_total
     if config.get("DRY_RUN", True):
         simulated_profit = 0.01  # lucro fictício fixo
@@ -166,7 +166,11 @@ def execute_trade(pair_addr, token0, token1, amount_in_wei):
     # Implementar integração com carteira aqui
     pass
 
-def run_discovery(loop):
+def run_discovery(callback_on_pair, loop):
+    """
+    callback_on_pair: função que será chamada quando um par válido for encontrado.
+    loop: loop de eventos para notificações assíncronas.
+    """
     global sniper_active, sniper_start_time, sniper_pair_count, last_pair_info, pnl_total
     sniper_active = True
     sniper_start_time = time.time()
