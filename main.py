@@ -88,10 +88,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "🛠 **Configuração Atual**\n"
         f"{env_summary_text()}"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "🌍 **Links Úteis**\n"
-        f"📚 Documentação: {os.getenv('DOCS_URL')}\n"
-        f"💬 Suporte: {os.getenv('SUPPORT_URL')}"
+      
     )
     await update.message.reply_text(mensagem, parse_mode="Markdown")
 
@@ -113,9 +110,14 @@ async def snipe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ O sniper já está rodando.")
         return
     await update.message.reply_text("🎯 Iniciando sniper... Monitorando novos pares com liquidez.")
+
     def start_sniper():
-        run_discovery(lambda pair, t0, t1: on_new_pair(pair, t0, t1, bot=application.bot))
-    sniper_thread = Thread(target=start_sniper)
+        try:
+            run_discovery(lambda pair, t0, t1: on_new_pair(pair, t0, t1, bot=application.bot))
+        except Exception as e:
+            logging.error(f"Erro no sniper: {e}", exc_info=True)
+
+    sniper_thread = Thread(target=start_sniper, daemon=True)
     sniper_thread.start()
 
 async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -133,10 +135,17 @@ async def sniper_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Você disse: {update.message.text}")
 
+# --- Healthcheck ---
+@app.route("/", methods=["GET", "HEAD"])
+def health():
+    return "ok", 200
+
 # --- Webhook ---
 @app.route('/webhook', methods=['POST'])
 def webhook():
     try:
+        if application is None:
+            return 'not ready', 503
         data = request.get_json(force=True)
         update = Update.de_json(data, application.bot)
         asyncio.run_coroutine_threadsafe(application.process_update(update), loop)
@@ -146,22 +155,37 @@ def webhook():
         return 'error', 500
 
 def set_webhook_with_retry(max_attempts=5, delay=3):
+    if not TELEGRAM_TOKEN or not WEBHOOK_URL:
+        logging.error("WEBHOOK não configurado: faltam TELEGRAM_TOKEN ou WEBHOOK_URL.")
+        return
+
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
     for attempt in range(1, max_attempts + 1):
-        resp = requests.post(url, json={"url": WEBHOOK_URL})
-        if resp.status_code == 200 and resp.json().get("ok"):
-            logging.info(f"✅ Webhook registrado com sucesso: {WEBHOOK_URL}")
-            return
-        logging.warning(f"Tentativa {attempt} falhou: {resp.text}")
+        try:
+            resp = requests.post(url, json={"url": WEBHOOK_URL}, timeout=10)
+            if resp.status_code == 200 and resp.json().get("ok"):
+                logging.info(f"✅ Webhook registrado com sucesso: {WEBHOOK_URL}")
+                return
+            logging.warning(f"Tentativa {attempt} falhou: {resp.text}")
+        except Exception as e:
+            logging.warning(f"Tentativa {attempt} lançou exceção: {e}")
         time.sleep(delay)
     logging.error("❌ Todas as tentativas de registrar o webhook falharam.")
 
 def start_flask():
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    # threaded=True para lidar bem com múltiplas conexões
+    app.run(host="0.0.0.0", port=port, threaded=True)
 
 # --- Inicialização ---
 if __name__ == "__main__":
+    # Validação básica de env
+    if not TELEGRAM_TOKEN:
+        logging.error("Falta TELEGRAM_TOKEN no ambiente. Encerrando.")
+        raise SystemExit(1)
+    if not WEBHOOK_URL:
+        logging.warning("WEBHOOK_URL não definido. O webhook não será registrado automaticamente.")
+
     asyncio.set_event_loop(loop)
 
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
@@ -178,9 +202,9 @@ if __name__ == "__main__":
         await application.start()
 
     loop.create_task(start_bot())
-    flask_thread = Thread(target=start_flask)
+    flask_thread = Thread(target=start_flask, daemon=True)
     flask_thread.start()
-    Thread(target=set_webhook_with_retry).start()
+    Thread(target=set_webhook_with_retry, daemon=True).start()
 
     logging.info("🚀 Bot e servidor Flask iniciados")
     loop.run_forever()
