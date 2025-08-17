@@ -116,12 +116,16 @@ def get_discovery_status():
     }
 
 def has_min_liquidity(web3, pair_address, weth_address, min_weth_wei):
-    pair = web3.eth.contract(address=pair_address, abi=PAIR_ABI)
-    r0, r1, _ = pair.functions.getReserves().call()
-    t0 = pair.functions.token0().call()
-    t1 = pair.functions.token1().call()
-    weth_reserve = int(r0) if t0.lower() == weth_address.lower() else int(r1)
-    return weth_reserve >= min_weth_wei
+    try:
+        pair = web3.eth.contract(address=pair_address, abi=PAIR_ABI)
+        r0, r1, _ = pair.functions.getReserves().call()
+        t0 = pair.functions.token0().call()
+        t1 = pair.functions.token1().call()
+        weth_reserve = int(r0) if t0.lower() == weth_address.lower() else int(r1)
+        return weth_reserve >= min_weth_wei
+    except Exception as e:
+        logger.warning(f"Erro ao verificar liquidez no par {pair_address}: {e}")
+        return False
 
 # Callback exemplo
 def default_callback_on_pair(pair_addr, token0, token1):
@@ -133,11 +137,10 @@ def default_callback_on_pair(pair_addr, token0, token1):
     else:
         logger.info(f"[REAL] Executando compra no par {pair_addr}")
         # Aqui entraria execução real
-
 # === Monitoramento multi‑DEX ===
 def run_discovery(callback_on_pair, loop):
     """
-    callback_on_pair: função a ser chamada quando um par válido for encontrado.
+    callback_on_pair: chamada como callback_on_pair(dex_info, pair_addr, token0, token1)
     loop: loop de eventos para notificações assíncronas.
     """
     global sniper_active, sniper_start_time, sniper_pair_count, last_pair_info, pnl_total, notify_loop
@@ -150,6 +153,7 @@ def run_discovery(callback_on_pair, loop):
     pnl_total = 0.0
 
     web3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
+
     # Guarda o último bloco processado por DEX
     last_blocks = {}
     current_block = web3.eth.block_number
@@ -207,7 +211,8 @@ def run_discovery(callback_on_pair, loop):
                         logger.info(f"💧 Liquidez mínima atingida em {dex['name']}.")
                         sniper_pair_count += 1
                         last_pair_info = (pair_address, token0, token1)
-                        callback_on_pair(pair_address, token0, token1)
+                        # Passa dex_info para o callback
+                        callback_on_pair(dex, pair_address, token0, token1)
                     else:
                         logger.info("⏳ Ainda sem liquidez mínima.")
                         notify(f"⏳ Sem liquidez mínima no par {pair_address}.", loop)
