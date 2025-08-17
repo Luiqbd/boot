@@ -1,6 +1,7 @@
 import time
 import logging
 import asyncio
+import inspect
 from web3 import Web3
 from config import config
 from telegram import Bot
@@ -143,7 +144,6 @@ def has_min_liquidity_v2(web3, pair_address, weth_address, min_weth_wei):
 # Callback exemplo caso nenhum seja fornecido
 def default_callback_on_pair(dex_info, pair_addr, token0, token1):
     global pnl_total
-    # Apenas simula um pequeno lucro acumulado
     simulated_profit = 0.01
     pnl_total += simulated_profit
     logger.info(f"[SIM] [{dex_info['name']}] {pair_addr} -> Lucro {simulated_profit:.4f} WETH (PnL total: {pnl_total:.4f})")
@@ -154,7 +154,8 @@ def default_callback_on_pair(dex_info, pair_addr, token0, token1):
 def run_discovery(callback_on_pair, loop):
     """
     callback_on_pair: função chamada como callback_on_pair(dex_info, pair_addr, token0, token1)
-    loop: loop de eventos para notificações assíncronas.
+                      pode ser síncrona OU assíncrona (coroutine).
+    loop: loop de eventos para notificações e callbacks assíncronos.
     """
     global sniper_active, sniper_start_time, sniper_pair_count, last_pair_info, pnl_total, notify_loop
     notify_loop = loop
@@ -233,9 +234,12 @@ def run_discovery(callback_on_pair, loop):
                             logger.info(f"ℹ️ Pool V3 detectada — checagem de liquidez será feita na estratégia.")
                         sniper_pair_count += 1
                         last_pair_info = (pair_address, token0, token1)
-                        # Passa dex_info para o callback
+
+                        # Passa dex_info para o callback (suporta sync e async)
                         try:
-                            callback_on_pair(dex, pair_address, token0, token1)
+                            result = callback_on_pair(dex, pair_address, token0, token1)
+                            if inspect.iscoroutine(result):
+                                asyncio.run_coroutine_threadsafe(result, notify_loop or loop)
                         except Exception as cb_err:
                             logger.error(f"Erro no callback on_new_pair: {cb_err}", exc_info=True)
                             notify(f"⚠️ Erro no callback: {cb_err}", loop)
