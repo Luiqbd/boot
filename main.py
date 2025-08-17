@@ -78,6 +78,30 @@ def env_summary_text() -> str:
         f"⏱ Intervalo: {os.getenv('INTERVAL')}s\n"
     )
 
+# --- Funções sniper com loop ---
+def iniciar_sniper():
+    global sniper_thread
+    if sniper_thread and sniper_thread.is_alive():
+        logging.info("⚠️ O sniper já está rodando.")
+        return
+
+    logging.info("⚙️ Iniciando sniper... Monitorando novos pares com liquidez.")
+
+    def start_sniper():
+        try:
+            run_discovery(
+                lambda pair, t0, t1: on_new_pair(pair, t0, t1, bot=application.bot),
+                loop
+            )
+        except Exception as e:
+            logging.error(f"Erro no sniper: {e}", exc_info=True)
+
+    sniper_thread = Thread(target=start_sniper, daemon=True)
+    sniper_thread.start()
+
+def parar_sniper():
+    stop_discovery(loop)
+
 # --- Handlers ---
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mensagem = (
@@ -110,28 +134,15 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Erro ao verificar o status da carteira.")
 
 async def snipe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global sniper_thread
     if sniper_thread and sniper_thread.is_alive():
         await update.message.reply_text("⚠️ O sniper já está rodando.")
         return
 
     await update.message.reply_text("⚙️ Iniciando sniper... Monitorando novos pares com liquidez.")
-
-    def start_sniper():
-        try:
-            run_discovery(
-                lambda pair, t0, t1: on_new_pair(pair, t0, t1, bot=application.bot),
-                loop
-            )
-        except Exception as e:
-            logging.error(f"Erro no sniper: {e}", exc_info=True)
-
-    sniper_thread = Thread(target=start_sniper, daemon=True)
-    sniper_thread.start()
-
+    iniciar_sniper()
 
 async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    stop_discovery()
+    parar_sniper()
     await update.message.reply_text("🛑 Sniper interrompido.")
 
 async def sniper_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -147,7 +158,6 @@ async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- Novos comandos de diagnóstico ---
 async def ping_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Responde 'pong' para confirmar que o bot está online + uptime e hora atual"""
     uptime_seconds = int(time.time() - context.bot_data.get("start_time", time.time()))
     uptime_str = str(datetime.timedelta(seconds=uptime_seconds))
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -158,7 +168,6 @@ async def ping_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def test_notify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Envia uma mensagem de teste para o chat configurado via TELEGRAM_CHAT_ID com timestamp e ID único"""
     try:
         chat_id_str = TELEGRAM_CHAT_ID or "0"
         chat_id = int(chat_id_str) if chat_id_str.isdigit() else 0
@@ -217,12 +226,10 @@ def set_webhook_with_retry(max_attempts=5, delay=3):
 
 def start_flask():
     port = int(os.environ.get("PORT", 10000))
-    # threaded=True para lidar bem com múltiplas conexões
     app.run(host="0.0.0.0", port=port, threaded=True)
 
 # --- Inicialização ---
 if __name__ == "__main__":
-    # Validação básica de env
     if not TELEGRAM_TOKEN:
         logging.error("Falta TELEGRAM_TOKEN no ambiente. Encerrando.")
         raise SystemExit(1)
@@ -238,17 +245,14 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("snipe", snipe_cmd))
     application.add_handler(CommandHandler("stop", stop_cmd))
     application.add_handler(CommandHandler("sniperstatus", sniper_status_cmd))
-    application.add_handler(CommandHandler("ping", ping_cmd))                 # novo
-    application.add_handler(CommandHandler("testnotify", test_notify_cmd))    # novo
+    application.add_handler(CommandHandler("ping", ping_cmd))
+    application.add_handler(CommandHandler("testnotify", test_notify_cmd))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
     async def start_bot():
-        # guarda o start_time para cálculo de uptime no /ping
         application.bot_data["start_time"] = time.time()
-
         await application.initialize()
         await application.start()
-        # Registra o “menu /” do Telegram com todos os comandos
         await application.bot.set_my_commands([
             BotCommand("start", "Mostra boas-vindas e configuração"),
             BotCommand("menu", "Reexibe o menu"),
