@@ -1,8 +1,6 @@
 import logging
-import time
 import math
 import datetime
-import asyncio
 from web3 import Web3
 from eth_account import Account
 
@@ -46,8 +44,8 @@ def get_token_price_in_weth(router_contract, token, weth):
 
 async def on_new_pair(pair_addr, token0, token1, bot=None, loop=None):
     web3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
-    weth = Web3.to_checksum_address(config["WETH"])
-    router_addr = Web3.to_checksum_address(config["DEX_ROUTER"])
+    weth = config["WETH"]
+    router_addr = config["DEX_ROUTER"]
     router_contract = web3.eth.contract(address=router_addr, abi=ROUTER_ABI)
     alert = TelegramAlert(bot, config["TELEGRAM_CHAT_ID"], loop=loop) if bot else None
 
@@ -137,27 +135,4 @@ async def on_new_pair(pair_addr, token0, token1, bot=None, loop=None):
     stop_price = entry_price * (1 - config.get("STOP_LOSS_PCT", 0.15))
 
     if alert:
-        alert.send(f"🎯 TP: {take_profit_price:.6f} WETH\n🛑 SL: {stop_price:.6f} WETH\n📈 Trailing: {trail_pct*100:.1f}%")
-
-    while True:
-        price = get_token_price_in_weth(router_contract, target_token, weth)
-        if not price:
-            await asyncio.sleep(1)
-            continue
-
-        if price > highest_price:
-            highest_price = price
-            stop_price = highest_price * (1 - trail_pct)
-
-        if price >= take_profit_price or price <= stop_price:
-            sell_tx = safe_exec.sell(target_token, weth, amt_eth, price, entry_price)
-            if sell_tx:
-                log.info(f"💰 Venda executada — TX: {sell_tx}")
-                if alert: alert.send(f"💰 Venda realizada: {target_token}\nTX: {sell_tx}")
-            else:
-                warn = f"⚠️ Venda bloqueada pelo RiskManager: {target_token}"
-                log.warning(warn)
-                if alert: alert.send(warn)
-            break
-
-        await asyncio.sleep(3)
+        alert.send(f"🎯 TP: {take_profit_price:.6f} WETH\n🛑 SL: {stop_price:.6f
