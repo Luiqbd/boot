@@ -142,35 +142,67 @@ def has_min_liquidity(web3, pair_address, weth_address, min_weth_wei):
     weth_reserve = int(r0) if t0.lower() == weth_address.lower() else int(r1)
     return weth_reserve >= min_weth_wei
 
-# === Callback integrado para simulação ou execução real ===
+# === Callback default ===
 def default_callback_on_pair(pair_addr, token0, token1):
     global pnl_total
     if config.get("DRY_RUN", True):
-        simulated_profit = 0.01  # lucro fictício fixo
+        simulated_profit = 0.01
         pnl_total += simulated_profit
         logger.info(f"[SIMULAÇÃO] Par {pair_addr} -> Lucro {simulated_profit:.4f} WETH (PnL total: {pnl_total:.4f})")
     else:
         logger.info(f"[REAL] Executando compra no par {pair_addr}")
-        # Exemplo de execução real (molde)
         execute_trade(pair_addr, token0, token1, amount_in_wei=Web3.to_wei(0.1, 'ether'))
 
-# === Exemplo de função para execução real ===
+# === Execução real ===
 def execute_trade(pair_addr, token0, token1, amount_in_wei):
-    """
-    Aqui você implementa a lógica para:
-    - Aprovar o router
-    - Chamar a função swapExactETHForTokens ou similar
-    - Assinar e enviar a transação
-    """
-    logger.info(f"🚀 (REAL) Comprando {token0} via par {pair_addr} com {amount_in_wei} wei")
-    # Implementar integração com carteira aqui
-    pass
+    """Execução real usando Router V2 (tudo vem do config, que já lê do Render)."""
+    try:
+        web3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
+        router = web3.eth.contract(
+            address=Web3.to_checksum_address(config["ROUTER_ADDRESS"]),
+            abi=[{
+                "name": "swapExactETHForTokensSupportingFeeOnTransferTokens",
+                "type": "function",
+                "stateMutability": "payable",
+                "inputs": [
+                    {"name": "amountOutMin", "type": "uint256"},
+                    {"name": "path", "type": "address[]"},
+                    {"name": "to", "type": "address"},
+                    {"name": "deadline", "type": "uint256"},
+                ],
+                "outputs": []
+            }]
+        )
 
+        weth_addr = Web3.to_checksum_address(config["WETH"])
+        path = [weth_addr, token1] if token0.lower() == weth_addr.lower() else [weth_addr, token0]
+
+        tx = router.functions.swapExactETHForTokensSupportingFeeOnTransferTokens(
+            0,
+            path,
+            Web3.to_checksum_address(config["WALLET_ADDRESS"]),
+            int(time.time()) + 60
+        ).build_transaction({
+            "from": Web3.to_checksum_address(config["WALLET_ADDRESS"]),
+            "value": amount_in_wei,
+            "gas": 300000,
+            "gasPrice": web3.to_wei("5", "gwei"),
+            "nonce": web3.eth.get_transaction_count(Web3.to_checksum_address(config["WALLET_ADDRESS"]))
+        })
+
+        signed_tx = web3.eth.account.sign_transaction(tx, private_key=config["PRIVATE_KEY"])
+        tx_hash = web3.eth.send_raw_transaction(signed_tx.rawTransaction)
+        logger.info(f"✅ Compra enviada! Hash: {web3.to_hex(tx_hash)}")
+        notify(f"✅ Compra enviada! Hash: {web3.to_hex(tx_hash)}", asyncio.get_event_loop())
+        return tx_hash
+
+    except Exception as e:
+        logger.error(f"❌ Erro na execução real: {e}", exc_info=True)
+        notify(f"❌ Erro na execução real: {e}", asyncio.get_event_loop())
+        return None
+
+# === Monitoramento ===
 def run_discovery(callback_on_pair, loop):
-    """
-    callback_on_pair: função que será chamada quando um par válido for encontrado.
-    loop: loop de eventos para notificações assíncronas.
-    """
     global sniper_active, sniper_start_time, sniper_pair_count, last_pair_info, pnl_total
     sniper_active = True
     sniper_start_time = time.time()
@@ -194,30 +226,4 @@ def run_discovery(callback_on_pair, loop):
     while sniper_active:
         try:
             latest = web3.eth.block_number
-            if latest > last_block:
-                pairs = scan_new_pairs(web3, last_block + 1, latest)
-                last_block = latest
-
-                for pair_addr, token0, token1 in pairs:
-                    logger.info(f"📦 Par detectado: {pair_addr} ({token0} / {token1})")
-
-                    if not any(t in BASE_TOKENS for t in (token0, token1)):
-                        logger.info("⏭ Ignorado: não contém token-base permitido.")
-                        continue
-
-                    logger.info(f"🆕 Novo par com token-base encontrado: {pair_addr}")
-                    notify(f"🆕 Novo par: {pair_addr}\nTokens: {token0} / {token1}", loop)
-
-                    if has_min_liquidity(web3, pair_addr, safe_checksum(config["WETH"]), min_weth_wei):
-                        logger.info("💧 Liquidez mínima atingida.")
-                        sniper_pair_count += 1
-                        last_pair_info = (pair_addr, token0, token1)
-                        callback_on_pair(pair_addr, token0, token1)
-                    else:
-                        logger.info("⏳ Ainda sem liquidez mínima.")
-                        notify(f"⏳ Sem liquidez mínima no par {pair_addr}.", loop)
-        except Exception as e:
-            logger.error(f"⚠️ Erro no loop de discovery: {e}", exc_info=True)
-            notify(f"⚠️ Erro no loop de discovery: {e}", loop)
-
-        time.sleep(config["INTERVAL"])
+            if latest >
