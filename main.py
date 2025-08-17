@@ -3,7 +3,7 @@ import asyncio
 import logging
 import requests
 from flask import Flask, request
-from telegram import Update
+from telegram import Update, BotCommand
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -37,6 +37,7 @@ sniper_thread = None
 # --- Variáveis de ambiente ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "0")  # usado no /testnotify
 
 # --- Funções auxiliares ---
 def str_to_bool(v: str) -> bool:
@@ -83,12 +84,15 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🟢 /snipe — Inicia o sniper e começa a monitorar.\n"
         "🔴 /stop — Para o sniper imediatamente.\n"
         "📈 /sniperstatus — Consulta status do sniper.\n"
-        "💰 /status <carteira> — Mostra saldo ETH/WETH.\n"
+        "💰 /status  — Mostra saldo ETH/WETH.\n"
+        "🏓 /ping — Confirma se o bot está online.\n"
+        "🛰️ /testnotify — Envia mensagem de teste para o chat configurado.\n"
         "📜 /menu — Reexibe esta mensagem.\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "🛠 **Configuração Atual**\n"
         f"{env_summary_text()}"
-      
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+       
     )
     await update.message.reply_text(mensagem, parse_mode="Markdown")
 
@@ -134,6 +138,29 @@ async def sniper_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Você disse: {update.message.text}")
+
+# --- Novos comandos de diagnóstico ---
+async def ping_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Responde 'pong' para confirmar que o bot está online"""
+    await update.message.reply_text("pong 🏓")
+
+async def test_notify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Envia uma mensagem de teste para o chat configurado via TELEGRAM_CHAT_ID"""
+    try:
+        chat_id_str = TELEGRAM_CHAT_ID or "0"
+        chat_id = int(chat_id_str) if chat_id_str.isdigit() else 0
+        if chat_id == 0:
+            await update.message.reply_text("⚠️ TELEGRAM_CHAT_ID ausente ou inválido nas variáveis de ambiente.")
+            return
+
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="✅ Teste de notificação: seu sniper está pronto para narrar as operações!"
+        )
+        await update.message.reply_text("Mensagem de teste enviada para o chat configurado.")
+    except Exception as e:
+        logging.error(f"Erro no /testnotify: {e}", exc_info=True)
+        await update.message.reply_text(f"⚠️ Erro ao enviar mensagem: {e}")
 
 # --- Healthcheck ---
 @app.route("/", methods=["GET", "HEAD"])
@@ -195,11 +222,24 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("snipe", snipe_cmd))
     application.add_handler(CommandHandler("stop", stop_cmd))
     application.add_handler(CommandHandler("sniperstatus", sniper_status_cmd))
+    application.add_handler(CommandHandler("ping", ping_cmd))                 # novo
+    application.add_handler(CommandHandler("testnotify", test_notify_cmd))    # novo
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
     async def start_bot():
         await application.initialize()
         await application.start()
+        # Registra o “menu /” do Telegram com todos os comandos
+        await application.bot.set_my_commands([
+            BotCommand("start", "Mostra boas-vindas e configuração"),
+            BotCommand("menu", "Reexibe o menu"),
+            BotCommand("status", "Mostra saldo ETH/WETH da carteira"),
+            BotCommand("snipe", "Inicia o sniper"),
+            BotCommand("stop", "Para o sniper"),
+            BotCommand("sniperstatus", "Status do sniper"),
+            BotCommand("ping", "Teste de vida (pong)"),
+            BotCommand("testnotify", "Envia uma notificação de teste")
+        ])
 
     loop.create_task(start_bot())
     flask_thread = Thread(target=start_flask, daemon=True)
