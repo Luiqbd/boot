@@ -116,14 +116,19 @@ async def snipe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text("🎯 Iniciando sniper... Monitorando novos pares com liquidez.")
 
-    def start_sniper():
+   def start_sniper():
         try:
-            run_discovery(lambda pair, t0, t1: on_new_pair(pair, t0, t1, bot=application.bot))
+            run_discovery(
+                lambda pair, t0, t1: on_new_pair(pair, t0, t1, bot=application.bot),
+                loop
+            )
         except Exception as e:
             logging.error(f"Erro no sniper: {e}", exc_info=True)
 
     sniper_thread = Thread(target=start_sniper, daemon=True)
     sniper_thread.start()
+
+
 
 async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stop_discovery()
