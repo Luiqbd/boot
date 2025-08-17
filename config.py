@@ -14,7 +14,7 @@ def normalize_private_key(pk: str) -> str:
         raise ValueError(f"Chave privada inválida ({pk[:4]}...): formato incorreto ou tamanho incorreto")
     return pk
 
-# Carrega e valida PRIVATE_KEY
+# --- Carrega e valida PRIVATE_KEY ---
 raw_private_key = os.getenv("PRIVATE_KEY")
 try:
     PRIVATE_KEY = normalize_private_key(raw_private_key)
@@ -26,7 +26,14 @@ def checksum_addr(addr_env: str, default: str = None) -> str:
         addr_env = default
     return Web3.to_checksum_address(addr_env)
 
+# WETH oficial na Base
 WETH = checksum_addr(os.getenv("WETH"), "0x4200000000000000000000000000000000000006")
+
+# USDC oficial na Base (Circle)
+USDC = checksum_addr(
+    os.getenv("USDC"),  # pode vir do ambiente
+    "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"  # fallback padrão
+)
 
 config = {
     "PYTHON_VERSION": os.getenv("PYTHON_VERSION", "3.10.12"),
@@ -40,8 +47,9 @@ config = {
     "DEX_ROUTER": checksum_addr(os.getenv("DEX_ROUTER"), "0xcF77a3D4A6f1C6a7D5cb06B52F474BeCC5123e29"),
     "DEX_FACTORY": checksum_addr(os.getenv("DEX_FACTORY"), "0x327Df1e6de05895d2ab08513aaDD9313Fe505d86"),
 
-    # WETH oficial
+    # Tokens base
     "WETH": WETH,
+    "USDC": USDC,
 
     # Execução
     "DEFAULT_SLIPPAGE_BPS": int(os.getenv("SLIPPAGE_BPS", "1200")),
@@ -54,7 +62,7 @@ config = {
     "TELEGRAM_CHAT_ID": int(os.getenv("TELEGRAM_CHAT_ID", "0")),
 }
 
-# Validações básicas
+# --- Validações básicas ---
 def _require(name: str, cond: bool):
     if not cond:
         raise ValueError(f"Config inválida: {name} — valor atual: {config.get(name)}")
@@ -64,9 +72,12 @@ _require("PRIVATE_KEY", bool(config["PRIVATE_KEY"]))
 _require("DEX_ROUTER", isinstance(config["DEX_ROUTER"], str) and len(config["DEX_ROUTER"]) == 42)
 _require("DEX_FACTORY", isinstance(config["DEX_FACTORY"], str) and len(config["DEX_FACTORY"]) == 42)
 _require("WETH", isinstance(config["WETH"], str) and len(config["WETH"]) == 42)
+_require("USDC", isinstance(config["USDC"], str) and len(config["USDC"]) == 42)
 _require("CHAIN_ID", config["CHAIN_ID"] == 8453)
 
-# Debug opcional
+# --- Debug opcional ---
 if str_to_bool(os.getenv("DEBUG_CONFIG", "false")):
     signer_addr = Web3().eth.account.from_key(PRIVATE_KEY).address
     print(f"Signer Address: {signer_addr}")
+    print(f"WETH: {WETH}")
+    print(f"USDC: {USDC}")
