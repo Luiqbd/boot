@@ -3,9 +3,13 @@ import logging
 from web3 import Web3
 from config import config
 
-# Evento PairCreated do padrão Uniswap V2
-PAIR_CREATED_SIG = Web3.keccak(text="PairCreated(address,address,address,uint256)").hex()
+# 🎯 Evento PairCreated do padrão Uniswap V2
+# Usamos Web3.to_hex() para garantir o prefixo "0x"
+PAIR_CREATED_SIG = Web3.to_hex(
+    Web3.keccak(text="PairCreated(address,address,address,uint256)")
+)
 
+# ABI mínima para consultar dados do par
 PAIR_ABI = [
     {
         "constant": True,
@@ -37,8 +41,11 @@ PAIR_ABI = [
     },
 ]
 
+# 📝 Configuração de log
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%H:%M:%S"
 )
 logger = logging.getLogger(__name__)
 
@@ -97,15 +104,19 @@ def scan_new_pairs(web3, from_block: int, to_block: int):
         "fromBlock": from_block,
         "toBlock": to_block,
         "address": factory,
-        "topics": [PAIR_CREATED_SIG]
+        "topics": [PAIR_CREATED_SIG]  # prefixo "0x" garantido
     })
 
     found = []
     for log in logs:
+        # Extrai endereços dos tópicos (últimos 20 bytes)
         token0 = safe_checksum("0x" + log["topics"][1].hex()[-40:])
         token1 = safe_checksum("0x" + log["topics"][2].hex()[-40:])
+        
+        # O endereço do par está no campo 'data' (últimos 20 bytes)
         data = log["data"]
         pair_address = safe_checksum("0x" + data[-40:])
+        
         found.append((pair_address, token0, token1))
     return found
 
@@ -136,22 +147,26 @@ def run_discovery(callback_on_pair):
     logger.info("🔍 Iniciando monitoramento de novos pares na Base...")
 
     while sniper_active:
-        latest = web3.eth.block_number
-        if latest > last_block:
-            pairs = scan_new_pairs(web3, last_block + 1, latest)
-            last_block = latest
+        try:
+            latest = web3.eth.block_number
+            if latest > last_block:
+                pairs = scan_new_pairs(web3, last_block + 1, latest)
+                last_block = latest
 
-            for pair_addr, token0, token1 in pairs:
-                if weth not in (token0, token1):
-                    continue
+                for pair_addr, token0, token1 in pairs:
+                    if weth not in (token0, token1):
+                        continue
 
-                logger.info(f"🆕 Novo par encontrado: {pair_addr} ({token0} / {token1})")
+                    logger.info(f"🆕 Novo par encontrado: {pair_addr} ({token0} / {token1})")
 
-                if has_min_liquidity(web3, pair_addr, weth, min_weth_wei):
-                    logger.info("💧 Liquidez mínima atingida — disparando execução...")
-                    sniper_pair_count += 1
-                    last_pair_info = (pair_addr, token0, token1)
-                    callback_on_pair(pair_addr, token0, token1)
-                else:
-                    logger.info("⏳ Ainda sem liquidez mínima, ignorando.")
+                    if has_min_liquidity(web3, pair_addr, weth, min_weth_wei):
+                        logger.info("💧 Liquidez mínima atingida — disparando execução...")
+                        sniper_pair_count += 1
+                        last_pair_info = (pair_addr, token0, token1)
+                        callback_on_pair(pair_addr, token0, token1)
+                    else:
+                        logger.info("⏳ Ainda sem liquidez mínima, ignorando.")
+        except Exception as e:
+            logger.error(f"⚠️ Erro no loop de discovery: {e}", exc_info=True)
+
         time.sleep(config["INTERVAL"])
