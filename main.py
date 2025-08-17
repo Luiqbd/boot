@@ -114,9 +114,10 @@ async def snipe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if sniper_thread and sniper_thread.is_alive():
         await update.message.reply_text("⚠️ O sniper já está rodando.")
         return
-    await update.message.reply_text("🎯 Iniciando sniper... Monitorando novos pares com liquidez.")
 
-   def start_sniper():
+    await update.message.reply_text("⚙️ Iniciando sniper... Monitorando novos pares com liquidez.")
+
+    def start_sniper():
         try:
             run_discovery(
                 lambda pair, t0, t1: on_new_pair(pair, t0, t1, bot=application.bot),
@@ -127,7 +128,6 @@ async def snipe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     sniper_thread = Thread(target=start_sniper, daemon=True)
     sniper_thread.start()
-
 
 
 async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
