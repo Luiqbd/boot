@@ -148,7 +148,12 @@ def run_discovery(callback_on_pair, loop):
     web3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
     last_block = web3.eth.block_number
 
-    weth = safe_checksum(config["WETH"])
+    # === Lista de tokens-base aceitos (ETH nativo == WETH) ===
+    BASE_TOKENS = {
+        safe_checksum(config["WETH"]): "WETH",
+        safe_checksum(config["usdc"].split("=")[1]): "USDC"
+    }
+
     min_weth_wei = web3.to_wei(config.get("MIN_LIQ_WETH", 1.0), "ether")
 
     logger.info("🔍 Iniciando monitoramento de novos pares na Base...")
@@ -162,13 +167,16 @@ def run_discovery(callback_on_pair, loop):
                 last_block = latest
 
                 for pair_addr, token0, token1 in pairs:
-                    if weth not in (token0, token1):
+                    logger.info(f"📦 Par detectado: {pair_addr} ({token0} / {token1})")
+
+                    if not any(t in BASE_TOKENS for t in (token0, token1)):
+                        logger.info("⏭ Ignorado: não contém token-base permitido (WETH, USDC).")
                         continue
 
-                    logger.info(f"🆕 Novo par encontrado: {pair_addr} ({token0} / {token1})")
+                    logger.info(f"🆕 Novo par com token-base encontrado: {pair_addr}")
                     notify(f"🆕 Novo par: {pair_addr}\nTokens: {token0} / {token1}", loop)
 
-                    if has_min_liquidity(web3, pair_addr, weth, min_weth_wei):
+                    if has_min_liquidity(web3, pair_addr, safe_checksum(config["WETH"]), min_weth_wei):
                         logger.info("💧 Liquidez mínima atingida — disparando execução...")
                         notify(f"💧 Liquidez mínima atingida no par {pair_addr} — executando sniper!", loop)
                         sniper_pair_count += 1
