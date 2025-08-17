@@ -2,11 +2,20 @@ import time, math, logging, datetime
 from web3 import Web3
 from eth_account import Account
 from config import config
-from exchange_client import ExchangeClient
 from telegram_alert import TelegramAlert
-from dex import DexClient  # ✅ Import necessário para validações
+from dex import DexClient
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
+# Camada segura de execução
+from exchange_client import ExchangeClient
+from trade_executor import TradeExecutor
+from safe_trade_executor import SafeTradeExecutor
+from risk_manager import RiskManager
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%H:%M:%S"
+)
 log = logging.getLogger("sniper")
 
 def _now():
@@ -15,7 +24,10 @@ def _now():
 def amount_out_min(web3, router, amount_in_wei, path, slippage_bps):
     router_abi = [{
         "name": "getAmountsOut", "type": "function", "stateMutability": "view",
-        "inputs": [{"name": "amountIn", "type": "uint256"}, {"name": "path", "type": "address[]"}],
+        "inputs": [
+            {"name": "amountIn", "type": "uint256"},
+            {"name": "path", "type": "address[]"}
+        ],
         "outputs": [{"name": "", "type": "uint256[]"}]
     }]
     r = web3.eth.contract(address=router, abi=router_abi)
@@ -25,7 +37,10 @@ def amount_out_min(web3, router, amount_in_wei, path, slippage_bps):
 def get_token_price_in_weth(web3, router, token, weth):
     router_abi = [{
         "name": "getAmountsOut", "type": "function", "stateMutability": "view",
-        "inputs": [{"name": "amountIn", "type": "uint256"}, {"name": "path", "type": "address[]"}],
+        "inputs": [
+            {"name": "amountIn", "type": "uint256"},
+            {"name": "path", "type": "address[]"}
+        ],
         "outputs": [{"name": "", "type": "uint256[]"}]
     }]
     r = web3.eth.contract(address=router, abi=router_abi)
@@ -48,117 +63,115 @@ def on_new_pair(pair_addr, token0, token1, bot=None):
     except Exception:
         signer_addr = "<PRIVATE_KEY inválida ou ausente>"
 
-    log.info(f"[{_now()}][autopsy] CHAIN_ID={config.get('CHAIN_ID')} RPC_URL={config.get('RPC_URL')}")
-    log.info(f"[{_now()}][autopsy] DEX_ROUTER={router} WETH={weth} DRY_RUN={config.get('DRY_RUN')}")
-    log.info(f"[{_now()}][autopsy] signer={signer_addr} TRADE_SIZE_ETH={config.get('TRADE_SIZE_ETH', 0.02)} SLIPPAGE_BPS={config.get('DEFAULT_SLIPPAGE_BPS')} DEADLINE_SEC={config.get('TX_DEADLINE_SEC')}")
+    log.info(f"[{_now()}] Novo par detectado — CHAIN_ID={config.get('CHAIN_ID')}")
+    log.info(f"[{_now()}] Roteador={router} WETH={weth} DRY_RUN={config.get('DRY_RUN')}")
+    log.info(f"[{_now()}] signer={signer_addr} TRADE_SIZE_ETH={config.get('TRADE_SIZE_ETH', 0.02)}")
 
-    # Verifica se o contrato do router está implantado
-    code = web3.eth.get_code(router)
-    if code == b'0x':
-        log.error(f"❌ Roteador {router} não está implantado na rede — swap abortado.")
-        if alert:
-            alert.send(f"❌ Roteador não implantado: {router}")
+    # Checa se roteador está implantado
+    if len(web3.eth.get_code(router)) == 0:
+        msg = f"❌ Roteador {router} não implantado — abortando."
+        log.error(msg)
+        if alert: alert.send(msg)
         return
 
-    target_token = Web3.to_checksum_address(token1 if token0.lower() == weth.lower() else token0)
-    log.info(f"🚀 Novo par aprovado — comprando {target_token} (pair {pair_addr})")
+    # Define token alvo
+    target_token = Web3.to_checksum_address(
+        token1 if token0.lower() == weth.lower() else token0
+    )
     if alert:
-        alert.send(f"🚀 Novo par detectado: {target_token}\nPar: {pair_addr}")
+        alert.send(f"🚀 Par detectado: {target_token}\nPair: {pair_addr}")
 
-    # Verifica honeypot e liquidez mínima
+    # Checagens on-chain
     dex = DexClient(web3)
     if dex.is_honeypot(target_token):
-        log.warning(f"⚠️ Token {target_token} parece ser honeypot — swap abortado.")
-        if alert:
-            alert.send(f"⚠️ Token honeypot detectado: {target_token} — swap abortado.")
+        warn = f"⚠️ Token {target_token} parece honeypot — abortando."
+        log.warning(warn)
+        if alert: alert.send(warn)
         return
 
     if not dex.has_min_liquidity(target_token):
-        log.warning(f"⚠️ Token {target_token} tem liquidez insuficiente — swap abortado.")
-        if alert:
-            alert.send(f"⚠️ Liquidez insuficiente para {target_token} — swap abortado.")
+        warn = f"⚠️ Liquidez insuficiente para {target_token} — abortando."
+        log.warning(warn)
+        if alert: alert.send(warn)
         return
 
-    amt_in = web3.to_wei(config.get("TRADE_SIZE_ETH", 0.02), "ether")
-    path_buy = [weth, target_token]
+    amt_eth = float(config.get("TRADE_SIZE_ETH", 0.02))
+    if amt_eth <= 0:
+        log.error("❌ TRADE_SIZE_ETH inválido — abortando.")
+        return
+    amt_in = web3.to_wei(amt_eth, "ether")
+
+    # Calcula minOut
     try:
-        aout_min = amount_out_min(web3, router, amt_in, path_buy, config["DEFAULT_SLIPPAGE_BPS"])
-        log.info(f"[{_now()}][autopsy] BUY preview via config router: path={path_buy} amount_in_wei={amt_in} min_out={aout_min}")
+        aout_min = amount_out_min(web3, router, amt_in, [weth, target_token], config["DEFAULT_SLIPPAGE_BPS"])
     except Exception as e:
+        log.warning(f"Falha ao calcular minOut: {e}")
         aout_min = None
-        log.warning(f"[{_now()}][autopsy] Falha ao cotar getAmountsOut no router do config: {e}")
 
-    deadline = int(time.time()) + config["TX_DEADLINE_SEC"]
+    # Instancia execução segura
+    exch_client = ExchangeClient()
+    trade_exec = TradeExecutor(exch_client, dry_run=config.get("DRY_RUN", True))
+    risk_mgr = RiskManager(
+        capital_eth=1.0,
+        max_exposure_pct=0.1,
+        max_trades_per_day=10,
+        loss_limit=3,
+        daily_loss_pct_limit=0.15,
+        cooldown_sec=30
+    )
+    safe_exec = SafeTradeExecutor(trade_exec, risk_mgr, dex)
 
-    exch = ExchangeClient()
-    try:
-        internal_router = getattr(exch, "router").address
-    except Exception:
-        internal_router = "<indisponível>"
-    try:
-        rpc_used = getattr(getattr(exch, "web3"), "provider").endpoint_uri
-    except Exception:
-        rpc_used = "<indisponível>"
-    log.info(f"[{_now()}][autopsy] ExchangeClient.router={internal_router} ExchangeClient.RPC={rpc_used}")
+    current_price = get_token_price_in_weth(web3, router, target_token, weth)
+    last_trade_price = None
 
-    # Verifica se o router interno é confiável
-    if internal_router.lower() != router.lower():
-        log.error(f"❌ Roteador interno ({internal_router}) difere do configurado ({router}) — swap abortado.")
-        if alert:
-            alert.send(f"❌ Roteador interno difere do configurado — swap abortado.\nConfig: {router}\nInterno: {internal_router}")
-        return
-
+    # DRY_RUN
     if config.get("DRY_RUN"):
-        msg = (
-            f"[{_now()}][DRY_RUN] Compra NÃO será enviada.\n"
-            f" signer={signer_addr}\n"
-            f" router_config={router}\n"
-            f" router_exchange_client={internal_router}\n"
-            f" path={path_buy}\n"
-            f" amount_in_wei={amt_in}\n"
-            f" min_out={aout_min}\n"
-            f" deadline={deadline}"
-        )
-        log.warning(msg.replace("\n", " | "))
-        if alert:
-            alert.send("🧪 DRY_RUN ativo: compra NÃO será enviada.\n"
-                       f"Router cfg: {router}\nRouter exch: {internal_router}\nAmountIn: {amt_in}\nMinOut: {aout_min}")
+        msg = f"🧪 DRY_RUN: Compra simulada {target_token}, min_out={aout_min}"
+        log.warning(msg)
+        if alert: alert.send(msg)
         return
 
-    try:
-        log.info(f"[{_now()}][buy] Enviando compra: amount_in_wei={amt_in} path={path_buy} deadline={deadline}")
-        buy_tx = exch.buy_token(weth, target_token, amt_in)
-        log.info(f"✅ Compra enviada — TX: {buy_tx}")
-        if alert:
-            alert.send(f"✅ Compra realizada: {target_token}\nTX: {buy_tx}")
-    except Exception as e:
-        log.error(f"❌ Falha na compra: {e}", exc_info=True)
-        if alert:
-            alert.send(f"❌ Falha na compra: {e}")
+    # Compra segura
+    tx = safe_exec.buy(weth, target_token, amt_eth, current_price, last_trade_price)
+    if tx:
+        log.info(f"✅ Compra executada — TX: {tx}")
+        if alert: alert.send(f"✅ Compra realizada: {target_token}\nTX: {tx}")
+    else:
+        warn = f"⚠️ Compra bloqueada pelo RiskManager: {target_token}"
+        log.warning(warn)
+        if alert: alert.send(warn)
         return
 
-    entry_price = get_token_price_in_weth(web3, router, target_token, weth)
-    if not entry_price:
-        log.warning("Não foi possível obter preço inicial")
-        if alert:
-            alert.send("⚠️ Não foi possível obter preço inicial do token.")
-        return
-
+    # Configura TP/SL
+    entry_price = current_price
     take_profit_price = entry_price * (1 + config.get("TAKE_PROFIT_PCT", 0.30))
     trail_pct = config.get("TRAIL_PCT", 0.10)
     highest_price = entry_price
     stop_price = entry_price * (1 - config.get("STOP_LOSS_PCT", 0.15))
 
-    log.info(f"🎯 TP fixo: {take_profit_price:.6f} WETH | 🛑 SL inicial: {stop_price:.6f} WETH | 📈 Trailing: {trail_pct*100:.1f}%")
     if alert:
         alert.send(f"🎯 TP: {take_profit_price:.6f} WETH\n🛑 SL: {stop_price:.6f} WETH\n📈 Trailing: {trail_pct*100:.1f}%")
 
+    # Loop de monitoramento para venda segura
     while True:
-        current_price = get_token_price_in_weth(web3, router, target_token, weth)
-        if not current_price:
+        price = get_token_price_in_weth(web3, router, target_token, weth)
+        if not price:
             time.sleep(1)
             continue
 
-        if current_price > highest_price:
-            highest_price = current_price
+        if price > highest_price:
+            highest_price = price
             stop_price = highest_price * (1 - trail_pct)
+
+        if price >= take_profit_price or price <= stop_price:
+            sell_tx = safe_exec.sell(target_token, weth, amt_eth, price, entry_price)
+            if sell_tx:
+                log.info(f"💰 Venda executada — TX: {sell_tx}")
+                if alert: alert.send(f"💰 Venda realizada: {target_token}\nTX: {sell_tx}")
+            else:
+                warn = f"⚠️ Venda bloqueada pelo RiskManager: {target_token}"
+                log.warning(warn)
+                if alert: alert.send(warn)
+            break
+
+        time.sleep(3)
