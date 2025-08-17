@@ -13,6 +13,8 @@ from telegram.ext import (
 )
 from threading import Thread
 import time
+import datetime
+import uuid
 from web3 import Web3
 
 # --- Importações sniper ---
@@ -92,7 +94,6 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🛠 **Configuração Atual**\n"
         f"{env_summary_text()}"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
-       
     )
     await update.message.reply_text(mensagem, parse_mode="Markdown")
 
@@ -141,11 +142,18 @@ async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- Novos comandos de diagnóstico ---
 async def ping_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Responde 'pong' para confirmar que o bot está online"""
-    await update.message.reply_text("pong 🏓")
+    """Responde 'pong' para confirmar que o bot está online + uptime e hora atual"""
+    uptime_seconds = int(time.time() - context.bot_data.get("start_time", time.time()))
+    uptime_str = str(datetime.timedelta(seconds=uptime_seconds))
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    await update.message.reply_text(
+        f"pong 🏓\n"
+        f"⏱ Uptime: {uptime_str}\n"
+        f"🕒 Agora: {now_str}"
+    )
 
 async def test_notify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Envia uma mensagem de teste para o chat configurado via TELEGRAM_CHAT_ID"""
+    """Envia uma mensagem de teste para o chat configurado via TELEGRAM_CHAT_ID com timestamp e ID único"""
     try:
         chat_id_str = TELEGRAM_CHAT_ID or "0"
         chat_id = int(chat_id_str) if chat_id_str.isdigit() else 0
@@ -153,11 +161,14 @@ async def test_notify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ TELEGRAM_CHAT_ID ausente ou inválido nas variáveis de ambiente.")
             return
 
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        unique_id = str(uuid.uuid4())[:8]
+
         await context.bot.send_message(
             chat_id=chat_id,
-            text="✅ Teste de notificação: seu sniper está pronto para narrar as operações!"
+            text=f"✅ Teste de notificação\n🕒 {timestamp}\n🆔 {unique_id}\n💬 Sniper pronto para narrar as operações!"
         )
-        await update.message.reply_text("Mensagem de teste enviada para o chat configurado.")
+        await update.message.reply_text(f"Mensagem de teste enviada (ID: {unique_id})")
     except Exception as e:
         logging.error(f"Erro no /testnotify: {e}", exc_info=True)
         await update.message.reply_text(f"⚠️ Erro ao enviar mensagem: {e}")
@@ -227,6 +238,9 @@ if __name__ == "__main__":
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
     async def start_bot():
+        # guarda o start_time para cálculo de uptime no /ping
+        application.bot_data["start_time"] = time.time()
+
         await application.initialize()
         await application.start()
         # Registra o “menu /” do Telegram com todos os comandos
