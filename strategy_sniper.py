@@ -43,7 +43,7 @@ def amount_out_min(router_contract, amount_in_wei, path, slippage_bps):
     return math.floor(out * (1 - slippage_bps / 10_000))
 
 def get_token_price_in_weth(router_contract, token, weth):
-    amt_in = 10 ** 18
+    amt_in = 10 ** 18  # 1 token (em 18 decimais) para cotação inversa token->WETH
     path = [token, weth]
     try:
         out = router_contract.functions.getAmountsOut(amt_in, path).call()[-1]
@@ -70,8 +70,17 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
 
     log.info(f"[{_now()}] Novo par detectado — DEX={dex_info['name']} — CHAIN_ID={config.get('CHAIN_ID')}")
     log.info(f"Roteador={router_addr} WETH={weth} signer={signer_addr}")
-    notify(f"🚀 Novo par detectado em {dex_info['name']}\nPair: {pair_addr}\nSigner: {signer_addr}")
 
+    # Notificação inicial
+    if bot:
+        await bot.send_message(
+            chat_id=config["TELEGRAM_CHAT_ID"],
+            text=f"🚀 Novo par detectado em {dex_info['name']}\nPair: {pair_addr}\nSigner: {signer_addr}"
+        )
+    else:
+        notify(f"🚀 Novo par detectado em {dex_info['name']}\nPair: {pair_addr}\nSigner: {signer_addr}")
+
+    # Sanidade do roteador
     if len(web3.eth.get_code(router_addr)) == 0:
         msg = f"❌ Roteador {router_addr} não implantado — abortando."
         log.error(msg)
@@ -79,13 +88,15 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         notify(msg)
         return
 
+    # Determina o token alvo (não-WETH)
     target_token = Web3.to_checksum_address(token1 if token0.lower() == weth.lower() else token0)
     if alert:
         alert.send(f"🚀 Par detectado\nPair: {pair_addr}")
 
-    # DexClient já recebe router específico
+    # Cliente da DEX (por roteador específico)
     dex = DexClient(web3, router_addr)
 
+    # Segurança: honeypot
     if dex.is_honeypot(target_token, weth):
         warn = f"⚠️ Token {target_token} parece honeypot — abortando."
         log.warning(warn)
@@ -93,6 +104,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         notify(warn)
         return
 
+    # Checagem de liquidez mínima
     if not dex.has_min_liquidity(target_token, weth, min_liq_weth=config.get("MIN_LIQ_WETH", 0.5)):
         warn = f"⚠️ Liquidez insuficiente para {target_token} — abortando."
         log.warning(warn)
@@ -100,6 +112,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         notify(warn)
         return
 
+    # Tamanho da ordem
     amt_eth = float(config.get("TRADE_SIZE_ETH", 0.02))
     if amt_eth <= 0:
         msg = "❌ TRADE_SIZE_ETH inválido — abortando."
@@ -108,12 +121,15 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         return
     amt_in = web3.to_wei(amt_eth, "ether")
 
+    # Slippage padronizado
     try:
-        aout_min = amount_out_min(router_contract, amt_in, [weth, target_token], config["DEFAULT_SLIPPAGE_BPS"])
+        slippage_bps = config.get("SLIPPAGE_BPS", config.get("DEFAULT_SLIPPAGE_BPS", 100))
+        aout_min = amount_out_min(router_contract, amt_in, [weth, target_token], slippage_bps)
     except Exception as e:
         log.warning(f"Falha ao calcular minOut: {e}")
         aout_min = None
 
+    # Infra de execução
     exch_client = ExchangeClient()
     trade_exec = TradeExecutor(exch_client, dry_run=config.get("DRY_RUN", True))
     risk_mgr = RiskManager(
@@ -127,6 +143,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
     )
     safe_exec = SafeTradeExecutor(trade_exec, risk_mgr, dex)
 
+    # Preço atual
     current_price = get_token_price_in_weth(router_contract, target_token, weth)
     if current_price is None or current_price <= 0:
         msg = f"⚠️ Preço inválido para {target_token}, abortando."
@@ -135,6 +152,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         notify(msg)
         return
 
+    # Modo simulado
     if config.get("DRY_RUN"):
         msg = f"🧪 DRY_RUN: Compra simulada {target_token}, min_out={aout_min}"
         log.warning(msg)
@@ -142,6 +160,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         notify(msg)
         return
 
+    # Execução de compra (protegida)
     tx = safe_exec.buy(weth, target_token, amt_eth, current_price, None)
     if tx:
         msg = f"✅ Compra realizada: {target_token}\nTX: {tx}"
@@ -155,6 +174,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         notify(warn)
         return
 
+    # Gestão de posição: TP, SL e trailing
     entry_price = current_price
     take_profit_price = entry_price * (1 + config.get("TAKE_PROFIT_PCT", 0.30))
     trail_pct = config.get("TRAIL_PCT", 0.10)
@@ -170,7 +190,10 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         alert.send(tp_sl_msg)
     notify(tp_sl_msg)
 
-    while True:
+    # Loop de monitoramento com escape se sniper parar
+    from discovery import is_discovery_running
+    sold = False
+    while is_discovery_running():
         price = get_token_price_in_weth(router_contract, target_token, weth)
         if not price:
             await asyncio.sleep(1)
@@ -187,6 +210,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
                 log.info(f"💰 Venda executada — TX: {sell_tx}")
                 if alert: alert.send(msg)
                 notify(msg)
+                sold = True
             else:
                 warn = f"⚠️ Venda bloqueada pelo RiskManager: {target_token}"
                 log.warning(warn)
@@ -195,3 +219,10 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
             break
 
         await asyncio.sleep(3)
+
+    # Caso o sniper seja parado antes da venda
+    if not sold and not is_discovery_running():
+        msg = f"⏹ Monitoramento encerrado para {target_token} (sniper parado)."
+        log.info(msg)
+        if alert: alert.send(msg)
+        notify(msg)
