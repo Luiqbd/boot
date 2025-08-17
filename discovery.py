@@ -1,5 +1,6 @@
 import time
 import logging
+import asyncio
 from web3 import Web3
 from config import config
 from telegram import Bot
@@ -10,7 +11,14 @@ bot_notify = Bot(token=config["TELEGRAM_TOKEN"])
 def notify(msg: str):
     """Envia mensagem para o chat configurado no Telegram."""
     try:
-        bot_notify.send_message(chat_id=config["TELEGRAM_CHAT_ID"], text=msg)
+        loop = asyncio.get_event_loop()
+        asyncio.run_coroutine_threadsafe(
+            bot_notify.send_message(
+                chat_id=config["TELEGRAM_CHAT_ID"],
+                text=msg
+            ),
+            loop
+        )
     except Exception as e:
         logger.error(f"Erro ao enviar notificação: {e}")
 
