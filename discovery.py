@@ -151,7 +151,7 @@ def run_discovery(callback_on_pair, loop):
     # === Lista de tokens-base aceitos (ETH nativo == WETH) ===
     BASE_TOKENS = {
         safe_checksum(config["WETH"]): "WETH",
-        safe_checksum(config["usdc"].split("=")[1]): "USDC"
+        safe_checksum(config["USDC"]): "USDC"
     }
 
     min_weth_wei = web3.to_wei(config.get("MIN_LIQ_WETH", 1.0), "ether")
