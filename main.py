@@ -21,6 +21,7 @@ from web3 import Web3
 from check_balance import get_wallet_status
 from strategy_sniper import on_new_pair
 from discovery import run_discovery, stop_discovery, get_discovery_status
+from config import config  # import para acessar config["DEXES"]
 
 # --- Configuração de log ---
 logging.basicConfig(
@@ -85,14 +86,17 @@ def iniciar_sniper():
         logging.info("⚠️ O sniper já está rodando.")
         return
 
-    logging.info("⚙️ Iniciando sniper... Monitorando novos pares com liquidez.")
+    logging.info("⚙️ Iniciando sniper... Monitorando novos pares com liquidez em todas as DEX configuradas.")
 
     def start_sniper():
         try:
-            run_discovery(
-                lambda pair, t0, t1: on_new_pair(pair, t0, t1, bot=application.bot),
-                loop
-            )
+            # Para cada DEX no config, iniciar discovery
+            for dex_info in config["DEXES"]:
+                run_discovery(
+                    lambda pair, t0, t1, d=dex_info: on_new_pair(d, pair, t0, t1, bot=application.bot),
+                    loop,
+                    dex_info  # opcional: passar para run_discovery identificar qual factory
+                )
         except Exception as e:
             logging.error(f"Erro no sniper: {e}", exc_info=True)
 
@@ -101,71 +105,6 @@ def iniciar_sniper():
 
 def parar_sniper():
     stop_discovery(loop)
-
-# --- Handlers ---
-async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    mensagem = (
-        "🎯 **Bem-vindo ao Sniper Bot Criado por Luis Fernando**\n\n"
-        "📌 **Comandos disponíveis**\n"
-        "🟢 /snipe — Inicia o sniper e começa a monitorar.\n"
-        "🔴 /stop — Para o sniper imediatamente.\n"
-        "📈 /sniperstatus — Consulta status do sniper.\n"
-        "💰 /status  — Mostra saldo ETH/WETH.\n"
-        "🏓 /ping — Confirma se o bot está online.\n"
-        "🛰️ /testnotify — Envia mensagem de teste para o chat configurado.\n"
-        "📜 /menu — Reexibe esta mensagem.\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "🛠 **Configuração Atual**\n"
-        f"{env_summary_text()}"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
-    )
-    await update.message.reply_text(mensagem, parse_mode="Markdown")
-
-async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await start_cmd(update, context)
-
-async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        wallet_address = context.args[0] if context.args else None
-        status = get_wallet_status(wallet_address)
-        await update.message.reply_text(status)
-    except Exception as e:
-        logging.error(f"Erro no /status: {e}", exc_info=True)
-        await update.message.reply_text("⚠️ Erro ao verificar o status da carteira.")
-
-async def snipe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if sniper_thread and sniper_thread.is_alive():
-        await update.message.reply_text("⚠️ O sniper já está rodando.")
-        return
-
-    await update.message.reply_text("⚙️ Iniciando sniper... Monitorando novos pares com liquidez.")
-    iniciar_sniper()
-
-async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    parar_sniper()
-    await update.message.reply_text("🛑 Sniper interrompido.")
-
-async def sniper_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        status = get_discovery_status()
-        await update.message.reply_text(status["text"])
-    except Exception as e:
-        logging.error(f"Erro no /sniperstatus: {e}", exc_info=True)
-        await update.message.reply_text("⚠️ Erro ao verificar o status do sniper.")
-
-async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"Você disse: {update.message.text}")
-
-# --- Novos comandos de diagnóstico ---
-async def ping_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uptime_seconds = int(time.time() - context.bot_data.get("start_time", time.time()))
-    uptime_str = str(datetime.timedelta(seconds=uptime_seconds))
-    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    await update.message.reply_text(
-        f"pong 🏓\n"
-        f"⏱ Uptime: {uptime_str}\n"
-        f"🕒 Agora: {now_str}"
-    )
 
 async def test_notify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -263,6 +202,15 @@ if __name__ == "__main__":
             BotCommand("ping", "Teste de vida (pong)"),
             BotCommand("testnotify", "Envia uma notificação de teste")
         ])
+
+        # Log informativo: DEX monitoradas (usa config["DEXES"] definido no config.py)
+        try:
+            from config import config as _cfg
+            dex_lines = [f"- {d['name']} | type={d['type']} | factory={d['factory']} | router={d['router']}" for d in _cfg.get("DEXES", [])]
+            if dex_lines:
+                logging.info("🔎 DEX monitoradas:\n" + "\n".join(dex_lines))
+        except Exception as e:
+            logging.warning(f"Não foi possível listar DEXES no startup: {e}")
 
     loop.create_task(start_bot())
     flask_thread = Thread(target=start_flask, daemon=True)
