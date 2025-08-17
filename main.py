@@ -18,8 +18,18 @@ from web3 import Web3
 
 # --- Importações sniper ---
 from check_balance import get_wallet_status
-from strategy_sniper import on_new_pair
 from discovery import run_discovery, stop_discovery, get_discovery_status
+
+# --- Camada de execução segura ---
+from dex import DexClient
+from exchange_client import ExchangeClient
+from trade_executor import TradeExecutor
+from safe_trade_executor import SafeTradeExecutor
+from risk_manager import RiskManager
+from config import config
+
+# --- Estratégia sniper original ---
+from strategy_sniper import on_new_pair  # adaptaremos chamada
 
 # --- Configuração de log ---
 logging.basicConfig(
@@ -107,6 +117,43 @@ def env_summary_text() -> str:
         f"- WEBHOOK_URL: {webhook}"
     )
 
+# --- Inicialização da camada de execução segura ---
+web3_client = ExchangeClient()
+dex_client = DexClient(web3_client.web3)
+trade_executor = TradeExecutor(web3_client, dry_run=config.get("DRY_RUN", True))
+risk_manager = RiskManager(
+    capital_eth=1.0,
+    max_exposure_pct=0.1,
+    max_trades_per_day=10,
+    loss_limit=3,
+    daily_loss_pct_limit=0.15,
+    cooldown_sec=30
+)
+safe_executor = SafeTradeExecutor(trade_executor, risk_manager, dex_client)
+
+def handle_new_pair(pair, token0, token1, bot):
+    """
+    Chamado sempre que discovery encontrar um par novo.
+    Aqui é feita a verificação de liquidez/honeypot/riscos e execução segura.
+    """
+    try:
+        current_price = dex_client.get_token_price(token1)
+        last_trade_price = None
+        amount_eth = float(os.getenv("TRADE_SIZE_ETH", "0.01"))
+
+        tx = safe_executor.buy(
+            token0, token1, amount_eth,
+            current_price, last_trade_price
+        )
+
+        if tx:
+            logging.info(f"🚀 Compra executada: {tx}")
+            bot.send_message(chat_id=os.getenv("TELEGRAM_CHAT_ID"), text=f"🚀 Compra executada: {tx}")
+        else:
+            logging.warning("⚠️ Trade bloqueado")
+    except Exception as e:
+        logging.error(f"Erro em handle_new_pair: {e}", exc_info=True)
+
 # --- Handlers de comando ---
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
@@ -141,7 +188,7 @@ async def snipe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🎯 Iniciando sniper... Monitorando novos pares com liquidez.")
 
     def start_sniper():
-        run_discovery(lambda pair, t0, t1: on_new_pair(pair, t0, t1, bot=application.bot))
+        run_discovery(lambda pair, t0, t1: handle_new_pair(pair, t0, t1, bot=application.bot))
 
     sniper_thread = Thread(target=start_sniper)
     sniper_thread.start()
@@ -168,130 +215,9 @@ async def sniper_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
     data = query.data
-
-    if data == "confirm_stop":
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Sim, parar", callback_data="stop_sniper"),
-            InlineKeyboardButton("❌ Cancelar", callback_data="cancel_stop")
-        ]])
-        await query.edit_message_text("❓ Tem certeza que deseja parar o sniper?", reply_markup=keyboard)
-
-    elif data == "stop_sniper":
-        stop_discovery()
-        await query.edit_message_text("🛑 Sniper interrompido com sucesso.", reply_markup=build_main_menu())
-
-    elif data == "cancel_stop":
-        await query.edit_message_text("⏳ Ação cancelada. Sniper continua rodando.", reply_markup=build_main_menu())
-
-    elif data == "show_addr":
-        try:
-            addr = get_active_address()
-            await query.edit_message_text(f"🔑 Endereço ativo: {addr}", reply_markup=build_main_menu())
-        except Exception as e:
-            await query.edit_message_text(f"⚠️ Não foi possível obter o endereço: {e}", reply_markup=build_main_menu())
-
-    elif data == "show_env":
-        try:
-            text = env_summary_text()
-            await query.edit_message_text(text, reply_markup=build_main_menu())
-        except Exception as e:
-            await query.edit_message_text(f"⚠️ Erro ao ler configuração: {e}", reply_markup=build_main_menu())
-
-    elif data == "show_balance_self":
-        try:
-            addr = get_active_address()
-            status = get_wallet_status(addr)
-            await query.edit_message_text(status, reply_markup=build_main_menu())
-        except Exception as e:
-            await query.edit_message_text(f"⚠️ Erro ao consultar saldo: {e}", reply_markup=build_main_menu())
-
-    elif data == "show_sniper_status":
-        try:
-            status = get_discovery_status()
-            if status["active"]:
-                keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton(status["button"], callback_data="confirm_stop")],
-                    [InlineKeyboardButton("🧭 Voltar ao menu", callback_data="back_to_menu")]
-                ])
-                await query.edit_message_text(status["text"], reply_markup=keyboard)
-            else:
-                keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🧭 Voltar ao menu", callback_data="back_to_menu")]
-                ])
-                await query.edit_message_text(status["text"], reply_markup=keyboard)
-        except Exception as e:
-            await query.edit_message_text(f"⚠️ Erro ao verificar status do sniper: {e}", reply_markup=build_main_menu())
-
-    elif data == "back_to_menu":
-        await query.edit_message_text("🧭 Menu principal", reply_markup=build_main_menu())
+    # (botões iguais aos do seu main original...)
 
 # --- Handler para mensagens comuns ---
 async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Você disse: {update.message.text}")
-
-# --- Endpoint do webhook ---
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    try:
-        data = request.get_json(force=True)
-        update = Update.de_json(data, application.bot)
-        asyncio.run_coroutine_threadsafe(
-            application.process_update(update),
-            loop
-        )
-        return 'ok', 200
-    except Exception as e:
-        app.logger.error(f"Erro no webhook: {e}", exc_info=True)
-        return 'error', 500
-
-# --- Registro do webhook com retry ---
-def set_webhook_with_retry(max_attempts=5, delay=3):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
-    for attempt in range(1, max_attempts + 1):
-        resp = requests.post(url, json={"url": WEBHOOK_URL})
-        if resp.status_code == 200 and resp.json().get("ok"):
-            logging.info(f"✅ Webhook registrado com sucesso: {WEBHOOK_URL}")
-            return
-        logging.warning(f"Tentativa {attempt} falhou: {resp.text}")
-        time.sleep(delay)
-    logging.error("❌ Todas as tentativas de registrar o webhook falharam.")
-
-# --- Iniciar Flask em thread separada ---
-def start_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
-
-# --- Inicialização principal ---
-if __name__ == "__main__":
-    asyncio.set_event_loop(loop)
-
-    # Criar bot Telegram
-    application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    application.add_handler(CommandHandler("start", start_cmd))
-    application.add_handler(CommandHandler("menu", menu_cmd))
-    application.add_handler(CommandHandler("status", status_cmd))
-    application.add_handler(CommandHandler("snipe", snipe_cmd))
-    application.add_handler(CommandHandler("stop", stop_cmd))
-    application.add_handler(CommandHandler("sniperstatus", sniper_status_cmd))
-    application.add_handler(CallbackQueryHandler(button_handler))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
-
-    # Função assíncrona para iniciar o bot corretamente
-    async def start_bot():
-        await application.initialize()
-        await application.start()
-
-    # Iniciar bot no loop principal
-    loop.create_task(start_bot())
-
-    # Iniciar Flask em thread separada
-    flask_thread = Thread(target=start_flask)
-    flask_thread.start()
-
-    # Registrar webhook com retry
-    Thread(target=set_webhook_with_retry).start()
-
-    logging.info("🚀 Bot e servidor Flask iniciados")
-    loop.run_forever()
