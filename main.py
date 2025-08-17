@@ -95,7 +95,7 @@ def iniciar_sniper():
                 run_discovery(
                     lambda pair, t0, t1, d=dex_info: on_new_pair(d, pair, t0, t1, bot=application.bot),
                     loop,
-                    dex_info  # opcional: passar para run_discovery identificar qual factory
+                    dex_info  # se o seu run_discovery aceitar metadados; caso contrário, remova este argumento
                 )
         except Exception as e:
             logging.error(f"Erro no sniper: {e}", exc_info=True)
@@ -105,6 +105,69 @@ def iniciar_sniper():
 
 def parar_sniper():
     stop_discovery(loop)
+
+# --- Handlers principais ---
+async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    mensagem = (
+        "🎯 **Bem-vindo ao Sniper Bot Criado por Luis Fernando**\n\n"
+        "📌 **Comandos disponíveis**\n"
+        "🟢 /snipe — Inicia o sniper.\n"
+        "🔴 /stop — Para o sniper.\n"
+        "📈 /sniperstatus — Status do sniper.\n"
+        "💰 /status — Mostra saldo ETH/WETH.\n"
+        "🏓 /ping — Teste de vida.\n"
+        "🛰️ /testnotify — Mensagem de teste.\n"
+        "📜 /menu — Reexibe este menu.\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🛠 **Configuração Atual**\n"
+        f"{env_summary_text()}"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+    )
+    await update.message.reply_text(mensagem, parse_mode="Markdown")
+
+async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await start_cmd(update, context)
+
+async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        wallet_address = context.args[0] if context.args else None
+        status = get_wallet_status(wallet_address)
+        await update.message.reply_text(status)
+    except Exception as e:
+        logging.error(f"Erro no /status: {e}", exc_info=True)
+        await update.message.reply_text("⚠️ Erro ao verificar o status da carteira.")
+
+async def snipe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if sniper_thread and sniper_thread.is_alive():
+        await update.message.reply_text("⚠️ O sniper já está rodando.")
+        return
+    await update.message.reply_text("⚙️ Iniciando sniper... Monitorando novos pares com liquidez.")
+    iniciar_sniper()
+
+async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    parar_sniper()
+    await update.message.reply_text("🛑 Sniper interrompido.")
+
+async def sniper_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        status = get_discovery_status()
+        await update.message.reply_text(status["text"])
+    except Exception as e:
+        logging.error(f"Erro no /sniperstatus: {e}", exc_info=True)
+        await update.message.reply_text("⚠️ Erro ao verificar o status do sniper.")
+
+async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"Você disse: {update.message.text}")
+
+async def ping_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uptime_seconds = int(time.time() - context.bot_data.get("start_time", time.time()))
+    uptime_str = str(datetime.timedelta(seconds=uptime_seconds))
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    await update.message.reply_text(
+        f"pong 🏓\n"
+        f"⏱ Uptime: {uptime_str}\n"
+        f"🕒 Agora: {now_str}"
+    )
 
 async def test_notify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -203,10 +266,9 @@ if __name__ == "__main__":
             BotCommand("testnotify", "Envia uma notificação de teste")
         ])
 
-        # Log informativo: DEX monitoradas (usa config["DEXES"] definido no config.py)
+        # Log informativo: DEX monitoradas
         try:
-            from config import config as _cfg
-            dex_lines = [f"- {d['name']} | type={d['type']} | factory={d['factory']} | router={d['router']}" for d in _cfg.get("DEXES", [])]
+            dex_lines = [f"- {d['name']} | type={d['type']} | factory={d['factory']} | router={d['router']}" for d in config.get("DEXES", [])]
             if dex_lines:
                 logging.info("🔎 DEX monitoradas:\n" + "\n".join(dex_lines))
         except Exception as e:
