@@ -1,131 +1,119 @@
 from web3 import Web3
-from dotenv import load_dotenv
-import os
-import json
-import logging
-import datetime
 from eth_account import Account
-from config import config  # usa o mesmo config global para DRY_RUN e afins
+from decimal import Decimal
 
-load_dotenv()
-log = logging.getLogger("exchange")
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
+WETH = Web3.to_checksum_address(config["WETH"])
 
-def _now():
-    return datetime.datetime.now().isoformat(timespec="seconds")
+def _to_wei_eth(web3, amount_eth):
+    return web3.to_wei(Decimal(str(amount_eth)), "ether")
+
+def _is_empty_code(code) -> bool:
+    return code is None or len(code) == 0
 
 class ExchangeClient:
     def __init__(self):
         self.web3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
-        self.wallet = config.get("WALLET_ADDRESS")
-        self.private_key = config.get("PRIVATE_KEY")
+        self.private_key = config["PRIVATE_KEY"]
+        self.wallet = Account.from_key(self.private_key).address  # derivado da chave
 
-        if not self.wallet or not self.private_key:
-            raise ValueError("❌ WALLET_ADDRESS ou PRIVATE_KEY não definidos no ambiente.")
+        # opcional: validar contra WALLET_ADDRESS se fornecido
+        env_wallet = (config.get("WALLET_ADDRESS") or "").strip()
+        if env_wallet:
+            if Web3.to_checksum_address(env_wallet) != Web3.to_checksum_address(self.wallet):
+                raise ValueError("WALLET_ADDRESS difere do endereço da PRIVATE_KEY")
 
-        signer_addr = Account.from_key(self.private_key).address
-        log.warning(f"[{_now()}][autopsy][ExchangeClient.__init__] RPC={self.web3.provider.endpoint_uri}")
-        log.warning(f"[{_now()}][autopsy][ExchangeClient.__init__] signer={signer_addr}")
-
-        # Usa router da config (BaseSwap ou outro legítimo)
         self.router_address = Web3.to_checksum_address(config["DEX_ROUTER"])
-        log.warning(f"[{_now()}][autopsy][ExchangeClient.__init__] router_address(CONFIG)={self.router_address}")
-
-        # Verifica se o contrato está implantado
         code = self.web3.eth.get_code(self.router_address)
-        if code == b'0x':
-            raise ValueError(f"❌ Roteador {self.router_address} não está implantado na rede.")
+        if _is_empty_code(code):
+            raise ValueError(f"Roteador {self.router_address} não implantado")
 
-        try:
-            with open("abi/uniswap_router.json") as f:
-                self.router_abi = json.load(f)
-            with open("abi/erc20.json") as f:
-                self.erc20_abi = json.load(f)
-        except Exception as e:
-            raise FileNotFoundError(f"❌ Erro ao carregar arquivos ABI: {e}")
+        # Paths de ABI unificados
+        with open("abis/uniswap_router.json") as f:
+            self.router_abi = json.load(f)
+        with open("abis/erc20.json") as f:
+            self.erc20_abi = json.load(f)
 
         self.router = self.web3.eth.contract(address=self.router_address, abi=self.router_abi)
 
-    def approve_token(self, token_address, amount_wei):
-        try:
-            log.warning(f"[{_now()}][autopsy][approve_token] token={token_address} amount_wei={amount_wei} spender={self.router_address}")
-            if config.get("DRY_RUN"):
-                log.warning(f"[{_now()}][DRY_RUN] Aprovação NÃO enviada")
-                return {"dry_run": True}
+    def _gas_params(self):
+        # EIP-1559: ajuste conforme rede Base
+        base_fee = self.web3.eth.gas_price  # fallback simples
+        return {
+            "maxFeePerGas": int(base_fee * 2),
+            "maxPriorityFeePerGas": int(base_fee * 0.1),
+        }
 
-            token = self.web3.eth.contract(address=token_address, abi=self.erc20_abi)
-            tx = token.functions.approve(self.router_address, amount_wei).build_transaction({
-                "from": self.wallet,
-                "gas": 100000,
-                "gasPrice": self.web3.to_wei("5", "gwei"),
-                "nonce": self.web3.eth.get_transaction_count(self.wallet),
-            })
-            log.warning(f"[{_now()}][approve_token] tx.to={tx['to']} nonce={tx['nonce']} gas={tx['gas']} gasPrice={tx['gasPrice']}")
+    def _nonce(self):
+        return self.web3.eth.get_transaction_count(self.wallet, "pending")
 
-            signed_tx = self.web3.eth.account.sign_transaction(tx, self.private_key)
-            tx_hash = self.web3.eth.send_raw_transaction(signed_tx.rawTransaction)
-            log.info(f"✅ Token aprovado: {token_address} | TX: {self.web3.to_hex(tx_hash)}")
-            return self.web3.to_hex(tx_hash)
-        except Exception as e:
-            log.error(f"❌ Erro ao aprovar token: {e}", exc_info=True)
-            raise
+    def _amount_out_min(self, amount_in_wei, path):
+        amounts = self.router.functions.getAmountsOut(amount_in_wei, path).call()
+        expected = amounts[-1]
+        bps = int(config["DEFAULT_SLIPPAGE_BPS"])
+        min_out = int(expected * (1 - bps / 10_000))
+        if min_out <= 0:
+            raise ValueError("amountOutMin calculado <= 0")
+        return min_out, expected
 
-    def buy_token(self, token_in, token_out, amount_in_wei, amount_out_min=0):
-        try:
-            log.warning(f"[{_now()}][autopsy][buy_token] token_in={token_in} token_out={token_out} amount_in_wei={amount_in_wei} router={self.router_address}")
-            if config.get("DRY_RUN"):
-                log.warning(f"[{_now()}][DRY_RUN] Compra NÃO enviada")
-                return {"dry_run": True}
+    def approve_token(self, token_address, amount_base_units):
+        token_address = Web3.to_checksum_address(token_address)
+        if config.get("DRY_RUN"):
+            return "0xDRYRUN"
 
-            deadline = self.web3.eth.get_block("latest")["timestamp"] + config.get("TX_DEADLINE_SEC", 300)
-            tx = self.router.functions.swapExactETHForTokens(
-                amount_out_min,
-                [token_in, token_out],
-                self.wallet,
-                deadline
-            ).build_transaction({
-                "from": self.wallet,
-                "value": amount_in_wei,
-                "gas": 300000,
-                "gasPrice": self.web3.to_wei("5", "gwei"),
-                "nonce": self.web3.eth.get_transaction_count(self.wallet),
-            })
-            log.warning(f"[{_now()}][buy_token] tx.to={tx['to']} nonce={tx['nonce']} gas={tx['gas']} gasPrice={tx['gasPrice']} value={tx['value']}")
+        token = self.web3.eth.contract(address=token_address, abi=self.erc20_abi)
+        allowance = token.functions.allowance(self.wallet, self.router_address).call()
+        if allowance >= amount_base_units:
+            return "0xALLOWOK"
 
-            signed_tx = self.web3.eth.account.sign_transaction(tx, self.private_key)
-            tx_hash = self.web3.eth.send_raw_transaction(signed_tx.rawTransaction)
-            return self.web3.to_hex(tx_hash)
-        except Exception as e:
-            log.error(f"❌ Erro na compra: {e}", exc_info=True)
-            raise
+        tx = token.functions.approve(self.router_address, amount_base_units).build_transaction({
+            "from": self.wallet,
+            **self._gas_params(),
+            "nonce": self._nonce(),
+        })
+        tx["gas"] = int(self.web3.eth.estimate_gas(tx) * 1.2)
+        signed = self.web3.eth.account.sign_transaction(tx, self.private_key)
+        return self.web3.to_hex(self.web3.eth.send_raw_transaction(signed.rawTransaction))
 
-    def sell_token(self, token_in, token_out, amount_in_wei, amount_out_min=0):
-        try:
-            log.warning(f"[{_now()}][autopsy][sell_token] token_in={token_in} token_out={token_out} amount_in_wei={amount_in_wei} router={self.router_address}")
-            if config.get("DRY_RUN"):
-                log.warning(f"[{_now()}][DRY_RUN] Venda NÃO enviada")
-                return {"dry_run": True}
+    def buy_token(self, token_in_weth, token_out, amount_in_wei, amount_out_min=None):
+        token_out = Web3.to_checksum_address(token_out)
+        path = [WETH, token_out]
+        if amount_out_min in (None, 0):
+            amount_out_min, _ = self._amount_out_min(amount_in_wei, path)
 
-            self.approve_token(token_in, amount_in_wei)
-            deadline = self.web3.eth.get_block("latest")["timestamp"] + config.get("TX_DEADLINE_SEC", 300)
+        if config.get("DRY_RUN"):
+            return "0xDRYRUN"
 
-            tx = self.router.functions.swapExactTokensForETH(
-                amount_in_wei,
-                amount_out_min,
-                [token_in, token_out],
-                self.wallet,
-                deadline
-            ).build_transaction({
-                "from": self.wallet,
-                "gas": 300000,
-                "gasPrice": self.web3.to_wei("5", "gwei"),
-                "nonce": self.web3.eth.get_transaction_count(self.wallet),
-            })
-            log.warning(f"[{_now()}][sell_token] tx.to={tx['to']} nonce={tx['nonce']} gas={tx['gas']} gasPrice={tx['gasPrice']}")
+        deadline = self.web3.eth.get_block("latest")["timestamp"] + config.get("TX_DEADLINE_SEC", 300)
+        tx = self.router.functions.swapExactETHForTokens(
+            amount_out_min, path, self.wallet, deadline
+        ).build_transaction({
+            "from": self.wallet,
+            "value": amount_in_wei,
+            **self._gas_params(),
+            "nonce": self._nonce(),
+        })
+        tx["gas"] = int(self.web3.eth.estimate_gas(tx) * 1.2)
+        signed = self.web3.eth.account.sign_transaction(tx, self.private_key)
+        return self.web3.to_hex(self.web3.eth.send_raw_transaction(signed.rawTransaction))
 
-            signed_tx = self.web3.eth.account.sign_transaction(tx, self.private_key)
-            tx_hash = self.web3.eth.send_raw_transaction(signed_tx.rawTransaction)
-            return self.web3.to_hex(tx_hash)
-        except Exception as e:
-            log.error(f"❌ Erro na venda: {e}", exc_info=True)
-            raise
+    def sell_token(self, token_in, token_out_weth, amount_in_base_units, amount_out_min=None):
+        token_in = Web3.to_checksum_address(token_in)
+        path = [token_in, WETH]
+        if amount_out_min in (None, 0):
+            amount_out_min, _ = self._amount_out_min(amount_in_base_units, path)
+
+        if config.get("DRY_RUN"):
+            return "0xDRYRUN"
+
+        self.approve_token(token_in, amount_in_base_units)
+        deadline = self.web3.eth.get_block("latest")["timestamp"] + config.get("TX_DEADLINE_SEC", 300)
+        tx = self.router.functions.swapExactTokensForETH(
+            amount_in_base_units, amount_out_min, path, self.wallet, deadline
+        ).build_transaction({
+            "from": self.wallet,
+            **self._gas_params(),
+            "nonce": self._nonce(),
+        })
+        tx["gas"] = int(self.web3.eth.estimate_gas(tx) * 1.2)
+        signed = self.web3.eth.account.sign_transaction(tx, self.private_key)
+        return self.web3.to_hex(self.web3.eth.send_raw_transaction(signed.rawTransaction))
