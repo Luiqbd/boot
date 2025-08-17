@@ -24,6 +24,33 @@ def notify(msg: str):
     except Exception as e:
         log.error(f"Erro ao enviar notificação: {e}")
 
+# === Envio seguro de mensagens (funciona com ou sem loop ativo) ===
+def safe_notify(alert: TelegramAlert | None, msg: str, loop: asyncio.AbstractEventLoop | None = None):
+    """
+    Envia a mensagem via TelegramAlert (assíncrono) e também via notify() (sincrônico).
+    - Se um loop for fornecido e estiver rodando, agenda thread-safe.
+    - Caso estejamos dentro de um loop (get_running_loop), agenda via create_task.
+    - Caso contrário, cria um loop novo com asyncio.run.
+    """
+    if alert:
+        try:
+            coro = alert._send_async(msg)  # usa o pipeline de chunk + retries do TelegramAlert
+            if loop and loop.is_running():
+                asyncio.run_coroutine_threadsafe(coro, loop)
+            else:
+                try:
+                    running_loop = asyncio.get_running_loop()
+                    running_loop.create_task(coro)
+                except RuntimeError:
+                    asyncio.run(coro)
+        except Exception as e:
+            log.error(f"Falha ao agendar envio para alerta Telegram: {e}", exc_info=True)
+    # Envia também pelo notificador básico (chamada síncrona)
+    try:
+        notify(msg)
+    except Exception as e:
+        log.error(f"Falha no notify(): {e}", exc_info=True)
+
 ROUTER_ABI = [{
     "name": "getAmountsOut",
     "type": "function",
@@ -54,7 +81,11 @@ def get_token_price_in_weth(router_contract, token, weth):
 
 async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
     """
-    dex_info: dict com campos name, router, factory, type
+    Handler principal para novo par detectado.
+    - dex_info: dict com campos name, router, factory, type
+    - pair_addr, token0, token1: endereços
+    - bot: instância do Bot (opcional)
+    - loop: event loop associado ao bot (opcional)
     """
     web3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
     weth = config["WETH"]
@@ -72,26 +103,18 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
     log.info(f"Roteador={router_addr} WETH={weth} signer={signer_addr}")
 
     # Notificação inicial
-    if bot:
-        await bot.send_message(
-            chat_id=config["TELEGRAM_CHAT_ID"],
-            text=f"🚀 Novo par detectado em {dex_info['name']}\nPair: {pair_addr}\nSigner: {signer_addr}"
-        )
-    else:
-        notify(f"🚀 Novo par detectado em {dex_info['name']}\nPair: {pair_addr}\nSigner: {signer_addr}")
+    safe_notify(alert, f"🚀 Novo par detectado em {dex_info['name']}\nPair: {pair_addr}\nSigner: {signer_addr}", loop)
 
     # Sanidade do roteador
     if len(web3.eth.get_code(router_addr)) == 0:
         msg = f"❌ Roteador {router_addr} não implantado — abortando."
         log.error(msg)
-        if alert: alert.send(msg)
-        notify(msg)
+        safe_notify(alert, msg, loop)
         return
 
     # Determina o token alvo (não-WETH)
     target_token = Web3.to_checksum_address(token1 if token0.lower() == weth.lower() else token0)
-    if alert:
-        alert.send(f"🚀 Par detectado\nPair: {pair_addr}")
+    safe_notify(alert, f"🚀 Par detectado\nPair: {pair_addr}", loop)
 
     # Cliente da DEX (por roteador específico)
     dex = DexClient(web3, router_addr)
@@ -100,16 +123,14 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
     if dex.is_honeypot(target_token, weth):
         warn = f"⚠️ Token {target_token} parece honeypot — abortando."
         log.warning(warn)
-        if alert: alert.send(warn)
-        notify(warn)
+        safe_notify(alert, warn, loop)
         return
 
     # Checagem de liquidez mínima
     if not dex.has_min_liquidity(target_token, weth, min_liq_weth=config.get("MIN_LIQ_WETH", 0.5)):
         warn = f"⚠️ Liquidez insuficiente para {target_token} — abortando."
         log.warning(warn)
-        if alert: alert.send(warn)
-        notify(warn)
+        safe_notify(alert, warn, loop)
         return
 
     # Tamanho da ordem
@@ -117,7 +138,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
     if amt_eth <= 0:
         msg = "❌ TRADE_SIZE_ETH inválido — abortando."
         log.error(msg)
-        notify(msg)
+        safe_notify(alert, msg, loop)
         return
     amt_in = web3.to_wei(amt_eth, "ether")
 
@@ -148,16 +169,14 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
     if current_price is None or current_price <= 0:
         msg = f"⚠️ Preço inválido para {target_token}, abortando."
         log.error(msg)
-        if alert: alert.send(msg)
-        notify(msg)
+        safe_notify(alert, msg, loop)
         return
 
     # Modo simulado
     if config.get("DRY_RUN"):
         msg = f"🧪 DRY_RUN: Compra simulada {target_token}, min_out={aout_min}"
         log.warning(msg)
-        if alert: alert.send(msg)
-        notify(msg)
+        safe_notify(alert, msg, loop)
         return
 
     # Execução de compra (protegida)
@@ -165,13 +184,11 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
     if tx:
         msg = f"✅ Compra realizada: {target_token}\nTX: {tx}"
         log.info(f"✅ Compra executada — TX: {tx}")
-        if alert: alert.send(msg)
-        notify(msg)
+        safe_notify(alert, msg, loop)
     else:
         warn = f"⚠️ Compra bloqueada pelo RiskManager: {target_token}"
         log.warning(warn)
-        if alert: alert.send(warn)
-        notify(warn)
+        safe_notify(alert, warn, loop)
         return
 
     # Gestão de posição: TP, SL e trailing
@@ -186,9 +203,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         f"🛑 SL: {stop_price:.6f} WETH\n"
         f"📈 Trailing: {trail_pct*100:.1f}%"
     )
-    if alert:
-        alert.send(tp_sl_msg)
-    notify(tp_sl_msg)
+    safe_notify(alert, tp_sl_msg, loop)
 
     # Loop de monitoramento com escape se sniper parar
     from discovery import is_discovery_running
@@ -208,14 +223,12 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
             if sell_tx:
                 msg = f"💰 Venda realizada: {target_token}\nTX: {sell_tx}"
                 log.info(f"💰 Venda executada — TX: {sell_tx}")
-                if alert: alert.send(msg)
-                notify(msg)
+                safe_notify(alert, msg, loop)
                 sold = True
             else:
                 warn = f"⚠️ Venda bloqueada pelo RiskManager: {target_token}"
                 log.warning(warn)
-                if alert: alert.send(warn)
-                notify(warn)
+                safe_notify(alert, warn, loop)
             break
 
         await asyncio.sleep(3)
@@ -224,5 +237,4 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
     if not sold and not is_discovery_running():
         msg = f"⏹ Monitoramento encerrado para {target_token} (sniper parado)."
         log.info(msg)
-        if alert: alert.send(msg)
-        notify(msg)
+        safe_notify(alert, msg, loop)
