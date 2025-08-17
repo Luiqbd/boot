@@ -1,10 +1,12 @@
 import logging
 import math
 import datetime
+import asyncio
 from web3 import Web3
 from eth_account import Account
 
 from config import config
+from telegram import Bot
 from telegram_alert import TelegramAlert
 from dex import DexClient
 from exchange_client import ExchangeClient
@@ -13,6 +15,14 @@ from safe_trade_executor import SafeTradeExecutor
 from risk_manager import RiskManager
 
 log = logging.getLogger("sniper")
+
+# === Notificador direto pelo token/chat_id ===
+bot_notify = Bot(token=config["TELEGRAM_TOKEN"])
+def notify(msg: str):
+    try:
+        bot_notify.send_message(chat_id=config["TELEGRAM_CHAT_ID"], text=msg)
+    except Exception as e:
+        log.error(f"Erro ao enviar notificação: {e}")
 
 ROUTER_ABI = [{
     "name": "getAmountsOut",
@@ -56,11 +66,13 @@ async def on_new_pair(pair_addr, token0, token1, bot=None, loop=None):
 
     log.info(f"[{_now()}] Novo par detectado — CHAIN_ID={config.get('CHAIN_ID')}")
     log.info(f"Roteador={router_addr} WETH={weth} signer={signer_addr}")
+    notify(f"🚀 Novo par detectado\nPair: {pair_addr}\nSigner: {signer_addr}")
 
     if len(web3.eth.get_code(router_addr)) == 0:
         msg = f"❌ Roteador {router_addr} não implantado — abortando."
         log.error(msg)
         if alert: alert.send(msg)
+        notify(msg)
         return
 
     target_token = Web3.to_checksum_address(token1 if token0.lower() == weth.lower() else token0)
@@ -73,17 +85,21 @@ async def on_new_pair(pair_addr, token0, token1, bot=None, loop=None):
         warn = f"⚠️ Token {target_token} parece honeypot — abortando."
         log.warning(warn)
         if alert: alert.send(warn)
+        notify(warn)
         return
 
     if not dex.has_min_liquidity(target_token):
         warn = f"⚠️ Liquidez insuficiente para {target_token} — abortando."
         log.warning(warn)
         if alert: alert.send(warn)
+        notify(warn)
         return
 
     amt_eth = float(config.get("TRADE_SIZE_ETH", 0.02))
     if amt_eth <= 0:
-        log.error("❌ TRADE_SIZE_ETH inválido — abortando.")
+        msg = "❌ TRADE_SIZE_ETH inválido — abortando."
+        log.error(msg)
+        notify(msg)
         return
     amt_in = web3.to_wei(amt_eth, "ether")
 
@@ -108,24 +124,30 @@ async def on_new_pair(pair_addr, token0, token1, bot=None, loop=None):
 
     current_price = get_token_price_in_weth(router_contract, target_token, weth)
     if current_price is None or current_price <= 0:
-        log.error("Preço inválido, abortando trade.")
-        if alert: alert.send(f"⚠️ Preço inválido para {target_token}, abortando.")
+        msg = f"⚠️ Preço inválido para {target_token}, abortando."
+        log.error(msg)
+        if alert: alert.send(msg)
+        notify(msg)
         return
 
     if config.get("DRY_RUN"):
         msg = f"🧪 DRY_RUN: Compra simulada {target_token}, min_out={aout_min}"
         log.warning(msg)
         if alert: alert.send(msg)
+        notify(msg)
         return
 
     tx = safe_exec.buy(weth, target_token, amt_eth, current_price, None)
     if tx:
+        msg = f"✅ Compra realizada: {target_token}\nTX: {tx}"
         log.info(f"✅ Compra executada — TX: {tx}")
-        if alert: alert.send(f"✅ Compra realizada: {target_token}\nTX: {tx}")
+        if alert: alert.send(msg)
+        notify(msg)
     else:
         warn = f"⚠️ Compra bloqueada pelo RiskManager: {target_token}"
         log.warning(warn)
         if alert: alert.send(warn)
+        notify(warn)
         return
 
     entry_price = current_price
@@ -134,12 +156,14 @@ async def on_new_pair(pair_addr, token0, token1, bot=None, loop=None):
     highest_price = entry_price
     stop_price = entry_price * (1 - config.get("STOP_LOSS_PCT", 0.15))
 
+    tp_sl_msg = (
+        f"🎯 TP: {take_profit_price:.6f} WETH\n"
+        f"🛑 SL: {stop_price:.6f} WETH\n"
+        f"📈 Trailing: {trail_pct*100:.1f}%"
+    )
     if alert:
-        alert.send(
-            f"🎯 TP: {take_profit_price:.6f} WETH\n"
-            f"🛑 SL: {stop_price:.6f} WETH\n"
-            f"📈 Trailing: {trail_pct*100:.1f}%"
-        )
+        alert.send(tp_sl_msg)
+    notify(tp_sl_msg)
 
     while True:
         price = get_token_price_in_weth(router_contract, target_token, weth)
@@ -154,12 +178,15 @@ async def on_new_pair(pair_addr, token0, token1, bot=None, loop=None):
         if price >= take_profit_price or price <= stop_price:
             sell_tx = safe_exec.sell(target_token, weth, amt_eth, price, entry_price)
             if sell_tx:
+                msg = f"💰 Venda realizada: {target_token}\nTX: {sell_tx}"
                 log.info(f"💰 Venda executada — TX: {sell_tx}")
-                if alert: alert.send(f"💰 Venda realizada: {target_token}\nTX: {sell_tx}")
+                if alert: alert.send(msg)
+                notify(msg)
             else:
                 warn = f"⚠️ Venda bloqueada pelo RiskManager: {target_token}"
                 log.warning(warn)
                 if alert: alert.send(warn)
+                notify(warn)
             break
 
         await asyncio.sleep(3)
