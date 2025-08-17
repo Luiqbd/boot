@@ -52,10 +52,14 @@ def get_token_price_in_weth(router_contract, token, weth):
         log.warning(f"Falha ao obter preço: {e}")
         return None
 
-async def on_new_pair(pair_addr, token0, token1, bot=None, loop=None):
+async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
+    """
+    dex_info: dict com campos name, router, factory, type
+    """
     web3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
     weth = config["WETH"]
-    router_addr = config["DEX_ROUTER"]
+    router_addr = dex_info["router"]
+
     router_contract = web3.eth.contract(address=router_addr, abi=ROUTER_ABI)
     alert = TelegramAlert(bot, config["TELEGRAM_CHAT_ID"], loop=loop) if bot else None
 
@@ -64,9 +68,9 @@ async def on_new_pair(pair_addr, token0, token1, bot=None, loop=None):
     except Exception:
         signer_addr = "<PRIVATE_KEY inválida ou ausente>"
 
-    log.info(f"[{_now()}] Novo par detectado — CHAIN_ID={config.get('CHAIN_ID')}")
+    log.info(f"[{_now()}] Novo par detectado — DEX={dex_info['name']} — CHAIN_ID={config.get('CHAIN_ID')}")
     log.info(f"Roteador={router_addr} WETH={weth} signer={signer_addr}")
-    notify(f"🚀 Novo par detectado\nPair: {pair_addr}\nSigner: {signer_addr}")
+    notify(f"🚀 Novo par detectado em {dex_info['name']}\nPair: {pair_addr}\nSigner: {signer_addr}")
 
     if len(web3.eth.get_code(router_addr)) == 0:
         msg = f"❌ Roteador {router_addr} não implantado — abortando."
@@ -79,16 +83,17 @@ async def on_new_pair(pair_addr, token0, token1, bot=None, loop=None):
     if alert:
         alert.send(f"🚀 Par detectado\nPair: {pair_addr}")
 
-    dex = DexClient(web3)
+    # DexClient já recebe router específico
+    dex = DexClient(web3, router_addr)
 
-    if dex.is_honeypot(target_token):
+    if dex.is_honeypot(target_token, weth):
         warn = f"⚠️ Token {target_token} parece honeypot — abortando."
         log.warning(warn)
         if alert: alert.send(warn)
         notify(warn)
         return
 
-    if not dex.has_min_liquidity(target_token):
+    if not dex.has_min_liquidity(target_token, weth, min_liq_weth=config.get("MIN_LIQ_WETH", 0.5)):
         warn = f"⚠️ Liquidez insuficiente para {target_token} — abortando."
         log.warning(warn)
         if alert: alert.send(warn)
