@@ -31,9 +31,49 @@ WETH = checksum_addr(os.getenv("WETH"), "0x4200000000000000000000000000000000000
 
 # USDC oficial na Base (Circle)
 USDC = checksum_addr(
-    os.getenv("USDC"),  # pode vir do ambiente
-    "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"  # fallback padrão
+    os.getenv("USDC"),
+    "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 )
+
+# Lista de DEX monitoradas — endereços oficiais na Base
+DEXES = [
+    {
+        "name": "Aerodrome V2",
+        "factory": checksum_addr(os.getenv("AERO_V2_FACTORY"), "0x327Df1e6de05895d2ab08513aaDD9313Fe505d86"),
+        "router": checksum_addr(os.getenv("AERO_V2_ROUTER"), "0xcF77a3D4A6f1C6a7D5cb06B52F474BeCC5123e29"),
+        "type": "v2"
+    },
+    {
+        "name": "Aerodrome V3",
+        "factory": checksum_addr(os.getenv("AERO_V3_FACTORY"), "0xaC1d73C8a497dd0217018Bf7CA6c5B6508C747B0"),
+        "router": checksum_addr(os.getenv("AERO_V3_ROUTER"), "0x14eBb7fc750F1107E6d36fB31A0c6B0f7F73B09F"),
+        "type": "v3"
+    },
+    {
+        "name": "Uniswap V2",
+        "factory": checksum_addr(os.getenv("UNI_V2_FACTORY"), "0x9C454510848906FDDc846607E4baa27Ca999FBB6"),
+        "router": checksum_addr(os.getenv("UNI_V2_ROUTER"), "0x2626664c2603336E57B271c5C0b26F421741e481"),
+        "type": "v2"
+    },
+    {
+        "name": "Uniswap V3",
+        "factory": checksum_addr(os.getenv("UNI_V3_FACTORY"), "0x33128a8fC17869897Dce68Ed026d694621f6FDfD"),
+        "router": checksum_addr(os.getenv("UNI_V3_ROUTER"), "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"),
+        "type": "v3"
+    },
+    {
+        "name": "BaseSwap V2",
+        "factory": checksum_addr(os.getenv("BASE_V2_FACTORY"), "0x800D4F78312daC73DDa3E04cB38c45DDBEa5098B"),
+        "router": checksum_addr(os.getenv("BASE_V2_ROUTER"), "0x327d98243aEFa3F627aBEbCA63C0A6c4a258963b"),
+        "type": "v2"
+    },
+    {
+        "name": "BaseSwap V3",
+        "factory": checksum_addr(os.getenv("BASE_V3_FACTORY"), "0x47989441fD3A19774f8aF9F21614c83Bfb4b0775"),
+        "router": checksum_addr(os.getenv("BASE_V3_ROUTER"), "0x327d98243aEfa3F627aBEbCA63C0A6c4a258963b"),
+        "type": "v3"
+    },
+]
 
 config = {
     "PYTHON_VERSION": os.getenv("PYTHON_VERSION", "3.10.12"),
@@ -42,10 +82,6 @@ config = {
     "RPC_URL": os.getenv("RPC_URL", "https://mainnet.base.org"),
     "PRIVATE_KEY": PRIVATE_KEY,
     "CHAIN_ID": int(os.getenv("CHAIN_ID", "8453")),
-
-    # Aerodrome (Base)
-    "DEX_ROUTER": checksum_addr(os.getenv("DEX_ROUTER"), "0xcF77a3D4A6f1C6a7D5cb06B52F474BeCC5123e29"),
-    "DEX_FACTORY": checksum_addr(os.getenv("DEX_FACTORY"), "0x327Df1e6de05895d2ab08513aaDD9313Fe505d86"),
 
     # Tokens base
     "WETH": WETH,
@@ -60,20 +96,27 @@ config = {
     # Telegram
     "TELEGRAM_TOKEN": os.getenv("TELEGRAM_TOKEN"),
     "TELEGRAM_CHAT_ID": int(os.getenv("TELEGRAM_CHAT_ID", "0")),
+
+    # Lista de DEX
+    "DEXES": DEXES
 }
 
-# --- Validações básicas ---
+# --- Validações ---
 def _require(name: str, cond: bool):
     if not cond:
         raise ValueError(f"Config inválida: {name} — valor atual: {config.get(name)}")
 
 _require("RPC_URL", bool(config["RPC_URL"]))
 _require("PRIVATE_KEY", bool(config["PRIVATE_KEY"]))
-_require("DEX_ROUTER", isinstance(config["DEX_ROUTER"], str) and len(config["DEX_ROUTER"]) == 42)
-_require("DEX_FACTORY", isinstance(config["DEX_FACTORY"], str) and len(config["DEX_FACTORY"]) == 42)
 _require("WETH", isinstance(config["WETH"], str) and len(config["WETH"]) == 42)
 _require("USDC", isinstance(config["USDC"], str) and len(config["USDC"]) == 42)
 _require("CHAIN_ID", config["CHAIN_ID"] == 8453)
+
+for dex in config["DEXES"]:
+    if not (isinstance(dex["factory"], str) and len(dex["factory"]) == 42):
+        raise ValueError(f"Factory inválida em {dex['name']}")
+    if not (isinstance(dex["router"], str) and len(dex["router"]) == 42):
+        raise ValueError(f"Router inválido em {dex['name']}")
 
 # --- Debug opcional ---
 if str_to_bool(os.getenv("DEBUG_CONFIG", "false")):
@@ -81,3 +124,5 @@ if str_to_bool(os.getenv("DEBUG_CONFIG", "false")):
     print(f"Signer Address: {signer_addr}")
     print(f"WETH: {WETH}")
     print(f"USDC: {USDC}")
+    for dex in config["DEXES"]:
+        print(f"{dex['name']} → Factory: {dex['factory']} | Router: {dex['router']}")
