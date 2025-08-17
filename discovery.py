@@ -8,6 +8,9 @@ from telegram import Bot
 # === Instância para notificações ===
 bot_notify = Bot(token=config["TELEGRAM_TOKEN"])
 
+# === Variável global de simulação de PnL ===
+pnl_total = 0.0
+
 def notify(msg: str, loop):
     """Envia mensagem para o chat configurado no Telegram."""
     try:
@@ -99,6 +102,7 @@ def get_discovery_status():
     minutes, seconds = divmod(uptime, 60)
     status_text = f"🟢 Sniper está ativo há {minutes}m{seconds}s\n"
     status_text += f"🔢 Pares encontrados: {sniper_pair_count}\n"
+    status_text += f"💹 PnL simulado: {pnl_total:.4f} WETH\n"
 
     if last_pair_info:
         addr, t0, t1 = last_pair_info
@@ -138,17 +142,41 @@ def has_min_liquidity(web3, pair_address, weth_address, min_weth_wei):
     weth_reserve = int(r0) if t0.lower() == weth_address.lower() else int(r1)
     return weth_reserve >= min_weth_wei
 
-def run_discovery(callback_on_pair, loop):
-    global sniper_active, sniper_start_time, sniper_pair_count, last_pair_info
+# === Callback integrado para simulação ou execução real ===
+def callback_on_pair(pair_addr, token0, token1):
+    global pnl_total
+    if config.get("DRY_RUN", True):
+        simulated_profit = 0.01  # lucro fictício fixo
+        pnl_total += simulated_profit
+        logger.info(f"[SIMULAÇÃO] Par {pair_addr} -> Lucro {simulated_profit:.4f} WETH (PnL total: {pnl_total:.4f})")
+    else:
+        logger.info(f"[REAL] Executando compra no par {pair_addr}")
+        # Exemplo de execução real (molde)
+        execute_trade(pair_addr, token0, token1, amount_in_wei=Web3.to_wei(0.1, 'ether'))
+
+# === Exemplo de função para execução real ===
+def execute_trade(pair_addr, token0, token1, amount_in_wei):
+    """
+    Aqui você implementa a lógica para:
+    - Aprovar o router
+    - Chamar a função swapExactETHForTokens ou similar
+    - Assinar e enviar a transação
+    """
+    logger.info(f"🚀 (REAL) Comprando {token0} via par {pair_addr} com {amount_in_wei} wei")
+    # Implementar integração com carteira aqui
+    pass
+
+def run_discovery(loop):
+    global sniper_active, sniper_start_time, sniper_pair_count, last_pair_info, pnl_total
     sniper_active = True
     sniper_start_time = time.time()
     sniper_pair_count = 0
     last_pair_info = None
+    pnl_total = 0.0
 
     web3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
     last_block = web3.eth.block_number
 
-    # === Lista de tokens-base aceitos (ETH nativo == WETH) ===
     BASE_TOKENS = {
         safe_checksum(config["WETH"]): "WETH",
         safe_checksum(config["USDC"]): "USDC"
@@ -156,8 +184,8 @@ def run_discovery(callback_on_pair, loop):
 
     min_weth_wei = web3.to_wei(config.get("MIN_LIQ_WETH", 1.0), "ether")
 
-    logger.info("🔍 Iniciando monitoramento de novos pares na Base...")
-    notify("🔍 Sniper iniciado! Monitorando novos pares na Base...", loop)
+    logger.info("🔍 Iniciando monitoramento de novos pares...")
+    notify("🔍 Sniper iniciado! Monitorando novos pares...", loop)
 
     while sniper_active:
         try:
@@ -170,21 +198,20 @@ def run_discovery(callback_on_pair, loop):
                     logger.info(f"📦 Par detectado: {pair_addr} ({token0} / {token1})")
 
                     if not any(t in BASE_TOKENS for t in (token0, token1)):
-                        logger.info("⏭ Ignorado: não contém token-base permitido (WETH, USDC).")
+                        logger.info("⏭ Ignorado: não contém token-base permitido.")
                         continue
 
                     logger.info(f"🆕 Novo par com token-base encontrado: {pair_addr}")
                     notify(f"🆕 Novo par: {pair_addr}\nTokens: {token0} / {token1}", loop)
 
                     if has_min_liquidity(web3, pair_addr, safe_checksum(config["WETH"]), min_weth_wei):
-                        logger.info("💧 Liquidez mínima atingida — disparando execução...")
-                        notify(f"💧 Liquidez mínima atingida no par {pair_addr} — executando sniper!", loop)
+                        logger.info("💧 Liquidez mínima atingida.")
                         sniper_pair_count += 1
                         last_pair_info = (pair_addr, token0, token1)
                         callback_on_pair(pair_addr, token0, token1)
                     else:
-                        logger.info("⏳ Ainda sem liquidez mínima, ignorando.")
-                        notify(f"⏳ Sem liquidez mínima no par {pair_addr}, ignorando.", loop)
+                        logger.info("⏳ Ainda sem liquidez mínima.")
+                        notify(f"⏳ Sem liquidez mínima no par {pair_addr}.", loop)
         except Exception as e:
             logger.error(f"⚠️ Erro no loop de discovery: {e}", exc_info=True)
             notify(f"⚠️ Erro no loop de discovery: {e}", loop)
