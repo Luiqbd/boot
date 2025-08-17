@@ -79,7 +79,7 @@ def env_summary_text() -> str:
         f"⏱ Intervalo: {os.getenv('INTERVAL')}s\n"
     )
 
-# --- Funções sniper com loop ---
+# --- Funções sniper (multi-DEX com única chamada) ---
 def iniciar_sniper():
     global sniper_thread
     if sniper_thread and sniper_thread.is_alive():
@@ -90,13 +90,11 @@ def iniciar_sniper():
 
     def start_sniper():
         try:
-            # Para cada DEX no config, iniciar discovery
-            for dex_info in config["DEXES"]:
-                run_discovery(
-                    lambda pair, t0, t1, d=dex_info: on_new_pair(d, pair, t0, t1, bot=application.bot),
-                    loop,
-                    dex_info  # se o seu run_discovery aceitar metadados; caso contrário, remova este argumento
-                )
+            # discovery.py já percorre todas as DEX e envia dex_info no callback
+            run_discovery(
+                lambda dex, pair, t0, t1: on_new_pair(dex, pair, t0, t1, bot=application.bot),
+                loop
+            )
         except Exception as e:
             logging.error(f"Erro no sniper: {e}", exc_info=True)
 
@@ -141,7 +139,7 @@ async def snipe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if sniper_thread and sniper_thread.is_alive():
         await update.message.reply_text("⚠️ O sniper já está rodando.")
         return
-    await update.message.reply_text("⚙️ Iniciando sniper... Monitorando novos pares com liquidez.")
+    await update.message.reply_text("⚙️ Iniciando sniper... Monitorando novas pairs em todas as DEX.")
     iniciar_sniper()
 
 async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -150,7 +148,7 @@ async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def sniper_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        status = get_discovery_status()
+        status = get_discovery_status() or {"text": "Status indisponível."}
         await update.message.reply_text(status["text"])
     except Exception as e:
         logging.error(f"Erro no /sniperstatus: {e}", exc_info=True)
@@ -232,11 +230,25 @@ def start_flask():
 
 # --- Inicialização ---
 if __name__ == "__main__":
+    # Variáveis essenciais
     if not TELEGRAM_TOKEN:
         logging.error("Falta TELEGRAM_TOKEN no ambiente. Encerrando.")
         raise SystemExit(1)
     if not WEBHOOK_URL:
         logging.warning("WEBHOOK_URL não definido. O webhook não será registrado automaticamente.")
+
+    missing = [k for k in ["RPC_URL", "PRIVATE_KEY", "CHAIN_ID"] if not os.getenv(k)]
+    if missing:
+        logging.error(f"Faltam variáveis de ambiente obrigatórias: {', '.join(missing)}. Encerrando.")
+        raise SystemExit(1)
+
+    # Valida chave e loga a carteira ativa
+    try:
+        addr = get_active_address()
+        logging.info(f"🔑 Carteira ativa: {addr}")
+    except Exception as e:
+        logging.error(f"Falha ao validar PRIVATE_KEY: {e}", exc_info=True)
+        raise SystemExit(1)
 
     asyncio.set_event_loop(loop)
 
@@ -268,7 +280,10 @@ if __name__ == "__main__":
 
         # Log informativo: DEX monitoradas
         try:
-            dex_lines = [f"- {d['name']} | type={d['type']} | factory={d['factory']} | router={d['router']}" for d in config.get("DEXES", [])]
+            dex_lines = [
+                f"- {d['name']} | type={d['type']} | factory={d['factory']} | router={d['router']}"
+                for d in config.get("DEXES", [])
+            ]
             if dex_lines:
                 logging.info("🔎 DEX monitoradas:\n" + "\n".join(dex_lines))
         except Exception as e:
