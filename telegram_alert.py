@@ -5,11 +5,9 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_MAX_LEN = 4096
 
-
 def _chunk(text: str, size: int = TELEGRAM_MAX_LEN):
     for i in range(0, len(text), size):
         yield text[i:i + size]
-
 
 class TelegramAlert:
     def __init__(
@@ -35,7 +33,7 @@ class TelegramAlert:
 
     def send(self, message: str) -> bool:
         """
-        Agenda o envio no loop existente ou cria um loop novo.
+        Agenda o envio no loop existente (thread-safe) ou cria um loop novo.
         Retorna True se a tarefa foi agendada/executada com sucesso, False caso contrário.
         """
         if not self.bot or not self.chat_id:
@@ -44,6 +42,7 @@ class TelegramAlert:
 
         coro = self._send_async(message)
 
+        # Se temos loop e ele está rodando, agenda thread-safe
         if self.loop and self.loop.is_running():
             try:
                 asyncio.run_coroutine_threadsafe(coro, self.loop)
@@ -52,14 +51,12 @@ class TelegramAlert:
                 logger.error(f"Falha ao agendar alerta no loop: {e}", exc_info=True)
                 return False
 
+        # Caso contrário, cria um novo loop para enviar (modo standalone)
         try:
             asyncio.run(coro)
             return True
-        except RuntimeError as e:
-            logger.error(f"RuntimeError no envio de alerta: {e}", exc_info=True)
-            return False
         except Exception as e:
-            logger.error(f"Erro inesperado no envio de alerta: {e}", exc_info=True)
+            logger.error(f"Erro no envio de alerta: {e}", exc_info=True)
             return False
 
     async def _send_async(self, message: str):
