@@ -3,12 +3,11 @@ import math
 import datetime
 import asyncio
 from web3 import Web3
-from eth_account import Account
 
 from config import config
 from telegram import Bot
 from telegram_alert import TelegramAlert
-from dex import DexClient
+from discovery import is_discovery_running
 from exchange_client import ExchangeClient
 from trade_executor import TradeExecutor
 from safe_trade_executor import SafeTradeExecutor
@@ -16,44 +15,7 @@ from risk_manager import RiskManager
 
 log = logging.getLogger("sniper")
 
-# === Notificador direto pelo token/chat_id ===
-bot_notify = Bot(token=config["TELEGRAM_TOKEN"])
-
-def notify(msg: str):
-    """Envia mensagem ao Telegram de forma compatível com a API assíncrona."""
-    try:
-        coro = bot_notify.send_message(
-            chat_id=config["TELEGRAM_CHAT_ID"],
-            text=msg
-        )
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(coro)
-        except RuntimeError:
-            asyncio.run(coro)
-    except Exception as e:
-        log.error(f"Erro ao enviar notificação: {e}")
-
-def safe_notify(alert: TelegramAlert | None, msg: str, loop: asyncio.AbstractEventLoop | None = None):
-    """Envia a mensagem via TelegramAlert e também via notify()."""
-    if alert:
-        try:
-            coro = alert._send_async(msg)
-            if loop and loop.is_running():
-                asyncio.run_coroutine_threadsafe(coro, loop)
-            else:
-                try:
-                    running_loop = asyncio.get_running_loop()
-                    running_loop.create_task(coro)
-                except RuntimeError:
-                    asyncio.run(coro)
-        except Exception as e:
-            log.error(f"Falha ao agendar envio para alerta Telegram: {e}", exc_info=True)
-    try:
-        notify(msg)
-    except Exception as e:
-        log.error(f"Falha no notify(): {e}", exc_info=True)
-
+# ABI mínima só para getAmountsOut
 ROUTER_ABI = [{
     "name": "getAmountsOut",
     "type": "function",
@@ -83,39 +45,48 @@ def get_token_price_in_weth(router_contract, token, weth):
         return None
 
 async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
-    from discovery import is_discovery_running
-    from telegram_alert import TelegramAlert
-    from trade_executor import TradeExecutor
-    from safe_trade_executor import SafeTradeExecutor
-    from risk_manager import RiskManager
+    log.info(f"🎯 Novo par: {pair_addr} ({token0}/{token1}) na DEX {dex_info['name']}")
 
-    log.info(f"🎯 Novo par detectado: {pair_addr} ({token0} / {token1}) na DEX {dex_info['name']}")
-
+    # 1) Conecta na RPC e define WETH
     web3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
     weth = Web3.to_checksum_address(config["WETH"])
+
+    # 2) Define qual token vamos snipar
     target_token = token1 if token0.lower() == weth.lower() else token0
-    amt_eth = Web3.to_wei(float(config["TRADE_SIZE_ETH"]), "ether")
+
+    # 3) Trade size em ETH (float) – o TradeExecutor converte para wei
+    amt_eth = float(config["TRADE_SIZE_ETH"])
     slippage_bps = int(config["SLIPPAGE_BPS"])
     stop_loss_pct = float(config["STOP_LOSS_PCT"]) / 100
     take_profit_pct = float(config["TAKE_PROFIT_PCT"]) / 100
     trail_pct = stop_loss_pct
 
-    router_contract = web3.eth.contract(address=dex_info["router"], abi=ROUTER_ABI)
-    alert = TelegramAlert(bot=bot, chat_id=config["TELEGRAM_CHAT_ID"])
-
-    entry_price = get_token_price_in_weth(router_contract, target_token, weth)
+    # 4) Cria contract do router e obtém preço de entrada
+    router = web3.eth.contract(address=dex_info["router"], abi=ROUTER_ABI)
+    entry_price = get_token_price_in_weth(router, target_token, weth)
     if not entry_price:
-        log.warning(f"❌ Não foi possível obter preço de entrada para {target_token}")
-        safe_notify(alert, f"❌ Falha ao obter preço de entrada para {target_token}", loop)
+        msg = f"❌ Não foi possível obter preço de entrada para {target_token}"
+        log.warning(msg)
+        TelegramAlert(bot=bot, chat_id=config["TELEGRAM_CHAT_ID"])._send_sync(msg)
         return
 
-    amount_out_min_val = amount_out_min(router_contract, amt_eth, [weth, target_token], slippage_bps)
+    # 5) Calcula slippage mínimo chamando getAmountsOut com wei
+    amount_in_wei = web3.to_wei(amt_eth, "ether")
+    amount_out_min_val = amount_out_min(router, amount_in_wei, [weth, target_token], slippage_bps)
 
+    # 6) Instancia ExchangeClient → TradeExecutor → SafeTradeExecutor
+    exchange_client = ExchangeClient(web3=web3, dex_info=dex_info)
+    trade_executor = TradeExecutor(
+        exchange_client=exchange_client,
+        dry_run=False,
+        dedupe_ttl_sec=int(config.get("COOLDOWN_SEC", 5))
+    )
     safe_exec = SafeTradeExecutor(
-        executor=TradeExecutor(web3=web3, dex_info=dex_info),
+        executor=trade_executor,
         risk_manager=RiskManager()
     )
 
+    # 7) Tenta a compra
     buy_tx = safe_exec.buy(
         token_in=weth,
         token_out=target_token,
@@ -126,24 +97,32 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
     )
 
     if buy_tx:
-        msg = f"🚀 Compra realizada: {target_token}\nTX: {buy_tx}\n💵 Preço entrada: {entry_price:.6f} WETH"
+        msg = (
+            f"🚀 Compra realizada: {target_token}\n"
+            f"TX: {buy_tx}\n"
+            f"💵 Preço entrada: {entry_price:.6f} WETH"
+        )
         log.info(msg)
-        safe_notify(alert, msg, loop)
+        TelegramAlert(bot=bot, chat_id=config["TELEGRAM_CHAT_ID"])._send_sync(msg)
     else:
-        warn = f"⚠️ Compra bloqueada pelo RiskManager: {target_token}"
+        warn = f"⚠️ Compra bloqueada ou falhou para {target_token}"
         log.warning(warn)
-        safe_notify(alert, warn, loop)
+        TelegramAlert(bot=bot, chat_id=config["TELEGRAM_CHAT_ID"])._send_sync(warn)
         return
 
+    # 8) Calcula níveis de TP/SL e inicia loop de monitoring...
     take_profit_price = entry_price * (1 + take_profit_pct)
     highest_price = entry_price
     stop_price = entry_price * (1 - stop_loss_pct)
     sold = False
 
-    log.info(f"📈 Monitorando {target_token} para venda...\n🎯 TP: {take_profit_price:.6f} | 🛑 SL: {stop_price:.6f}")
+    log.info(
+        f"📈 Monitorando {target_token} para TP {take_profit_price:.6f} / "
+        f"SL {stop_price:.6f}"
+    )
 
     while is_discovery_running():
-        price = get_token_price_in_weth(router_contract, target_token, weth)
+        price = get_token_price_in_weth(router, target_token, weth)
         if not price:
             await asyncio.sleep(1)
             continue
@@ -162,19 +141,23 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
                 amount_out_min=None
             )
             if sell_tx:
-                msg = f"💰 Venda realizada: {target_token}\nTX: {sell_tx}\n📊 Preço saída: {price:.6f} WETH"
+                msg = (
+                    f"💰 Venda realizada: {target_token}\n"
+                    f"TX: {sell_tx}\n"
+                    f"📊 Preço saída: {price:.6f} WETH"
+                )
                 log.info(msg)
-                safe_notify(alert, msg, loop)
+                TelegramAlert(bot=bot, chat_id=config["TELEGRAM_CHAT_ID"])._send_sync(msg)
                 sold = True
             else:
-                warn = f"⚠️ Venda bloqueada pelo RiskManager: {target_token}"
+                warn = f"⚠️ Venda bloqueada ou falhou para {target_token}"
                 log.warning(warn)
-                safe_notify(alert, warn, loop)
+                TelegramAlert(bot=bot, chat_id=config["TELEGRAM_CHAT_ID"])._send_sync(warn)
             break
 
         await asyncio.sleep(3)
 
     if not sold and not is_discovery_running():
-        msg = f"⏹ Monitoramento encerrado para {target_token} (sniper parado)."
+        msg = f"⏹ Monitoramento encerrado para {target_token}."
         log.info(msg)
-        safe_notify(alert, msg, loop)
+        TelegramAlert(bot=bot, chat_id=config["TELEGRAM_CHAT_ID"])._send_sync(msg)
