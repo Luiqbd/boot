@@ -74,6 +74,7 @@ class TradeExecutor:
         # Tenta usar o método do cliente se existir
         if hasattr(self.client, "get_token_decimals"):
             return int(self.client.get_token_decimals(token_address))
+
         # Fallback: consulta diretamente via ABI mínima
         erc20 = self.client.web3.eth.contract(
             address=Web3.to_checksum_address(token_address),
@@ -82,36 +83,56 @@ class TradeExecutor:
         return int(erc20.functions.decimals().call())
 
     def buy(self, token_in: str, token_out: str, amount_eth, amount_out_min: int | None = None):
-        # token_in: WETH/ETH, token_out: TOKEN
-        if self._is_duplicate("buy", token_in, token_out):
-            logger.warning("Ordem de compra duplicada recente — ignorando")
+        """
+        Tenta executar uma compra. Retorna tx_hash em caso de sucesso,
+        ou None se duplicada, bloqueada ou falha.
+        """
+        # Entrada no método
+        logger.info(f"[BUY] chamado com token_in={token_in}, token_out={token_out}, "
+                    f"amount_eth={amount_eth}, amount_out_min={amount_out_min}")
+
+        # Verificação de duplicação
+        is_dup = self._is_duplicate("buy", token_in, token_out)
+        logger.debug(f"[BUY] duplicado? {is_dup}")
+        if is_dup:
+            logger.warning("[BUY] Ordem de compra duplicada recente — ignorando")
             return None
 
+        # Conversão para wei
         try:
             amount_wei = self._to_wei_eth(amount_eth)
+            logger.debug(f"[BUY] amount_eth convertido para wei = {amount_wei}")
         except Exception as e:
-            logger.error(f"Falha na validação de amount_eth: {e}")
+            logger.error(f"[BUY] falha ao validar amount_eth: {e}")
             return None
 
+        # Dry run
         if self.dry_run:
             logger.info(f"[DRY_RUN] Compra simulada {token_in}->{token_out} amount_eth={amount_eth}")
             return "0xDRYRUN"
 
+        # Execução real
         try:
+            logger.info("[BUY] executando client.buy_token()")
             tx_hash = self.client.buy_token(token_in, token_out, amount_wei, amount_out_min)
             tx_hex = tx_hash.hex() if hasattr(tx_hash, "hex") else str(tx_hash)
-            logger.info(f"Compra executada — pair={token_in}->{token_out} eth={amount_eth} tx={tx_hex}")
+            logger.info(f"[BUY] compra executada — pair={token_in}->{token_out} eth={amount_eth} tx={tx_hex}")
             return tx_hex
         except Exception as e:
-            logger.error(f"Erro ao executar compra: {e}", exc_info=True)
+            logger.error(f"[BUY] erro ao executar compra: {e}", exc_info=True)
             return None
 
     def sell(self, token_in: str, token_out: str, amount_tokens, amount_out_min: int | None = None):
-        # token_in: TOKEN, token_out: WETH/ETH — amount_tokens em unidade humana
+        """
+        Tenta executar uma venda. Retorna tx_hash em caso de sucesso,
+        ou None se duplicada ou falha.
+        """
+        # Verificação de duplicação
         if self._is_duplicate("sell", token_in, token_out):
             logger.warning("Ordem de venda duplicada recente — ignorando")
             return None
 
+        # Preparação do amount em base units
         try:
             decimals = self._decimals(token_in)
             amount_base = self._to_base_units(amount_tokens, decimals)
@@ -119,10 +140,12 @@ class TradeExecutor:
             logger.error(f"Falha ao preparar venda: {e}")
             return None
 
+        # Dry run
         if self.dry_run:
             logger.info(f"[DRY_RUN] Venda simulada {token_in}->{token_out} tokens={amount_tokens}")
             return "0xDRYRUN"
 
+        # Execução real
         try:
             tx_hash = self.client.sell_token(token_in, token_out, amount_base, amount_out_min)
             tx_hex = tx_hash.hex() if hasattr(tx_hash, "hex") else str(tx_hash)
