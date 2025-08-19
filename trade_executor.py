@@ -1,12 +1,16 @@
 import time
 import logging
-from decimal import Decimal, InvalidOperation
 from threading import RLock
+from typing import List, Optional
+
+from decimal import Decimal, InvalidOperation
 from web3 import Web3
+
+from exchange_client import ExchangeClient
 
 logger = logging.getLogger(__name__)
 
-# ABI mínima para consultar decimals quando necessário
+# ABI mínima para consultar decimals de um token ERC20
 ERC20_DECIMALS_ABI = [{
     "type": "function",
     "name": "decimals",
@@ -17,140 +21,161 @@ ERC20_DECIMALS_ABI = [{
 
 
 class TradeExecutor:
-    def __init__(self, exchange_client, dry_run: bool = False, dedupe_ttl_sec: int = 5):
-        self.client = exchange_client
+    """
+    Executor básico de ordens de compra e venda.
+    
+    Construtor:
+      TradeExecutor(
+          w3,
+          wallet_address,
+          trade_size_eth,
+          slippage_bps,
+          dry_run=False
+      )
+    
+    Após instanciar, chame:
+      executor.set_exchange_client(
+          ExchangeClient(w3, router_contract)
+      )
+    """
+
+    def __init__(
+        self,
+        w3: Web3,
+        wallet_address: str,
+        trade_size_eth: float,
+        slippage_bps: int,
+        dry_run: bool = False,
+        dedupe_ttl_sec: int = 5
+    ):
+        self.w3 = w3
+        self.wallet_address = wallet_address
+        self.trade_size = trade_size_eth
+        self.slippage_bps = slippage_bps
         self.dry_run = dry_run
+
         self._lock = RLock()
-        self._recent = {}  # {(side, token_in, token_out): last_ts}
+        self._recent = {}       # {(side, token_in, token_out): timestamp}
         self._ttl = dedupe_ttl_sec
+
+        self.client: Optional[ExchangeClient] = None
+
+    def set_exchange_client(self, client: ExchangeClient):
+        """
+        Define o ExchangeClient que será usado para enviar transações.
+        Deve ser chamado antes de buy() ou sell().
+        """
+        self.client = client
 
     def _now(self) -> int:
         return int(time.time())
 
-    def _normalize_addr(self, addr: str) -> str:
-        try:
-            if isinstance(addr, str) and addr.startswith("0x") and len(addr) == 42:
-                return Web3.to_checksum_address(addr)
-        except Exception:
-            pass
-        return addr
-
     def _key(self, side: str, token_in: str, token_out: str) -> tuple:
         return (
             side,
-            self._normalize_addr(token_in),
-            self._normalize_addr(token_out),
+            Web3.to_checksum_address(token_in),
+            Web3.to_checksum_address(token_out),
         )
 
-    def _is_duplicate(self, side, token_in, token_out) -> bool:
+    def _is_duplicate(self, side: str, token_in: str, token_out: str) -> bool:
+        """
+        Verifica se uma ordem idêntica foi executada recentemente
+        para evitar duplicação em curto prazo.
+        """
         with self._lock:
             key = self._key(side, token_in, token_out)
-            last = self._recent.get(key, 0)
-            if self._now() - last < self._ttl:
+            last_ts = self._recent.get(key, 0)
+            if self._now() - last_ts < self._ttl:
                 return True
             self._recent[key] = self._now()
             return False
 
-    def _to_wei_eth(self, amount_eth) -> int:
-        try:
-            amt = Decimal(str(amount_eth))
-            if amt <= 0:
-                raise ValueError("amount_eth deve ser > 0")
-            return self.client.web3.to_wei(amt, "ether")
-        except (InvalidOperation, ValueError) as e:
-            raise ValueError(f"Quantidade ETH inválida: {amount_eth} ({e})")
-
-    def _to_base_units(self, amount_tokens, decimals: int) -> int:
-        try:
-            amt = Decimal(str(amount_tokens))
-            if amt <= 0:
-                raise ValueError("amount_tokens deve ser > 0")
-            scale = Decimal(10) ** int(decimals)
-            return int(amt * scale)
-        except (InvalidOperation, ValueError) as e:
-            raise ValueError(f"Quantidade de tokens inválida: {amount_tokens} ({e})")
-
     def _decimals(self, token_address: str) -> int:
-        # Tenta usar o método do cliente se existir
-        if hasattr(self.client, "get_token_decimals"):
-            return int(self.client.get_token_decimals(token_address))
-
-        # Fallback: consulta diretamente via ABI mínima
-        erc20 = self.client.web3.eth.contract(
+        """
+        Obtém o número de decimais de um token via ABI mínima.
+        """
+        erc20 = self.w3.eth.contract(
             address=Web3.to_checksum_address(token_address),
             abi=ERC20_DECIMALS_ABI
         )
         return int(erc20.functions.decimals().call())
 
-    def buy(self, token_in: str, token_out: str, amount_eth, amount_out_min: int | None = None):
+    async def buy(
+        self,
+        path: List[str],
+        amount_in_wei: int,
+        amount_out_min: Optional[int] = None
+    ) -> Optional[str]:
         """
-        Tenta executar uma compra. Retorna tx_hash em caso de sucesso,
-        ou None se duplicada, bloqueada ou falha.
+        Realiza a compra de ETH por token.
+        
+        path: [weth_address, token_address]
+        amount_in_wei: quantidade de ETH em wei
+        amount_out_min: mínimo de tokens a receber
+        
+        Retorna o hash da transação em hex ou None.
         """
-        # Entrada no método
-        logger.info(f"[BUY] chamado com token_in={token_in}, token_out={token_out}, "
-                    f"amount_eth={amount_eth}, amount_out_min={amount_out_min}")
+        token_in, token_out = path[0], path[-1]
+        logger.info(f"[BUY] {token_in} → {token_out} | ETH={amount_in_wei} wei min_out={amount_out_min}")
 
-        # Verificação de duplicação
-        is_dup = self._is_duplicate("buy", token_in, token_out)
-        logger.debug(f"[BUY] duplicado? {is_dup}")
-        if is_dup:
-            logger.warning("[BUY] Ordem de compra duplicada recente — ignorando")
+        if self._is_duplicate("buy", token_in, token_out):
+            logger.warning("[BUY] Ordem duplicada — ignorando")
             return None
 
-        # Conversão para wei
-        try:
-            amount_wei = self._to_wei_eth(amount_eth)
-            logger.debug(f"[BUY] amount_eth convertido para wei = {amount_wei}")
-        except Exception as e:
-            logger.error(f"[BUY] falha ao validar amount_eth: {e}")
-            return None
-
-        # Dry run
         if self.dry_run:
-            logger.info(f"[DRY_RUN] Compra simulada {token_in}->{token_out} amount_eth={amount_eth}")
+            logger.info(f"[DRY_RUN] Simulando compra: {token_in} → {token_out}")
             return "0xDRYRUN"
 
-        # Execução real
+        if not self.client:
+            raise RuntimeError("ExchangeClient não configurado no TradeExecutor")
+
         try:
-            logger.info("[BUY] executando client.buy_token()")
-            tx_hash = self.client.buy_token(token_in, token_out, amount_wei, amount_out_min)
-            tx_hex = tx_hash.hex() if hasattr(tx_hash, "hex") else str(tx_hash)
-            logger.info(f"[BUY] compra executada — pair={token_in}->{token_out} eth={amount_eth} tx={tx_hex}")
+            tx = self.client.buy_token(token_in, token_out, amount_in_wei, amount_out_min)
+            tx_hex = tx.hex() if hasattr(tx, "hex") else str(tx)
+            logger.info(f"[BUY] Executada — tx={tx_hex}")
             return tx_hex
         except Exception as e:
-            logger.error(f"[BUY] erro ao executar compra: {e}", exc_info=True)
+            logger.error(f"[BUY] Falha ao executar compra: {e}", exc_info=True)
             return None
 
-    def sell(self, token_in: str, token_out: str, amount_tokens, amount_out_min: int | None = None):
+    async def sell(
+        self,
+        path: List[str],
+        amount_in_wei: int,
+        min_out: Optional[int] = None
+    ) -> Optional[str]:
         """
-        Tenta executar uma venda. Retorna tx_hash em caso de sucesso,
-        ou None se duplicada ou falha.
+        Realiza a venda de token por ETH.
+        
+        path: [token_address, weth_address]
+        amount_in_wei: quantidade de token (base units)
+        min_out: mínimo de ETH em wei a receber
+        
+        Retorna o hash da transação em hex ou None.
         """
-        # Verificação de duplicação
+        token_in, token_out = path[0], path[-1]
+        logger.info(f"[SELL] {token_in} → {token_out} | amt={amount_in_wei} min_out={min_out}")
+
         if self._is_duplicate("sell", token_in, token_out):
-            logger.warning("Ordem de venda duplicada recente — ignorando")
+            logger.warning("[SELL] Ordem duplicada — ignorando")
             return None
 
-        # Preparação do amount em base units
-        try:
-            decimals = self._decimals(token_in)
-            amount_base = self._to_base_units(amount_tokens, decimals)
-        except Exception as e:
-            logger.error(f"Falha ao preparar venda: {e}")
-            return None
-
-        # Dry run
         if self.dry_run:
-            logger.info(f"[DRY_RUN] Venda simulada {token_in}->{token_out} tokens={amount_tokens}")
+            logger.info(f"[DRY_RUN] Simulando venda: {token_in} → {token_out}")
             return "0xDRYRUN"
 
-        # Execução real
+        if not self.client:
+            raise RuntimeError("ExchangeClient não configurado no TradeExecutor")
+
         try:
-            tx_hash = self.client.sell_token(token_in, token_out, amount_base, amount_out_min)
-            tx_hex = tx_hash.hex() if hasattr(tx_hash, "hex") else str(tx_hash)
-            logger.info(f"Venda executada — pair={token_in}->{token_out} tokens={amount_tokens} tx={tx_hex}")
+            tx = self.client.sell_token(token_in, token_out, amount_in_wei, min_out)
+            tx_hex = tx.hex() if hasattr(tx, "hex") else str(tx)
+            logger.info(f"[SELL] Executada — tx={tx_hex}")
             return tx_hex
         except Exception as e:
-            logger.error(f"Erro ao executar venda: {e}", exc_info=True)
+            logger.error(f"[SELL] Falha ao executar venda: {e}", exc_info=True)
             return None
+
+
+# Alias para manter compatibilidade com import em main.py
+RealTradeExecutor = TradeExecutor
