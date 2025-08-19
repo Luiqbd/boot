@@ -111,7 +111,7 @@ def parar_sniper():
 # --- Handlers de Telegram ---
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
-        "🎯 *Bem-vindo ao Sniper Bot*\n\n"
+        "🎯 *Bem-vindo ao Sniper Bot Criado por Luis Fernando*\n\n"
         "📌 *Comandos disponíveis*\n"
         "/snipe — Inicia o sniper\n"
         "/stop — Para o sniper\n"
