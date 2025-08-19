@@ -21,7 +21,9 @@ from web3 import Web3
 from check_balance import get_wallet_status
 from strategy_sniper import on_new_pair
 from discovery import run_discovery, stop_discovery, get_discovery_status
-from config import config  # import para acessar config["DEXES"]
+from config import config
+from dex_client import DexClient
+from executor import TradeExecutor
 
 # --- Configuração de log ---
 logging.basicConfig(
@@ -36,11 +38,12 @@ app = Flask(__name__)
 loop = asyncio.new_event_loop()
 application = None
 sniper_thread = None
+trade_executor = None
 
 # --- Variáveis de ambiente ---
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "0")  # usado no /testnotify
+TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN")
+WEBHOOK_URL      = os.getenv("WEBHOOK_URL")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "0")
 
 # --- Funções auxiliares ---
 def str_to_bool(v: str) -> bool:
@@ -66,7 +69,6 @@ def env_summary_text() -> str:
         addr = get_active_address()
     except Exception as e:
         addr = f"Erro ao obter: {e}"
-
     return (
         f"🔑 Endereço: `{addr}`\n"
         f"🌐 Chain ID: {os.getenv('CHAIN_ID')}\n"
@@ -79,20 +81,22 @@ def env_summary_text() -> str:
         f"⏱ Intervalo: {os.getenv('INTERVAL')}s\n"
     )
 
-# --- Funções sniper (multi-DEX com única chamada) ---
+# --- Sniper Thread Control ---
 def iniciar_sniper():
     global sniper_thread
     if sniper_thread and sniper_thread.is_alive():
         logging.info("⚠️ O sniper já está rodando.")
         return
 
-    logging.info("⚙️ Iniciando sniper... Monitorando novos pares com liquidez em todas as DEX configuradas.")
-
+    logging.info("⚙️ Iniciando sniper... Monitorando novos pares com liquidez.")
     def start_sniper():
         try:
-            # discovery.py já percorre todas as DEX e envia dex_info no callback
             run_discovery(
-                lambda dex, pair, t0, t1: on_new_pair(dex, pair, t0, t1, bot=application.bot),
+                lambda dex, pair, t0, t1: on_new_pair(
+                    dex, pair, t0, t1,
+                    bot=application.bot,
+                    executor=trade_executor
+                ),
                 loop
             )
         except Exception as e:
@@ -104,7 +108,7 @@ def iniciar_sniper():
 def parar_sniper():
     stop_discovery(loop)
 
-# --- Handlers principais ---
+# --- Handlers Telegram ---
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mensagem = (
         "🎯 **Bem-vindo ao Sniper Bot Criado por Luis Fernando**\n\n"
@@ -139,7 +143,7 @@ async def snipe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if sniper_thread and sniper_thread.is_alive():
         await update.message.reply_text("⚠️ O sniper já está rodando.")
         return
-    await update.message.reply_text("⚙️ Iniciando sniper... Monitorando novas pairs em todas as DEX.")
+    await update.message.reply_text("⚙️ Iniciando sniper...")
     iniciar_sniper()
 
 async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -172,7 +176,7 @@ async def test_notify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id_str = TELEGRAM_CHAT_ID or "0"
         chat_id = int(chat_id_str) if chat_id_str.isdigit() else 0
         if chat_id == 0:
-            await update.message.reply_text("⚠️ TELEGRAM_CHAT_ID ausente ou inválido nas variáveis de ambiente.")
+            await update.message.reply_text("⚠️ TELEGRAM_CHAT_ID ausente ou inválido.")
             return
 
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -180,19 +184,23 @@ async def test_notify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await context.bot.send_message(
             chat_id=chat_id,
-            text=f"✅ Teste de notificação\n🕒 {timestamp}\n🆔 {unique_id}\n💬 Sniper pronto para narrar as operações!"
+            text=(
+                f"✅ Teste de notificação\n"
+                f"🕒 {timestamp}\n"
+                f"🆔 {unique_id}\n"
+                f"💬 Sniper pronto!"
+            )
         )
         await update.message.reply_text(f"Mensagem de teste enviada (ID: {unique_id})")
     except Exception as e:
         logging.error(f"Erro no /testnotify: {e}", exc_info=True)
         await update.message.reply_text(f"⚠️ Erro ao enviar mensagem: {e}")
 
-# --- Healthcheck ---
+# --- Healthcheck e Webhook ---
 @app.route("/", methods=["GET", "HEAD"])
 def health():
     return "ok", 200
 
-# --- Webhook ---
 @app.route('/webhook', methods=['POST'])
 def webhook():
     try:
@@ -210,19 +218,18 @@ def set_webhook_with_retry(max_attempts=5, delay=3):
     if not TELEGRAM_TOKEN or not WEBHOOK_URL:
         logging.error("WEBHOOK não configurado: faltam TELEGRAM_TOKEN ou WEBHOOK_URL.")
         return
-
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
     for attempt in range(1, max_attempts + 1):
         try:
             resp = requests.post(url, json={"url": WEBHOOK_URL}, timeout=10)
             if resp.status_code == 200 and resp.json().get("ok"):
-                logging.info(f"✅ Webhook registrado com sucesso: {WEBHOOK_URL}")
+                logging.info(f"✅ Webhook registrado: {WEBHOOK_URL}")
                 return
             logging.warning(f"Tentativa {attempt} falhou: {resp.text}")
         except Exception as e:
-            logging.warning(f"Tentativa {attempt} lançou exceção: {e}")
+            logging.warning(f"Tentativa {attempt} erro: {e}")
         time.sleep(delay)
-    logging.error("❌ Todas as tentativas de registrar o webhook falharam.")
+    logging.error("❌ Não registrou o webhook após várias tentativas.")
 
 def start_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -230,25 +237,35 @@ def start_flask():
 
 # --- Inicialização ---
 if __name__ == "__main__":
-    # Variáveis essenciais
     if not TELEGRAM_TOKEN:
-        logging.error("Falta TELEGRAM_TOKEN no ambiente. Encerrando.")
+        logging.error("Falta TELEGRAM_TOKEN. Abortando.")
         raise SystemExit(1)
     if not WEBHOOK_URL:
-        logging.warning("WEBHOOK_URL não definido. O webhook não será registrado automaticamente.")
+        logging.warning("WEBHOOK_URL não definido. Skip webhook setup.")
 
     missing = [k for k in ["RPC_URL", "PRIVATE_KEY", "CHAIN_ID"] if not os.getenv(k)]
     if missing:
-        logging.error(f"Faltam variáveis de ambiente obrigatórias: {', '.join(missing)}. Encerrando.")
+        logging.error(f"Faltam variáveis obrigatórias: {missing}. Abortando.")
         raise SystemExit(1)
 
-    # Valida chave e loga a carteira ativa
     try:
         addr = get_active_address()
         logging.info(f"🔑 Carteira ativa: {addr}")
     except Exception as e:
-        logging.error(f"Falha ao validar PRIVATE_KEY: {e}", exc_info=True)
+        logging.error(f"PRIVATE_KEY inválida: {e}", exc_info=True)
         raise SystemExit(1)
+
+    # Instancia cliente e executor global
+    client = DexClient(
+        rpc_url=os.getenv("RPC_URL"),
+        chain_id=int(os.getenv("CHAIN_ID"))
+    )
+    trade_executor = TradeExecutor(
+        exchange_client=client,
+        dry_run=str_to_bool(os.getenv("DRY_RUN", "true")),
+        telegram_token=TELEGRAM_TOKEN,
+        telegram_chat_id=TELEGRAM_CHAT_ID
+    )
 
     asyncio.set_event_loop(loop)
 
@@ -268,31 +285,30 @@ if __name__ == "__main__":
         await application.initialize()
         await application.start()
         await application.bot.set_my_commands([
-            BotCommand("start", "Mostra boas-vindas e configuração"),
-            BotCommand("menu", "Reexibe o menu"),
-            BotCommand("status", "Mostra saldo ETH/WETH da carteira"),
-            BotCommand("snipe", "Inicia o sniper"),
-            BotCommand("stop", "Para o sniper"),
-            BotCommand("sniperstatus", "Status do sniper"),
-            BotCommand("ping", "Teste de vida (pong)"),
-            BotCommand("testnotify", "Envia uma notificação de teste")
+            BotCommand("start", "Inicia e mostra configurações"),
+            BotCommand("menu", "Reexibe menu"),
+            BotCommand("status", "Saldo ETH/WETH"),
+            BotCommand("snipe", "Inicia sniper"),
+            BotCommand("stop", "Para sniper"),
+            BotCommand("sniperstatus", "Status sniper"),
+            BotCommand("ping", "Teste de vida"),
+            BotCommand("testnotify", "Notificação teste")
         ])
 
-        # Log informativo: DEX monitoradas
+        # Log DEXes
         try:
             dex_lines = [
                 f"- {d['name']} | type={d['type']} | factory={d['factory']} | router={d['router']}"
                 for d in config.get("DEXES", [])
             ]
             if dex_lines:
-                logging.info("🔎 DEX monitoradas:\n" + "\n".join(dex_lines))
+                logging.info("🔎 Monitorando DEX:\n" + "\n".join(dex_lines))
         except Exception as e:
-            logging.warning(f"Não foi possível listar DEXES no startup: {e}")
+            logging.warning(f"Erro listando DEXES: {e}")
 
     loop.create_task(start_bot())
-    flask_thread = Thread(target=start_flask, daemon=True)
-    flask_thread.start()
+    Thread(target=start_flask, daemon=True).start()
     Thread(target=set_webhook_with_retry, daemon=True).start()
 
-    logging.info("🚀 Bot e servidor Flask iniciados")
+    logging.info("🚀 Bot e Flask rodando")
     loop.run_forever()
