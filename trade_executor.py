@@ -2,8 +2,7 @@ import time
 import logging
 from threading import RLock
 from typing import List, Optional
-
-from decimal import Decimal, InvalidOperation
+import datetime
 from web3 import Web3
 
 from exchange_client import ExchangeClient
@@ -41,11 +40,15 @@ class TradeExecutor:
         self.slippage_bps = slippage_bps
         self.dry_run = dry_run
 
+        # Novo campo: acumulador de PnL simulado
+        self.simulated_pnl = 0.0
+
         self._lock = RLock()
         self._recent = {}       # {(side, token_in, token_out): timestamp}
         self._ttl = dedupe_ttl_sec
 
         self.client: Optional[ExchangeClient] = None
+        self.open_positions_count = 0  # útil para o /sniper_status
 
     def set_exchange_client(self, client: ExchangeClient):
         self.client = client
@@ -91,7 +94,8 @@ class TradeExecutor:
 
         if self.dry_run:
             logger.info(f"[DRY_RUN] Simulando compra: {token_in} → {token_out}")
-            return "0xDRYRUN"
+            self.open_positions_count += 1
+            return f"SIMULATED_BUY_{token_out}_{datetime.datetime.now().isoformat()}"
 
         if not self.client:
             raise RuntimeError("ExchangeClient não configurado no TradeExecutor")
@@ -99,6 +103,7 @@ class TradeExecutor:
         try:
             tx = self.client.buy_token(token_in, token_out, amount_in_wei, amount_out_min)
             tx_hex = tx.hex() if hasattr(tx, "hex") else str(tx)
+            self.open_positions_count += 1
             logger.info(f"[BUY] Executada — tx={tx_hex}")
             return tx_hex
         except Exception as e:
@@ -120,7 +125,8 @@ class TradeExecutor:
 
         if self.dry_run:
             logger.info(f"[DRY_RUN] Simulando venda: {token_in} → {token_out}")
-            return "0xDRYRUN"
+            self.open_positions_count = max(0, self.open_positions_count - 1)
+            return f"SIMULATED_SELL_{token_in}_{datetime.datetime.now().isoformat()}"
 
         if not self.client:
             raise RuntimeError("ExchangeClient não configurado no TradeExecutor")
@@ -128,6 +134,7 @@ class TradeExecutor:
         try:
             tx = self.client.sell_token(token_in, token_out, amount_in_wei, min_out)
             tx_hex = tx.hex() if hasattr(tx, "hex") else str(tx)
+            self.open_positions_count = max(0, self.open_positions_count - 1)
             logger.info(f"[SELL] Executada — tx={tx_hex}")
             return tx_hex
         except Exception as e:
