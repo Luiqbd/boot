@@ -10,33 +10,20 @@ from exchange_client import ExchangeClient
 
 logger = logging.getLogger(__name__)
 
-# ABI mínima para consultar decimals de um token ERC20
-ERC20_DECIMALS_ABI = [{
-    "type": "function",
-    "name": "decimals",
-    "stateMutability": "view",
-    "inputs": [],
-    "outputs": [{"name": "", "type": "uint8"}],
-}]
+ERC20_DECIMALS_ABI = [
+    {
+        "type": "function",
+        "name": "decimals",
+        "stateMutability": "view",
+        "inputs": [],
+        "outputs": [{"name": "", "type": "uint8"}],
+    }
+]
 
 
 class TradeExecutor:
     """
     Executor básico de ordens de compra e venda.
-    
-    Construtor:
-      TradeExecutor(
-          w3,
-          wallet_address,
-          trade_size_eth,
-          slippage_bps,
-          dry_run=False
-      )
-    
-    Após instanciar, chame:
-      executor.set_exchange_client(
-          ExchangeClient(w3, router_contract)
-      )
     """
 
     def __init__(
@@ -61,10 +48,6 @@ class TradeExecutor:
         self.client: Optional[ExchangeClient] = None
 
     def set_exchange_client(self, client: ExchangeClient):
-        """
-        Define o ExchangeClient que será usado para enviar transações.
-        Deve ser chamado antes de buy() ou sell().
-        """
         self.client = client
 
     def _now(self) -> int:
@@ -78,10 +61,6 @@ class TradeExecutor:
         )
 
     def _is_duplicate(self, side: str, token_in: str, token_out: str) -> bool:
-        """
-        Verifica se uma ordem idêntica foi executada recentemente
-        para evitar duplicação em curto prazo.
-        """
         with self._lock:
             key = self._key(side, token_in, token_out)
             last_ts = self._recent.get(key, 0)
@@ -91,9 +70,6 @@ class TradeExecutor:
             return False
 
     def _decimals(self, token_address: str) -> int:
-        """
-        Obtém o número de decimais de um token via ABI mínima.
-        """
         erc20 = self.w3.eth.contract(
             address=Web3.to_checksum_address(token_address),
             abi=ERC20_DECIMALS_ABI
@@ -106,15 +82,6 @@ class TradeExecutor:
         amount_in_wei: int,
         amount_out_min: Optional[int] = None
     ) -> Optional[str]:
-        """
-        Realiza a compra de ETH por token.
-        
-        path: [weth_address, token_address]
-        amount_in_wei: quantidade de ETH em wei
-        amount_out_min: mínimo de tokens a receber
-        
-        Retorna o hash da transação em hex ou None.
-        """
         token_in, token_out = path[0], path[-1]
         logger.info(f"[BUY] {token_in} → {token_out} | ETH={amount_in_wei} wei min_out={amount_out_min}")
 
@@ -144,15 +111,6 @@ class TradeExecutor:
         amount_in_wei: int,
         min_out: Optional[int] = None
     ) -> Optional[str]:
-        """
-        Realiza a venda de token por ETH.
-        
-        path: [token_address, weth_address]
-        amount_in_wei: quantidade de token (base units)
-        min_out: mínimo de ETH em wei a receber
-        
-        Retorna o hash da transação em hex ou None.
-        """
         token_in, token_out = path[0], path[-1]
         logger.info(f"[SELL] {token_in} → {token_out} | amt={amount_in_wei} min_out={min_out}")
 
@@ -177,5 +135,7 @@ class TradeExecutor:
             return None
 
 
-# Alias para manter compatibilidade com import em main.py
 RealTradeExecutor = TradeExecutor
+
+class SafeTradeExecutor(TradeExecutor):
+    pass
