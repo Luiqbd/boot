@@ -8,8 +8,6 @@ from config import config
 from telegram_alert import TelegramAlert
 from dex import DexClient
 from exchange_client import ExchangeClient
-from trade_executor import TradeExecutor
-from risk_manager import RiskManager
 
 log = logging.getLogger("sniper")
 
@@ -19,29 +17,25 @@ ROUTER_ABI = [{
     "stateMutability": "view",
     "inputs": [
         {"name": "amountIn", "type": "uint256"},
-        {"name": "path", "type": "address[]"}
+        {"name": "path",     "type": "address[]"}
     ],
     "outputs": [{"name": "", "type": "uint256[]"}]
 }]
 
-def _now():
+def _now_iso():
     return datetime.datetime.now().isoformat(timespec="seconds")
 
-def amount_out_min(router_contract, amount_in_wei, path, slippage_bps):
-    out = router_contract.functions.getAmountsOut(amount_in_wei, path).call()[-1]
+def amount_out_min(router, amt_in_wei, path, slippage_bps):
+    out = router.functions.getAmountsOut(amt_in_wei, path).call()[-1]
     return math.floor(out * (1 - slippage_bps / 10_000))
 
-
-def get_token_price_in_weth(router_contract, token, weth):
-    amt_in = 10 ** 18
-    path = [token, weth]
+def get_price_weth(router, token, weth):
     try:
-        out = router_contract.functions.getAmountsOut(amt_in, path).call()[-1]
+        out = router.functions.getAmountsOut(10**18, [token, weth]).call()[-1]
         return out / 1e18 if out > 0 else None
     except Exception as e:
         log.warning(f"Falha ao obter preço: {e}")
         return None
-
 
 async def on_new_pair(
     dex_info,
@@ -50,102 +44,101 @@ async def on_new_pair(
     token1,
     bot=None,
     loop=None,
-    executor: TradeExecutor = None
+    executor=None
 ):
     """
-    Callback disparado pelo discovery quando encontra um novo pair.
-    executor: instância de SafeTradeExecutor ou RealTradeExecutor,
-    criada lá no main.py e injetada aqui.
+    Callback do discovery.py quando um novo par surge.
+    executor: instância de RealTradeExecutor ou SafeTradeExecutor.
     """
-    # checa executor
     if executor is None:
-        raise RuntimeError("Trade executor não foi passado para on_new_pair()")
+        raise RuntimeError("Executor não passado em on_new_pair()")
 
-    # monta notificação assíncrona + risk manager
+    # prepara notificação
     alert = TelegramAlert(bot, chat_id=int(config["TELEGRAM_CHAT_ID"]))
-    risk_manager = RiskManager(
-        max_trade_size=executor.trade_size,
-        slippage_bps=executor.slippage_bps
-    )
 
-    # prepara cliente DEX e contrato
+    # monta cliente DEX e injeta no executor
     dex = DexClient(dex_info)
     w3 = executor.w3
     router = w3.eth.contract(address=dex.router, abi=ROUTER_ABI)
     exchange = ExchangeClient(w3, router)
+    executor.set_exchange_client(exchange)
 
     # define token alvo e WETH
     if dex.is_weth(token1):
-        target_token, weth = token0, token1
+        target, weth = token0, token1
     else:
-        target_token, weth = (token1, token0)
+        target, weth = token1, token0
 
-    # calcula valores de trade
-    amt_eth = executor.trade_size
-    entry_price = get_token_price_in_weth(router, target_token, weth)
-    min_out = amount_out_min(
+    # valores de trade
+    amt_eth     = executor.trade_size
+    entry_price = get_price_weth(router, target, weth)
+    min_out     = amount_out_min(
         router,
         int(amt_eth * 1e18),
-        [weth, target_token],
+        [weth, target],
         executor.slippage_bps
     )
 
-    # 1) faz a compra
+    # 1) executa compra
     buy_tx = await executor.buy(
-        path=[weth, target_token],
+        path=[weth, target],
         amount_in_wei=int(amt_eth * 1e18),
-        amount_out_min=min_out
+        amount_out_min=min_out,
+        current_price=entry_price,
+        last_trade_price=entry_price
     )
     if not buy_tx:
-        msg = f"⚠️ Compra bloqueada pelo RiskManager: {target_token}"
+        msg = f"⚠️ Compra não realizada: {target}"
         log.warning(msg)
         alert.send(msg)
         return
 
-    msg = f"🛒 Compra confirmada\nToken: {target_token}\nTX: {buy_tx}"
+    msg = f"🛒 Compra confirmada: {target}\nTX: {buy_tx}"
     log.info(msg)
     alert.send(msg)
 
-    # 2) monitora para vender (trail + take profit)
-    highest_price = entry_price
+    # 2) monitora e faz venda (trail + take profit)
+    highest = entry_price
     trail_pct = executor.trail_pct / 100
-    take_profit_price = entry_price * (1 + executor.take_profit_pct / 100)
-    stop_price = highest_price * (1 - trail_pct)
+    tp_price  = entry_price * (1 + executor.take_profit_pct / 100)
+    stop_px   = highest * (1 - trail_pct)
 
     from discovery import is_discovery_running
     sold = False
 
     while is_discovery_running():
-        price = get_token_price_in_weth(router, target_token, weth)
+        price = get_price_weth(router, target, weth)
         if price is None:
             await asyncio.sleep(1)
             continue
 
-        if price > highest_price:
-            highest_price = price
-            stop_price = highest_price * (1 - trail_pct)
+        if price > highest:
+            highest = price
+            stop_px = highest * (1 - trail_pct)
 
-        if price >= take_profit_price or price <= stop_price:
+        if price >= tp_price or price <= stop_px:
             sell_tx = await executor.sell(
-                path=[target_token, weth],
+                path=[target, weth],
                 amount_in_wei=int(amt_eth * 1e18),
-                min_out=math.floor(price * 1e18 * (1 - executor.slippage_bps / 10_000))
+                min_out=math.floor(price * 1e18 * (1 - executor.slippage_bps/10_000)),
+                current_price=price,
+                last_trade_price=entry_price
             )
             if sell_tx:
-                msg = f"💰 Venda executada\nToken: {target_token}\nTX: {sell_tx}"
+                msg = f"💰 Venda realizada: {target}\nTX: {sell_tx}"
                 log.info(msg)
                 alert.send(msg)
                 sold = True
             else:
-                warn = f"⚠️ Venda bloqueada pelo RiskManager: {target_token}"
-                log.warning(warn)
-                alert.send(warn)
+                msg = f"⚠️ Venda bloqueada: {target}"
+                log.warning(msg)
+                alert.send(msg)
             break
 
         await asyncio.sleep(int(config.get("INTERVAL", 3)))
 
-    # se saiu do loop sem vender (sniper parado)
+    # se parou sem vender
     if not sold:
-        msg = f"⏹ Monitoramento encerrado para {target_token} (sniper parado)."
+        msg = f"⏹ Monitoramento finalizado para {target} (sniper parado)."
         log.info(msg)
         alert.send(msg)
