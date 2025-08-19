@@ -105,6 +105,7 @@ async def on_new_pair(
 
     from discovery import is_discovery_running
     sold = False
+    final_price = entry_price  # valor final padrão caso não haja venda
 
     while is_discovery_running():
         price = get_price_weth(router, target, weth)
@@ -124,6 +125,7 @@ async def on_new_pair(
                 current_price=price,
                 last_trade_price=entry_price
             )
+            final_price = price
             if sell_tx:
                 msg = f"💰 Venda realizada: {target}\nTX: {sell_tx}"
                 log.info(msg)
@@ -136,9 +138,18 @@ async def on_new_pair(
             break
 
         await asyncio.sleep(int(config.get("INTERVAL", 3)))
+        final_price = price  # mantém o último preço visto
 
     # se parou sem vender
     if not sold:
         msg = f"⏹ Monitoramento finalizado para {target} (sniper parado)."
         log.info(msg)
         alert.send(msg)
+
+    # 3) atualiza PnL simulado se estiver em dry_run
+    if getattr(executor, "dry_run", False):
+        if not hasattr(executor, "simulated_pnl"):
+            executor.simulated_pnl = 0.0
+        pnl = (final_price - entry_price) * amt_eth
+        executor.simulated_pnl += pnl
+        log.info(f"[SIMULADO] PnL acumulado: {executor.simulated_pnl:.6f} ETH")
