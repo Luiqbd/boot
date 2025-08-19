@@ -8,14 +8,12 @@ from config import config
 from telegram import Bot
 from telegram_alert import TelegramAlert
 from discovery import is_discovery_running
-from exchange_client import ExchangeClient
-from trade_executor import TradeExecutor
 from safe_trade_executor import SafeTradeExecutor
 from risk_manager import RiskManager
 
 log = logging.getLogger("sniper")
 
-# ABI mínima só para getAmountsOut
+# ABI mínima para getAmountsOut
 ROUTER_ABI = [{
     "name": "getAmountsOut",
     "type": "function",
@@ -44,56 +42,57 @@ def get_token_price_in_weth(router_contract, token, weth):
         log.warning(f"Falha ao obter preço: {e}")
         return None
 
-async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
+async def on_new_pair(
+    dex_info,
+    pair_addr,
+    token0,
+    token1,
+    bot: Bot = None,
+    executor=None
+):
     log.info(f"🎯 Novo par: {pair_addr} ({token0}/{token1}) na DEX {dex_info['name']}")
 
     # 1) Conecta na RPC e define WETH
     web3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
     weth = Web3.to_checksum_address(config["WETH"])
 
-    # 2) Define qual token vamos snipar
+    # 2) Escolhe token alvo
     target_token = token1 if token0.lower() == weth.lower() else token0
 
-    # 3) Trade size em ETH (float) – o TradeExecutor converte para wei
-    amt_eth = float(config["TRADE_SIZE_ETH"])
-    slippage_bps = int(config["SLIPPAGE_BPS"])
-    stop_loss_pct = float(config["STOP_LOSS_PCT"]) / 100
-    take_profit_pct = float(config["TAKE_PROFIT_PCT"]) / 100
-    trail_pct = stop_loss_pct
+    # 3) Parâmetros de trade
+    amt_eth        = float(config["TRADE_SIZE_ETH"])
+    slippage_bps   = int(config["SLIPPAGE_BPS"])
+    stop_loss_pct  = float(config["STOP_LOSS_PCT"]) / 100
+    take_profit_pct= float(config["TAKE_PROFIT_PCT"]) / 100
+    trail_pct      = stop_loss_pct
 
-    # 4) Cria contract do router e obtém preço de entrada
+    # 4) Preço de entrada
     router = web3.eth.contract(address=dex_info["router"], abi=ROUTER_ABI)
     entry_price = get_token_price_in_weth(router, target_token, weth)
     if not entry_price:
-        msg = f"❌ Não foi possível obter preço de entrada para {target_token}"
+        msg = f"❌ Não foi possível obter preço para {target_token}"
         log.warning(msg)
         TelegramAlert(bot=bot, chat_id=config["TELEGRAM_CHAT_ID"])._send_sync(msg)
         return
 
-    # 5) Calcula slippage mínimo chamando getAmountsOut com wei
-    amount_in_wei = web3.to_wei(amt_eth, "ether")
+    # 5) Mínimo de saída considerando slippage
+    amount_in_wei      = web3.to_wei(amt_eth, "ether")
     amount_out_min_val = amount_out_min(router, amount_in_wei, [weth, target_token], slippage_bps)
 
-    # 6) Instancia ExchangeClient → TradeExecutor → SafeTradeExecutor
-    exchange_client = ExchangeClient(web3=web3, dex_info=dex_info)
-    trade_executor = TradeExecutor(
-        exchange_client=exchange_client,
-        dry_run=False,
-        dedupe_ttl_sec=int(config.get("COOLDOWN_SEC", 5))
-    )
+    # 6) Safe executor com gestão de risco
     safe_exec = SafeTradeExecutor(
-        executor=trade_executor,
+        executor=executor,
         risk_manager=RiskManager()
     )
 
-    # 7) Tenta a compra
+    # 7) Execução da compra
     buy_tx = safe_exec.buy(
-        token_in=weth,
-        token_out=target_token,
-        amount_eth=amt_eth,
-        current_price=entry_price,
-        last_trade_price=None,
-        amount_out_min=amount_out_min_val
+        token_in        = weth,
+        token_out       = target_token,
+        amount_eth      = amt_eth,
+        current_price   = entry_price,
+        last_trade_price= None,
+        amount_out_min  = amount_out_min_val
     )
 
     if buy_tx:
@@ -105,15 +104,15 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         log.info(msg)
         TelegramAlert(bot=bot, chat_id=config["TELEGRAM_CHAT_ID"])._send_sync(msg)
     else:
-        warn = f"⚠️ Compra bloqueada ou falhou para {target_token}"
+        warn = f"⚠️ Compra falhou ou bloqueada para {target_token}"
         log.warning(warn)
         TelegramAlert(bot=bot, chat_id=config["TELEGRAM_CHAT_ID"])._send_sync(warn)
         return
 
-    # 8) Calcula níveis de TP/SL e inicia loop de monitoring...
+    # 8) Monitoramento de TP/SL
     take_profit_price = entry_price * (1 + take_profit_pct)
-    highest_price = entry_price
-    stop_price = entry_price * (1 - stop_loss_pct)
+    highest_price     = entry_price
+    stop_price        = entry_price * (1 - stop_loss_pct)
     sold = False
 
     log.info(
@@ -127,18 +126,20 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
             await asyncio.sleep(1)
             continue
 
+        # Ajusta trailing stop
         if price > highest_price:
             highest_price = price
             stop_price = highest_price * (1 - trail_pct)
 
+        # Condição de saída
         if price >= take_profit_price or price <= stop_price:
             sell_tx = safe_exec.sell(
-                token_in=target_token,
-                token_out=weth,
-                amount_eth=amt_eth,
-                current_price=price,
-                last_trade_price=entry_price,
-                amount_out_min=None
+                token_in        = target_token,
+                token_out       = weth,
+                amount_eth      = amt_eth,
+                current_price   = price,
+                last_trade_price= entry_price,
+                amount_out_min  = None
             )
             if sell_tx:
                 msg = (
@@ -150,7 +151,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
                 TelegramAlert(bot=bot, chat_id=config["TELEGRAM_CHAT_ID"])._send_sync(msg)
                 sold = True
             else:
-                warn = f"⚠️ Venda bloqueada ou falhou para {target_token}"
+                warn = f"⚠️ Venda falhou ou bloqueada para {target_token}"
                 log.warning(warn)
                 TelegramAlert(bot=bot, chat_id=config["TELEGRAM_CHAT_ID"])._send_sync(warn)
             break
