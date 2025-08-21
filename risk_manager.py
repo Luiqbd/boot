@@ -1,7 +1,21 @@
 import logging
 from decimal import Decimal
+import requests
 
 logger = logging.getLogger(__name__)
+
+# Config do Telegram
+BOT_TOKEN = "SEU_BOT_TOKEN"
+CHAT_ID = "SEU_CHAT_ID"
+
+def send_telegram(msg: str):
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            data={"chat_id": CHAT_ID, "text": msg}
+        )
+    except Exception as e:
+        logger.error(f"[TELEGRAM] Falha ao enviar mensagem: {e}")
 
 class RiskManager:
     def __init__(
@@ -31,6 +45,26 @@ class RiskManager:
         self.realized_pnl_eth = Decimal("0")
         self.last_trade_time_by_pair = {}  # {(token_in, token_out, side): timestamp}
 
+    def _alert(self, mensagem, pair=None, direction=None, trade_size_eth=None, current_price=None, last_trade_price=None):
+        """
+        Monta mensagem detalhada e envia para Telegram + log
+        """
+        detalhes = []
+        if pair:
+            detalhes.append(f"Par: {pair[0]}/{pair[1]}")
+        if direction:
+            detalhes.append(f"Ação: {direction.upper()}")
+        if trade_size_eth is not None:
+            detalhes.append(f"Tamanho: {trade_size_eth} ETH")
+        if current_price is not None:
+            detalhes.append(f"Preço atual: {current_price}")
+        if last_trade_price is not None:
+            detalhes.append(f"Último preço: {last_trade_price}")
+
+        texto = f"{mensagem}\n" + "\n".join(detalhes)
+        logger.warning(texto)
+        send_telegram(f"⚠️ {texto}")
+
     def can_trade(
         self,
         current_price,
@@ -45,45 +79,45 @@ class RiskManager:
         """Retorna True se trade for permitido, False caso contrário."""
         # 1️⃣ Limite diário de trades
         if self.daily_trades >= self.max_trades_per_day:
-            logger.warning("🚫 Limite diário de trades atingido")
+            self._alert("🚫 Limite diário de trades atingido", pair, direction, trade_size_eth, current_price, last_trade_price)
             return False
 
         # 2️⃣ Circuit breaker por sequência de perdas
         if self.loss_streak >= self.loss_limit:
-            logger.warning("🛑 Circuit breaker: sequência de perdas")
+            self._alert("🛑 Circuit breaker: sequência de perdas", pair, direction, trade_size_eth, current_price, last_trade_price)
             return False
 
         # 3️⃣ Perda acumulada no dia
         if self.realized_pnl_eth / self.capital <= -self.daily_loss_pct_limit:
-            logger.warning("📉 Perda máxima diária atingida")
+            self._alert("📉 Perda máxima diária atingida", pair, direction, trade_size_eth, current_price, last_trade_price)
             return False
 
         # 4️⃣ Exposição máxima de capital
         if trade_size_eth is not None:
             ts_eth = Decimal(str(trade_size_eth))
             if ts_eth > self.capital * self.max_exposure_pct:
-                logger.warning(f"💰 Trade {ts_eth} ETH excede exposição máxima permitida")
+                self._alert(f"💰 Trade {ts_eth} ETH excede exposição máxima permitida", pair, direction, trade_size_eth, current_price, last_trade_price)
                 return False
 
         # 5️⃣ Filtro de preço
         if direction == "buy" and last_trade_price:
             if current_price > last_trade_price * 1.10:
-                logger.warning("⚠️ Preço subiu >10% desde última compra — bloqueando")
+                self._alert("⚠️ Preço subiu >10% desde última compra — bloqueando", pair, direction, trade_size_eth, current_price, last_trade_price)
                 return False
 
         # 6️⃣ Regras on-chain
         if not min_liquidity_ok:
-            logger.warning("💧 Liquidez insuficiente — bloqueando trade")
+            self._alert("💧 Liquidez insuficiente — bloqueando trade", pair, direction, trade_size_eth, current_price, last_trade_price)
             return False
         if not not_honeypot:
-            logger.warning("🐝 Possível honeypot detectado — bloqueando trade")
+            self._alert("🐝 Possível honeypot detectado — bloqueando trade", pair, direction, trade_size_eth, current_price, last_trade_price)
             return False
 
         # 7️⃣ Cooldown entre trades no mesmo par
         if pair and now_ts:
             last_ts = self.last_trade_time_by_pair.get((pair[0], pair[1], direction))
             if last_ts and (now_ts - last_ts) < self.cooldown_sec:
-                logger.warning(f"⏳ Cooldown ativo para par {pair} — aguarde {self.cooldown_sec}s")
+                self._alert(f"⏳ Cooldown ativo para par {pair} — aguarde {self.cooldown_sec}s", pair, direction, trade_size_eth, current_price, last_trade_price)
                 return False
 
         return True
