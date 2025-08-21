@@ -3,13 +3,62 @@ import math
 import datetime
 import asyncio
 from web3 import Web3
+from eth_account import Account
 
 from config import config
+from telegram import Bot
 from telegram_alert import TelegramAlert
 from dex import DexClient
 from exchange_client import ExchangeClient
+from trade_executor import TradeExecutor
+from safe_trade_executor import SafeTradeExecutor
+from risk_manager import RiskManager
 
 log = logging.getLogger("sniper")
+
+# === Notificador direto pelo token/chat_id ===
+bot_notify = Bot(token=config["TELEGRAM_TOKEN"])
+
+def notify(msg: str):
+    """
+    Envia mensagem ao Telegram de forma compatível com a API assíncrona,
+    evitando warnings de 'never awaited'.
+    """
+    try:
+        coro = bot_notify.send_message(
+            chat_id=config["TELEGRAM_CHAT_ID"],
+            text=msg
+        )
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(coro)  # agenda no loop existente
+        except RuntimeError:
+            asyncio.run(coro)       # executa se não houver loop
+    except Exception as e:
+        log.error(f"Erro ao enviar notificação: {e}")
+
+# === Envio seguro de mensagens (funciona com ou sem loop ativo) ===
+def safe_notify(alert: TelegramAlert | None, msg: str, loop: asyncio.AbstractEventLoop | None = None):
+    """
+    Envia a mensagem via TelegramAlert (assíncrono) e também via notify().
+    """
+    if alert:
+        try:
+            coro = alert._send_async(msg)  # usa o pipeline de chunk + retries do TelegramAlert
+            if loop and loop.is_running():
+                asyncio.run_coroutine_threadsafe(coro, loop)
+            else:
+                try:
+                    running_loop = asyncio.get_running_loop()
+                    running_loop.create_task(coro)
+                except RuntimeError:
+                    asyncio.run(coro)
+        except Exception as e:
+            log.error(f"Falha ao agendar envio para alerta Telegram: {e}", exc_info=True)
+    try:
+        notify(msg)
+    except Exception as e:
+        log.error(f"Falha no notify(): {e}", exc_info=True)
 
 ROUTER_ABI = [{
     "name": "getAmountsOut",
@@ -17,158 +66,60 @@ ROUTER_ABI = [{
     "stateMutability": "view",
     "inputs": [
         {"name": "amountIn", "type": "uint256"},
-        {"name": "path",     "type": "address[]"}
+        {"name": "path", "type": "address[]"}
     ],
     "outputs": [{"name": "", "type": "uint256[]"}]
 }]
 
-def nowiso():
+def _now():
     return datetime.datetime.now().isoformat(timespec="seconds")
 
-def amountoutmin(router, amtinwei, path, slippage_bps):
-    out = router.functions.getAmountsOut(amtinwei, path).call()[-1]
-    return math.floor(out * (1 - slippagebps / 10000))
+def amount_out_min(router_contract, amount_in_wei, path, slippage_bps):
+    out = router_contract.functions.getAmountsOut(amount_in_wei, path).call()[-1]
+    return math.floor(out * (1 - slippage_bps / 10_000))
 
-def getpriceweth(router, token, weth):
-    """
-    Retorna o preço em WETH por 1 unidade do token (ETH-per-token).
-    """
+def get_token_price_in_weth(router_contract, token, weth):
+    amt_in = 10 ** 18  # 1 token (em 18 decimais) para cotação inversa token->WETH
+    path = [token, weth]
     try:
-        out = router.functions.getAmountsOut(1018, [token, weth]).call()[-1]
+        out = router_contract.functions.getAmountsOut(amt_in, path).call()[-1]
         return out / 1e18 if out > 0 else None
     except Exception as e:
         log.warning(f"Falha ao obter preço: {e}")
         return None
 
-async def onnewpair(
-    dex_info,
-    pair_addr,
-    token0,
-    token1,
-    bot=None,
-    loop=None,
-    executor=None
-):
-    """
-    Callback do discovery.py quando um novo par surge.
-    executor: instância de TradeExecutor (real ou dry-run).
-    """
-    if executor is None:
-        raise RuntimeError("Executor não passado em onnewpair()")
+async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
+    # ... [trecho inicial igual à Parte 1, já enviado] ...
 
-    # prepara notificação
-    alert = TelegramAlert(bot, chatid=int(config["TELEGRAMCHAT_ID"]))
-
-    # monta cliente DEX e injeta no executor
-    dex = DexClient(dex_info)
-    w3 = executor.w3
-    router = w3.eth.contract(address=dex.router, abi=ROUTER_ABI)
-    exchange = ExchangeClient(w3, router)
-    executor.setexchangeclient(exchange)
-
-    # define token alvo e WETH
-    if dex.is_weth(token1):
-        target, weth = token0, token1
-    else:
-        target, weth = token1, token0
-
-    # valores de trade
-    amteth = executor.tradesize
-    entryprice = getprice_weth(router, target, weth)
-    if entryprice is None or entryprice <= 0:
-        msg = f"⚠️ Preço de entrada inválido para {target}. Abortando."
-        log.warning(msg)
-        alert.send(msg)
-        return
-
-    # minout para a compra (WETH -> TOKEN), baseado no tradesize
-    buyamountinwei = int(amteth * 1e18)
-    minoutbuy = amountoutmin(
-        router,
-        buyamountin_wei,
-        [weth, target],
-        executor.slippage_bps
-    )
-
-    # 1) executa compra
-    buy_tx = await executor.buy(
-        path=[weth, target],
-        amountinwei=buyamountin_wei,
-        amountoutmin=minoutbuy
-    )
-    if not buy_tx:
-        msg = f"⚠️ Compra não realizada: {target}"
-        log.warning(msg)
-        alert.send(msg)
-        return
-
-    msg = f"🛒 Compra confirmada: {target}\nTX: {buy_tx}"
-    log.info(msg)
-    alert.send(msg)
-
-    # 2) monitora e faz venda (trail + take profit)
-    highest = entry_price
-    trailpct = executor.trailpct / 100
-    tpprice  = entryprice * (1 + executor.takeprofitpct / 100)
-    stoppx   = highest * (1 - trailpct)
-
-    from discovery import isdiscoveryrunning
+    from discovery import is_discovery_running
     sold = False
-    finalprice = entryprice  # último preço conhecido (ou de venda)
-
-    while isdiscoveryrunning():
-        price = getpriceweth(router, target, weth)
-        if price is None:
+    while is_discovery_running():
+        price = get_token_price_in_weth(router_contract, target_token, weth)
+        if not price:
             await asyncio.sleep(1)
             continue
 
-        # atualiza referência para PnL parcial caso pare sem vender
-        final_price = price
+        if price > highest_price:
+            highest_price = price
+            stop_price = highest_price * (1 - trail_pct)
 
-        # trailing stop dinâmico
-        if price > highest:
-            highest = price
-            stoppx = highest * (1 - trailpct)
-
-        # take profit ou stop acionado
-        if price >= tpprice or price <= stoppx:
-            # min_out da venda (TOKEN -> WETH):
-            # mantém consistência com a sua assinatura do executor
-            sellamountinwei = int(amteth * 1e18)  # segue seu padrão atual
-            minoutsell_weth = math.floor(
-                price  1e18  (1 - executor.slippagebps / 10000)
-            )
-
-            sell_tx = await executor.sell(
-                path=[target, weth],
-                amountinwei=sellamountin_wei,
-                minout=minoutsellweth
-            )
+        if price >= take_profit_price or price <= stop_price:
+            sell_tx = safe_exec.sell(target_token, weth, amt_eth, price, entry_price)
             if sell_tx:
-                msg = f"💰 Venda realizada: {target}\nTX: {sell_tx}"
-                log.info(msg)
-                alert.send(msg)
+                msg = f"💰 Venda realizada: {target_token}\nTX: {sell_tx}"
+                log.info(f"💰 Venda executada — TX: {sell_tx}")
+                safe_notify(alert, msg, loop)
                 sold = True
             else:
-                msg = f"⚠️ Venda bloqueada: {target}"
-                log.warning(msg)
-                alert.send(msg)
+                warn = f"⚠️ Venda bloqueada pelo RiskManager: {target_token}"
+                log.warning(warn)
+                safe_notify(alert, warn, loop)
             break
 
-        await asyncio.sleep(int(config.get("INTERVAL", 3)))
+        await asyncio.sleep(3)
 
-    # se parou sem vender
-    if not sold:
-        msg = f"⏹ Monitoramento finalizado para {target} (sniper parado)."
+    # Caso o sniper seja parado antes da venda
+    if not sold and not is_discovery_running():
+        msg = f"⏹ Monitoramento encerrado para {target_token} (sniper parado)."
         log.info(msg)
-        alert.send(msg)
-
-    # 3) atualiza PnL simulado se estiver em dry_run
-    # Fórmula correta em ETH: PnL = amteth * (finalprice / entry_price - 1)
-    if getattr(executor, "dry_run", False):
-        if not hasattr(executor, "simulated_pnl"):
-            executor.simulated_pnl = 0.0
-        if entryprice and finalprice:
-            pnleth = amteth * (finalprice / entryprice - 1.0)
-            executor.simulatedpnl += pnleth
-            log.info(f"[SIMULADO] PnL desta operação: {pnleth:+.6f} ETH | Acumulado: {executor.simulatedpnl:+.6f} ETH")
+        safe_notify(alert, msg, loop)
