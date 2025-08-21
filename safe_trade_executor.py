@@ -4,21 +4,17 @@ from typing import Optional
 
 from trade_executor import TradeExecutor
 from risk_manager import RiskManager
+from strategy_sniper import log_event, flush_report  # import correto ✅
 
 logger = logging.getLogger(__name__)
 
 class SafeTradeExecutor:
-    """
-    Envolve o TradeExecutor com checagens de risco e integra logs no mesmo
-    mecanismo de alerta/relatório do executor base.
-    """
-
     def __init__(
         self,
         executor: TradeExecutor,
         max_trade_size_eth: float,
         slippage_bps: int,
-        alert    # objeto que acumula mensagens para relatório
+        alert
     ):
         self.executor = executor
         self.risk = RiskManager(
@@ -27,13 +23,7 @@ class SafeTradeExecutor:
         )
         self.alert = alert
 
-    def _can_trade(
-        self,
-        current_price: float,
-        last_trade_price: float,
-        direction: str,
-        amount_eth: float
-    ) -> bool:
+    def _can_trade(self, current_price, last_trade_price, direction, amount_eth) -> bool:
         try:
             sig = inspect.signature(self.risk.can_trade)
             params = sig.parameters
@@ -69,15 +59,8 @@ class SafeTradeExecutor:
             logger.error(err, exc_info=True)
             self.alert.log_event(err)
 
-    async def buy(
-        self,
-        path: list,
-        amount_in_wei: int,
-        amount_out_min: Optional[int],
-        current_price: float,
-        last_trade_price: float
-    ) -> Optional[str]:
-        if not self._can_trade(current_price, last_trade_price, "buy", self.executor.trade_size):
+    async def buy(self, path, amount_in_wei, amount_out_min, current_price, last_trade_price) -> Optional[str]:
+        if not self._can_trade(current_price, last_trade_price, "buy", self.executor.tradesize):
             msg = "Compra bloqueada pelo RiskManager"
             logger.info(msg)
             self.alert.log_event(msg)
@@ -87,15 +70,8 @@ class SafeTradeExecutor:
         self._register(sucesso=(tx is not None))
         return tx
 
-    async def sell(
-        self,
-        path: list,
-        amount_in_wei: int,
-        min_out: Optional[int],
-        current_price: float,
-        last_trade_price: float
-    ) -> Optional[str]:
-        if not self._can_trade(current_price, last_trade_price, "sell", self.executor.trade_size):
+    async def sell(self, path, amount_in_wei, min_out, current_price, last_trade_price) -> Optional[str]:
+        if not self._can_trade(current_price, last_trade_price, "sell", self.executor.tradesize):
             msg = "Venda bloqueada pelo RiskManager"
             logger.info(msg)
             self.alert.log_event(msg)
@@ -120,7 +96,6 @@ class SafeTradeExecutor:
             self.alert.log_event(err)
 
     def stop(self):
-        """Encerra e envia o relatório acumulado."""
         try:
             self.alert.flush_report()
         except Exception as e:
