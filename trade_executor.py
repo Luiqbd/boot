@@ -1,12 +1,14 @@
 import time
 import logging
+import datetime
+import inspect
 from threading import RLock
 from typing import List, Optional
-import datetime
 from web3 import Web3
 
 from exchange_client import ExchangeClient
-from stratesniper import log_event, flush_report  # 🔹 importa do sniper
+from risk_manager import RiskManager
+from stratesniper import log_event, flush_report  # 🔹 funções do sniper
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +35,7 @@ class TradeExecutor:
         slippage_bps: int,
         dry_run: bool = False,
         dedupe_ttl_sec: int = 5,
-        alert=None   # 🔹 recebe para flush_report()
+        alert=None
     ):
         self.w3 = w3
         self.wallet_address = wallet_address
@@ -44,7 +46,7 @@ class TradeExecutor:
 
         self.simulated_pnl = 0.0
         self._lock = RLock()
-        self._recent = {}       # {(side, token_in, token_out): timestamp}
+        self._recent = {}
         self._ttl = dedupe_ttl_sec
 
         self.client: Optional[ExchangeClient] = None
@@ -81,7 +83,7 @@ class TradeExecutor:
 
     async def buy(self, path: List[str], amount_in_wei: int, amount_out_min: Optional[int] = None) -> Optional[str]:
         token_in, token_out = path[0], path[-1]
-        log_event(f"[BUY] {token_in} → {token_out} | ETH={amount_in_wei} wei min_out={amount_out_min}")
+        log_event(f"[BUY] {token_in} → {token_out} | ETH={amount_in_wei} min_out={amount_out_min}")
 
         if self._is_duplicate("buy", token_in, token_out):
             log_event("[BUY] Ordem duplicada — ignorando")
@@ -136,7 +138,108 @@ class TradeExecutor:
         if self.alert:
             flush_report(self.alert)
 
+
 RealTradeExecutor = TradeExecutor
 
-class SafeTradeExecutor(TradeExecutor):
-    pass
+
+class SafeTradeExecutor:
+    """
+    Envolve o TradeExecutor com checagens de risco e integra ao relatório consolidado.
+    """
+
+    def __init__(
+        self,
+        executor: TradeExecutor,
+        max_trade_size_eth: float,
+        slippage_bps: int,
+        alert=None
+    ):
+        self.executor = executor
+        self.risk = RiskManager(
+            max_trade_size=max_trade_size_eth,
+            slippage_bps=slippage_bps
+        )
+        self.alert = alert
+
+    def _can_trade(
+        self,
+        current_price: float,
+        last_trade_price: float,
+        direction: str,
+        amount_eth: float
+    ) -> bool:
+        try:
+            sig = inspect.signature(self.risk.can_trade)
+            params = sig.parameters
+            kwargs = {}
+            if "current_price" in params:
+                kwargs["current_price"] = current_price
+            if "last_trade_price" in params:
+                kwargs["last_trade_price"] = last_trade_price
+            if "direction" in params:
+                kwargs["direction"] = direction
+            if "trade_size_eth" in params:
+                kwargs["trade_size_eth"] = amount_eth
+            elif "amount_eth" in params:
+                kwargs["amount_eth"] = amount_eth
+
+            allowed = self.risk.can_trade(**kwargs)
+            log_event(f"[RISK] can_trade {kwargs} -> {allowed}")
+            return allowed
+        except Exception as e:
+            log_event(f"[RISK] Erro em can_trade: {e}")
+            return False
+
+    def _register(self, sucesso: bool):
+        try:
+            self.risk.register_trade(success=sucesso)
+            log_event(f"[RISK] Registro de trade: sucesso={sucesso}")
+        except Exception as e:
+            log_event(f"[RISK] Erro ao registrar trade: {e}")
+
+    async def buy(
+        self,
+        path: list,
+        amount_in_wei: int,
+        amount_out_min: Optional[int],
+        current_price: float,
+        last_trade_price: float
+    ) -> Optional[str]:
+        if not self._can_trade(current_price, last_trade_price, "buy", self.executor.trade_size):
+            log_event("[SAFE BUY] Bloqueada pelo RiskManager")
+            return None
+
+        tx = await self.executor.buy(path, amount_in_wei, amount_out_min)
+        self._register(sucesso=(tx is not None))
+        return tx
+
+    async def sell(
+        self,
+        path: list,
+        amount_in_wei: int,
+        min_out: Optional[int],
+        current_price: float,
+        last_trade_price: float
+    ) -> Optional[str]:
+        if not self._can_trade(current_price, last_trade_price, "sell", self.executor.trade_size):
+            log_event("[SAFE SELL] Bloqueada pelo RiskManager")
+            return None
+
+        tx = await self.executor.sell(path, amount_in_wei, min_out)
+        self._register(sucesso=(tx is not None))
+        return tx
+
+    def record_outcome(self, loss_eth: float = 0.0):
+        if loss_eth <= 0:
+            return
+        try:
+            if hasattr(self.risk, "register_loss"):
+                self.risk.register_loss(loss_eth)
+                log_event(f"[RISK] Registrado prejuízo de {loss_eth} ETH")
+        except Exception as e:
+            log_event(f"[RISK] Erro ao registrar perda: {e}")
+
+    def stop(self):
+        log_event("[SAFE EXECUTOR] Encerrando ciclo.")
+        if self.alert:
+            flush_report(self.alert)
