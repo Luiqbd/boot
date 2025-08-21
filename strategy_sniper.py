@@ -25,7 +25,7 @@ ROUTER_ABI = [{
 def _now_iso():
     return datetime.datetime.now().isoformat(timespec="seconds")
 
-# ======== NOVO BLOCO DE LOG CONSOLIDADO ========
+# ======== BLOCO DE LOG CONSOLIDADO ========
 
 trade_log = []
 
@@ -47,7 +47,6 @@ def amount_out_min(router, amt_in_wei, path, slippage_bps):
     return math.floor(out * (1 - slippage_bps / 10_000))
 
 def get_price_weth(router, token, weth):
-    """Retorna o preço em WETH por 1 unidade do token (ETH-per-token)."""
     try:
         out = router.functions.getAmountsOut(10**18, [token, weth]).call()[-1]
         return out / 1e18 if out > 0 else None
@@ -55,26 +54,33 @@ def get_price_weth(router, token, weth):
         log_event(f"⚠️ Falha ao obter preço: {e}")
         return None
 
-async def on_new_pair(
-    dex_info,
-    pair_addr,
-    token0,
-    token1,
-    bot=None,
-    loop=None,
-    executor=None
-):
-    if executor is None:
-        raise RuntimeError("Executor não passado em on_new_pair()")
+async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None, executor=None):
+    from trade_executor import TradeExecutor, SafeTradeExecutor
 
     alert = TelegramAlert(bot, chat_id=int(config["TELEGRAM_CHAT_ID"]))
+    w3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
+
+    trade_exec = TradeExecutor(
+        w3=w3,
+        wallet_address=config["WALLET_ADDRESS"],
+        trade_size_eth=float(config["TRADE_SIZE_ETH"]),
+        slippage_bps=int(config["SLIPPAGE_BPS"]),
+        dry_run=False,
+        alert=alert
+    )
+
+    executor = SafeTradeExecutor(
+        executor=trade_exec,
+        max_trade_size_eth=float(config["MAX_TRADE_SIZE_ETH"]),
+        slippage_bps=int(config["SLIPPAGE_BPS"]),
+        alert=alert
+    )
+
     dex = DexClient(dex_info)
-    w3 = executor.w3
     router = w3.eth.contract(address=dex.router, abi=ROUTER_ABI)
     exchange = ExchangeClient(w3, router)
-    executor.set_exchange_client(exchange)
+    executor.executor.set_exchange_client(exchange)
 
-    # Define token alvo e WETH
     if dex.is_weth(token1):
         target, weth = token0, token1
     else:
@@ -82,7 +88,7 @@ async def on_new_pair(
 
     log_event(f"Novo par detectado: {pair_addr} | Target: {target}")
 
-    amt_eth = executor.trade_size
+    amt_eth = executor.executor.trade_size
     entry_price = get_price_weth(router, target, weth)
     log_event(f"Preço de entrada obtido: {entry_price}")
 
@@ -92,11 +98,10 @@ async def on_new_pair(
         return
 
     buy_amount_in_wei = int(amt_eth * 1e18)
-    min_out_buy = amount_out_min(router, buy_amount_in_wei, [weth, target], executor.slippage_bps)
+    min_out_buy = amount_out_min(router, buy_amount_in_wei, [weth, target], executor.executor.slippage_bps)
     log_event(f"Calculado min_out_buy: {min_out_buy}")
 
-    # Tentativa de compra
-    buy_tx = await executor.buy(path=[weth, target], amount_in_wei=buy_amount_in_wei, amount_out_min=min_out_buy)
+    buy_tx = await executor.buy([weth, target], buy_amount_in_wei, min_out_buy, entry_price, entry_price)
     if not buy_tx:
         log_event(f"⚠️ Compra não realizada: {target}")
         flush_report(alert)
@@ -104,10 +109,9 @@ async def on_new_pair(
 
     log_event(f"🛒 Compra confirmada: {target} | TX: {buy_tx}")
 
-    # Monitoramento de venda
     highest = entry_price
-    trail_pct = executor.trail_pct / 100
-    tp_price  = entry_price * (1 + executor.take_profit_pct / 100)
+    trail_pct = executor.executor.trail_pct / 100 if hasattr(executor.executor, "trail_pct") else 0.02
+    tp_price  = entry_price * (1 + executor.executor.take_profit_pct / 100) if hasattr(executor.executor, "take_profit_pct") else entry_price * 1.05
     stop_px   = highest * (1 - trail_pct)
 
     from discovery import is_discovery_running
@@ -129,9 +133,9 @@ async def on_new_pair(
 
         if price >= tp_price or price <= stop_px:
             sell_amount_in_wei = int(amt_eth * 1e18)
-            min_out_sell_weth = math.floor(price * 1e18 * (1 - executor.slippage_bps / 10_000))
+            min_out_sell_weth = math.floor(price * 1e18 * (1 - executor.executor.slippage_bps / 10_000))
 
-            sell_tx = await executor.sell(path=[target, weth], amount_in_wei=sell_amount_in_wei, min_out=min_out_sell_weth)
+            sell_tx = await executor.sell([target, weth], sell_amount_in_wei, min_out_sell_weth, price, entry_price)
             if sell_tx:
                 log_event(f"💰 Venda realizada: {target} | TX: {sell_tx}")
                 sold = True
@@ -144,14 +148,4 @@ async def on_new_pair(
     if not sold:
         log_event(f"⏹ Monitoramento finalizado para {target} (sniper parado).")
 
-    # Atualiza PnL simulado
-    if getattr(executor, "dry_run", False):
-        if not hasattr(executor, "simulated_pnl"):
-            executor.simulated_pnl = 0.0
-        if entry_price and final_price:
-            pnl_eth = amt_eth * (final_price / entry_price - 1.0)
-            executor.simulated_pnl += pnl_eth
-            log_event(f"[SIMULADO] PnL: {pnl_eth:+.6f} ETH | Acumulado: {executor.simulated_pnl:+.6f} ETH")
-
-    # Envia relatório consolidado
     flush_report(alert)
