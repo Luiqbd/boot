@@ -7,23 +7,25 @@ from risk_manager import RiskManager
 
 logger = logging.getLogger(__name__)
 
-
 class SafeTradeExecutor:
     """
-    Envolve o TradeExecutor com checagens de risco.
+    Envolve o TradeExecutor com checagens de risco e integra logs no mesmo
+    mecanismo de alerta/relatório do executor base.
     """
 
     def __init__(
         self,
         executor: TradeExecutor,
         max_trade_size_eth: float,
-        slippage_bps: int
+        slippage_bps: int,
+        alert    # objeto que acumula mensagens para relatório
     ):
         self.executor = executor
         self.risk = RiskManager(
             max_trade_size=max_trade_size_eth,
             slippage_bps=slippage_bps
         )
+        self.alert = alert
 
     def _can_trade(
         self,
@@ -48,17 +50,24 @@ class SafeTradeExecutor:
                 kwargs["amount_eth"] = amount_eth
 
             allowed = self.risk.can_trade(**kwargs)
-            logger.debug(f"RiskManager.can_trade({kwargs}) -> {allowed}")
+            msg = f"RiskManager.can_trade({kwargs}) -> {allowed}"
+            logger.debug(msg)
+            self.alert.log_event(msg)
             return allowed
         except Exception as e:
-            logger.error(f"Erro em RiskManager.can_trade: {e}", exc_info=True)
+            err = f"Erro em RiskManager.can_trade: {e}"
+            logger.error(err, exc_info=True)
+            self.alert.log_event(err)
             return False
 
     def _register(self, sucesso: bool):
         try:
             self.risk.register_trade(success=sucesso)
+            self.alert.log_event(f"Trade {'registrado' if sucesso else 'falhou'} no RiskManager")
         except Exception as e:
-            logger.error(f"Erro ao registrar trade: {e}", exc_info=True)
+            err = f"Erro ao registrar trade: {e}"
+            logger.error(err, exc_info=True)
+            self.alert.log_event(err)
 
     async def buy(
         self,
@@ -69,7 +78,9 @@ class SafeTradeExecutor:
         last_trade_price: float
     ) -> Optional[str]:
         if not self._can_trade(current_price, last_trade_price, "buy", self.executor.trade_size):
-            logger.info("Compra bloqueada pelo RiskManager")
+            msg = "Compra bloqueada pelo RiskManager"
+            logger.info(msg)
+            self.alert.log_event(msg)
             return None
 
         tx = await self.executor.buy(path, amount_in_wei, amount_out_min)
@@ -85,7 +96,9 @@ class SafeTradeExecutor:
         last_trade_price: float
     ) -> Optional[str]:
         if not self._can_trade(current_price, last_trade_price, "sell", self.executor.trade_size):
-            logger.info("Venda bloqueada pelo RiskManager")
+            msg = "Venda bloqueada pelo RiskManager"
+            logger.info(msg)
+            self.alert.log_event(msg)
             return None
 
         tx = await self.executor.sell(path, amount_in_wei, min_out)
@@ -98,6 +111,17 @@ class SafeTradeExecutor:
         try:
             if hasattr(self.risk, "register_loss"):
                 self.risk.register_loss(loss_eth)
-                logger.debug(f"Registrado prejuízo de {loss_eth} ETH")
+                msg = f"Registrado prejuízo de {loss_eth} ETH"
+                logger.debug(msg)
+                self.alert.log_event(msg)
         except Exception as e:
-            logger.error(f"Erro ao registrar perda: {e}", exc_info=True)
+            err = f"Erro ao registrar perda: {e}"
+            logger.error(err, exc_info=True)
+            self.alert.log_event(err)
+
+    def stop(self):
+        """Encerra e envia o relatório acumulado."""
+        try:
+            self.alert.flush_report()
+        except Exception as e:
+            logger.error(f"Erro ao enviar relatório: {e}", exc_info=True)
