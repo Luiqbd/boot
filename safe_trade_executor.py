@@ -4,99 +4,100 @@ from typing import Optional
 
 from trade_executor import TradeExecutor
 from risk_manager import RiskManager
-from strategy_sniper import log_event, flush_report  # import correto ✅
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(name)
+
 
 class SafeTradeExecutor:
-    def __init__(
+    """
+    Envolve o TradeExecutor com checagens de risco.
+    """
+
+    def init(
         self,
         executor: TradeExecutor,
-        max_trade_size_eth: float,
-        slippage_bps: int,
-        alert
+        maxtradesize_eth: float,
+        slippage_bps: int
     ):
         self.executor = executor
         self.risk = RiskManager(
-            max_trade_size=max_trade_size_eth,
-            slippage_bps=slippage_bps
+            maxtradesize=maxtradesize_eth,
+            slippagebps=slippagebps
         )
-        self.alert = alert
 
-    def _can_trade(self, current_price, last_trade_price, direction, amount_eth) -> bool:
+    def cantrade(
+        self,
+        current_price: float,
+        lasttradeprice: float,
+        direction: str,
+        amount_eth: float
+    ) -> bool:
         try:
             sig = inspect.signature(self.risk.can_trade)
             params = sig.parameters
             kwargs = {}
             if "current_price" in params:
-                kwargs["current_price"] = current_price
-            if "last_trade_price" in params:
-                kwargs["last_trade_price"] = last_trade_price
+                kwargs["currentprice"] = currentprice
+            if "lasttradeprice" in params:
+                kwargs["lasttradeprice"] = lasttradeprice
             if "direction" in params:
                 kwargs["direction"] = direction
-            if "trade_size_eth" in params:
-                kwargs["trade_size_eth"] = amount_eth
+            if "tradesizeeth" in params:
+                kwargs["tradesizeeth"] = amount_eth
             elif "amount_eth" in params:
-                kwargs["amount_eth"] = amount_eth
+                kwargs["amounteth"] = amounteth
 
-            allowed = self.risk.can_trade(**kwargs)
-            msg = f"RiskManager.can_trade({kwargs}) -> {allowed}"
-            logger.debug(msg)
-            self.alert.log_event(msg)
+            allowed = self.risk.can_trade(kwargs)
+            logger.debug(f"RiskManager.can_trade({kwargs}) -> {allowed}")
             return allowed
         except Exception as e:
-            err = f"Erro em RiskManager.can_trade: {e}"
-            logger.error(err, exc_info=True)
-            self.alert.log_event(err)
+            logger.error(f"Erro em RiskManager.cantrade: {e}", excinfo=True)
             return False
 
     def _register(self, sucesso: bool):
         try:
             self.risk.register_trade(success=sucesso)
-            self.alert.log_event(f"Trade {'registrado' if sucesso else 'falhou'} no RiskManager")
         except Exception as e:
-            err = f"Erro ao registrar trade: {e}"
-            logger.error(err, exc_info=True)
-            self.alert.log_event(err)
+            logger.error(f"Erro ao registrar trade: {e}", exc_info=True)
 
-    async def buy(self, path, amount_in_wei, amount_out_min, current_price, last_trade_price) -> Optional[str]:
-        if not self._can_trade(current_price, last_trade_price, "buy", self.executor.tradesize):
-            msg = "Compra bloqueada pelo RiskManager"
-            logger.info(msg)
-            self.alert.log_event(msg)
+    async def buy(
+        self,
+        path: list,
+        amountinwei: int,
+        amountoutmin: Optional[int],
+        current_price: float,
+        lasttradeprice: float
+    ) -> Optional[str]:
+        if not self.cantrade(currentprice, lasttradeprice, "buy", self.executor.tradesize):
+            logger.info("Compra bloqueada pelo RiskManager")
             return None
 
-        tx = await self.executor.buy(path, amount_in_wei, amount_out_min)
+        tx = await self.executor.buy(path, amountinwei, amountoutmin)
         self._register(sucesso=(tx is not None))
         return tx
 
-    async def sell(self, path, amount_in_wei, min_out, current_price, last_trade_price) -> Optional[str]:
-        if not self._can_trade(current_price, last_trade_price, "sell", self.executor.tradesize):
-            msg = "Venda bloqueada pelo RiskManager"
-            logger.info(msg)
-            self.alert.log_event(msg)
+    async def sell(
+        self,
+        path: list,
+        amountinwei: int,
+        min_out: Optional[int],
+        current_price: float,
+        lasttradeprice: float
+    ) -> Optional[str]:
+        if not self.cantrade(currentprice, lasttradeprice, "sell", self.executor.tradesize):
+            logger.info("Venda bloqueada pelo RiskManager")
             return None
 
-        tx = await self.executor.sell(path, amount_in_wei, min_out)
+        tx = await self.executor.sell(path, amountinwei, min_out)
         self._register(sucesso=(tx is not None))
         return tx
 
-    def record_outcome(self, loss_eth: float = 0.0):
+    def recordoutcome(self, losseth: float = 0.0):
         if loss_eth <= 0:
             return
         try:
             if hasattr(self.risk, "register_loss"):
-                self.risk.register_loss(loss_eth)
-                msg = f"Registrado prejuízo de {loss_eth} ETH"
-                logger.debug(msg)
-                self.alert.log_event(msg)
+                self.risk.registerloss(losseth)
+                logger.debug(f"Registrado prejuízo de {loss_eth} ETH")
         except Exception as e:
-            err = f"Erro ao registrar perda: {e}"
-            logger.error(err, exc_info=True)
-            self.alert.log_event(err)
-
-    def stop(self):
-        try:
-            self.alert.flush_report()
-        except Exception as e:
-            logger.error(f"Erro ao enviar relatório: {e}", exc_info=True)
+            logger.error(f"Erro ao registrar perda: {e}", exc_info=True)
