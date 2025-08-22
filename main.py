@@ -23,6 +23,10 @@ from strategy_sniper import on_new_pair
 from discovery import run_discovery, stop_discovery, get_discovery_status
 from config import config  # import para acessar config["DEXES"]
 
+# --- Importa RiskManager com histórico ---
+from risk_manager import RiskManager
+risk_manager = RiskManager()
+
 # --- Configuração de log ---
 logging.basicConfig(
     format='[%(asctime)s] %(levelname)s - %(message)s',
@@ -79,7 +83,7 @@ def env_summary_text() -> str:
         f"⏱ Intervalo: {os.getenv('INTERVAL')}s\n"
     )
 
-# --- Funções sniper (multi-DEX com única chamada) ---
+# --- Funções sniper ---
 def iniciar_sniper():
     global sniper_thread
     if sniper_thread and sniper_thread.is_alive():
@@ -90,7 +94,6 @@ def iniciar_sniper():
 
     def start_sniper():
         try:
-            # discovery.py já percorre todas as DEX e envia dex_info no callback
             run_discovery(
                 lambda dex, pair, t0, t1: on_new_pair(dex, pair, t0, t1, bot=application.bot),
                 loop
@@ -104,93 +107,28 @@ def iniciar_sniper():
 def parar_sniper():
     stop_discovery(loop)
 
-# --- Handlers principais ---
-async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    mensagem = (
-        "🎯 **Bem-vindo ao Sniper Bot Criado por Luis Fernando**\n\n"
-        "📌 **Comandos disponíveis**\n"
-        "🟢 /snipe — Inicia o sniper.\n"
-        "🔴 /stop — Para o sniper.\n"
-        "📈 /sniperstatus — Status do sniper.\n"
-        "💰 /status — Mostra saldo ETH/WETH.\n"
-        "🏓 /ping — Teste de vida.\n"
-        "🛰️ /testnotify — Mensagem de teste.\n"
-        "📜 /menu — Reexibe este menu.\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "🛠 **Configuração Atual**\n"
-        f"{env_summary_text()}"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
-    )
-    await update.message.reply_text(mensagem, parse_mode="Markdown")
-
-async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await start_cmd(update, context)
-
-async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def relatorio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        wallet_address = context.args[0] if context.args else None
-        status = get_wallet_status(wallet_address)
-        await update.message.reply_text(status)
+        rel = risk_manager.gerar_relatorio()
+        await update.message.reply_text(f"📊 Relatório de eventos:\n{rel}")
     except Exception as e:
-        logging.error(f"Erro no /status: {e}", exc_info=True)
-        await update.message.reply_text("⚠️ Erro ao verificar o status da carteira.")
-
-async def snipe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if sniper_thread and sniper_thread.is_alive():
-        await update.message.reply_text("⚠️ O sniper já está rodando.")
-        return
-    await update.message.reply_text("⚙️ Iniciando sniper... Monitorando novas pairs em todas as DEX.")
-    iniciar_sniper()
-
-async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    parar_sniper()
-    await update.message.reply_text("🛑 Sniper interrompido.")
-
-async def sniper_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        status = get_discovery_status() or {"text": "Status indisponível."}
-        await update.message.reply_text(status["text"])
-    except Exception as e:
-        logging.error(f"Erro no /sniperstatus: {e}", exc_info=True)
-        await update.message.reply_text("⚠️ Erro ao verificar o status do sniper.")
-
-async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"Você disse: {update.message.text}")
-
-async def ping_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uptime_seconds = int(time.time() - context.bot_data.get("start_time", time.time()))
-    uptime_str = str(datetime.timedelta(seconds=uptime_seconds))
-    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    await update.message.reply_text(
-        f"pong 🏓\n"
-        f"⏱ Uptime: {uptime_str}\n"
-        f"🕒 Agora: {now_str}"
-    )
-
-async def test_notify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        chat_id_str = TELEGRAM_CHAT_ID or "0"
-        chat_id = int(chat_id_str) if chat_id_str.isdigit() else 0
-        if chat_id == 0:
-            await update.message.reply_text("⚠️ TELEGRAM_CHAT_ID ausente ou inválido nas variáveis de ambiente.")
-            return
-
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        unique_id = str(uuid.uuid4())[:8]
-
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"✅ Teste de notificação\n🕒 {timestamp}\n🆔 {unique_id}\n💬 Sniper pronto para narrar as operações!"
-        )
-        await update.message.reply_text(f"Mensagem de teste enviada (ID: {unique_id})")
-    except Exception as e:
-        logging.error(f"Erro no /testnotify: {e}", exc_info=True)
-        await update.message.reply_text(f"⚠️ Erro ao enviar mensagem: {e}")
+        logging.error(f"Erro ao gerar relatório: {e}", exc_info=True)
+        await update.message.reply_text("⚠️ Erro ao gerar relatório.")
 
 # --- Healthcheck ---
 @app.route("/", methods=["GET", "HEAD"])
 def health():
     return "ok", 200
+
+# --- Rota HTTP para relatório ---
+@app.route("/relatorio", methods=["GET"])
+def relatorio_http():
+    try:
+        rel = risk_manager.gerar_relatorio()
+        return f"<h1>📊 Relatório de Eventos</h1><pre>{rel}</pre>"
+    except Exception as e:
+        logging.error(f"Erro ao gerar relatório HTTP: {e}", exc_info=True)
+        return "Erro ao gerar relatório", 500
 
 # --- Webhook ---
 @app.route('/webhook', methods=['POST'])
@@ -230,7 +168,6 @@ def start_flask():
 
 # --- Inicialização ---
 if __name__ == "__main__":
-    # Variáveis essenciais
     if not TELEGRAM_TOKEN:
         logging.error("Falta TELEGRAM_TOKEN no ambiente. Encerrando.")
         raise SystemExit(1)
@@ -242,7 +179,6 @@ if __name__ == "__main__":
         logging.error(f"Faltam variáveis de ambiente obrigatórias: {', '.join(missing)}. Encerrando.")
         raise SystemExit(1)
 
-    # Valida chave e loga a carteira ativa
     try:
         addr = get_active_address()
         logging.info(f"🔑 Carteira ativa: {addr}")
@@ -261,6 +197,7 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("sniperstatus", sniper_status_cmd))
     application.add_handler(CommandHandler("ping", ping_cmd))
     application.add_handler(CommandHandler("testnotify", test_notify_cmd))
+    application.add_handler(CommandHandler("relatorio", relatorio_cmd))  # NOVO COMANDO
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
     async def start_bot():
@@ -275,10 +212,10 @@ if __name__ == "__main__":
             BotCommand("stop", "Para o sniper"),
             BotCommand("sniperstatus", "Status do sniper"),
             BotCommand("ping", "Teste de vida (pong)"),
-            BotCommand("testnotify", "Envia uma notificação de teste")
+            BotCommand("testnotify", "Envia uma notificação de teste"),
+            BotCommand("relatorio", "Mostra o relatório de eventos")  # NOVO COMANDO
         ])
 
-        # Log informativo: DEX monitoradas
         try:
             dex_lines = [
                 f"- {d['name']} | type={d['type']} | factory={d['factory']} | router={d['router']}"
