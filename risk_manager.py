@@ -5,11 +5,12 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-# Config do Telegram
+# Config do Telegram — substitua pelos valores reais
 BOT_TOKEN = "SEU_BOT_TOKEN"
 CHAT_ID = "SEU_CHAT_ID"
 
 def send_telegram(msg: str):
+    """Envia mensagem simples para o Telegram."""
     try:
         requests.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
@@ -40,11 +41,19 @@ class RiskManager:
         self.realized_pnl_eth = Decimal("0")
         self.last_trade_time_by_pair = {}
 
-        # Histórico interno
+        # Histórico interno de eventos
         self.eventos = []
 
-    def _registrar_evento(self, tipo, mensagem, pair=None, direction=None,
-                          trade_size_eth=None, current_price=None, last_trade_price=None):
+    def _registrar_evento(
+        self,
+        tipo,
+        mensagem,
+        pair=None,
+        direction=None,
+        trade_size_eth=None,
+        current_price=None,
+        last_trade_price=None
+    ):
         evento = {
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "tipo": tipo,
@@ -58,35 +67,54 @@ class RiskManager:
         self.eventos.append(evento)
 
         # Log local
-        logger.warning(f"{mensagem} | {evento}")
+        log_line = f"{mensagem} | {evento}"
+        if tipo == "bloqueio":
+            logger.warning(log_line)
+        elif tipo in ("erro_trade",):
+            logger.error(log_line)
+        else:
+            logger.info(log_line)
 
-        # Envia para Telegram
-        send_telegram(f"📢 {mensagem}\n{evento}")
+        # Telegram
+        try:
+            send_telegram(f"📢 {mensagem}\n{evento}")
+        except Exception as e:
+            logger.error(f"[TELEGRAM] Falha ao enviar evento: {e}")
 
     def gerar_relatorio(self):
+        """Gera um relatório consolidado de todos os eventos."""
         if not self.eventos:
             return "Nenhum evento registrado ainda."
         linhas = []
         for e in self.eventos:
             linhas.append(
                 f"{e['timestamp']} | {e['tipo']} | {e.get('pair')} | {e.get('direction')} | "
-                f"{e.get('tamanho_eth','-')} ETH | {e.get('preco_atual')} | {e.get('mensagem')}"
+                f"{e.get('tamanho_eth','-')} ETH | preço: {e.get('preco_atual')} | {e.get('mensagem')}"
             )
         relatorio = "\n".join(linhas)
         send_telegram(f"📊 Relatório:\n{relatorio}")
         return relatorio
 
-    def can_trade(self, current_price, last_trade_price, direction,
-                  trade_size_eth=None, min_liquidity_ok=True, not_honeypot=True,
-                  pair=None, now_ts=None):
+    def can_trade(
+        self,
+        current_price,
+        last_trade_price,
+        direction,
+        trade_size_eth=None,
+        min_liquidity_ok=True,
+        not_honeypot=True,
+        pair=None,
+        now_ts=None
+    ):
+        """Verifica se a trade é permitida, registrando motivo em caso negativo."""
 
         if self.daily_trades >= self.max_trades_per_day:
-            self._registrar_evento("bloqueio", "🚫 Limite diário atingido",
+            self._registrar_evento("bloqueio", "🚫 Limite diário de trades atingido",
                                    pair, direction, trade_size_eth, current_price, last_trade_price)
             return False
 
         if self.loss_streak >= self.loss_limit:
-            self._registrar_evento("bloqueio", "🛑 Circuit breaker ativado",
+            self._registrar_evento("bloqueio", "🛑 Circuit breaker ativado (limite de perdas consecutivas)",
                                    pair, direction, trade_size_eth, current_price, last_trade_price)
             return False
 
@@ -125,14 +153,18 @@ class RiskManager:
                                        pair, direction, trade_size_eth, current_price, last_trade_price)
                 return False
 
+        # Se chegou até aqui, trade permitida
+        self._registrar_evento("liberado", "✅ Trade liberada",
+                               pair, direction, trade_size_eth, current_price, last_trade_price)
         return True
 
     def register_trade(self, success=True, pair=None, direction=None, now_ts=None):
+        """Registra execução de trade."""
         self.daily_trades += 1
         if success:
             self.loss_streak = 0
             self._registrar_evento("compra" if direction == "buy" else "venda",
-                                   "✅ Trade executado com sucesso", pair, direction)
+                                   "✅ Trade executada com sucesso", pair, direction)
         else:
             self.loss_streak += 1
             self._registrar_evento("erro_trade", "❌ Falha na execução do trade",
@@ -142,10 +174,13 @@ class RiskManager:
             self.last_trade_time_by_pair[(pair[0], pair[1], direction)] = now_ts
 
     def register_pnl(self, pnl_eth: float):
+        """Registra lucro/prejuízo realizado."""
         self.realized_pnl_eth += Decimal(str(pnl_eth))
 
     def reset_daily_limits(self):
+        """Reseta todos os contadores diários."""
         self.daily_trades = 0
         self.loss_streak = 0
         self.realized_pnl_eth = Decimal("0")
         self.last_trade_time_by_pair.clear()
+        self._registrar_evento("reset", "🔄 Limites diários resetados")
