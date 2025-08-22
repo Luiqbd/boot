@@ -3,12 +3,11 @@ import asyncio
 import logging
 import requests
 from flask import Flask, request
-from telegram import Update, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, BotCommand
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
-    CallbackQueryHandler,
     ContextTypes,
     filters
 )
@@ -108,67 +107,29 @@ def iniciar_sniper():
 def parar_sniper():
     stop_discovery(loop)
 
-# --- /start com botões interativos ---
+# --- Handlers principais ---
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mensagem = (
         "🎯 **Bem-vindo ao Sniper Bot Criado por Luis Fernando**\n\n"
-        "Escolha uma das opções abaixo para começar:\n\n"
+        "📌 **Comandos disponíveis**\n"
+        "🟢 /snipe — Inicia o sniper.\n"
+        "🔴 /stop — Para o sniper.\n"
+        "📈 /sniperstatus — Status do sniper.\n"
+        "💰 /status — Mostra saldo ETH/WETH.\n"
+        "🏓 /ping — Teste de vida.\n"
+        "🛰️ /testnotify — Mensagem de teste.\n"
+        "📜 /menu — Reexibe este menu.\n"
+        "📊 /relatorio — Gera relatório do RiskManager.\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "🛠 **Configuração Atual**\n"
         f"{env_summary_text()}"
-        "━━━━━━━━━━━━━━━━━━━━━━"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
     )
+    await update.message.reply_text(mensagem, parse_mode="Markdown")
 
-    botoes = [
-        [
-            InlineKeyboardButton("🟢 Iniciar Sniper", callback_data="cmd_snipe"),
-            InlineKeyboardButton("🔴 Parar Sniper", callback_data="cmd_stop")
-        ],
-        [
-            InlineKeyboardButton("📈 Status Sniper", callback_data="cmd_sniperstatus"),
-            InlineKeyboardButton("💰 Status Carteira", callback_data="cmd_status")
-        ],
-        [
-            InlineKeyboardButton("📊 Relatório", callback_data="cmd_relatorio"),
-            InlineKeyboardButton("🏓 Ping", callback_data="cmd_ping")
-        ],
-        [
-            InlineKeyboardButton("🛰️ Testar Notificação", callback_data="cmd_testnotify")
-        ],
-        [
-            InlineKeyboardButton("📢 Canal de Suporte", url="https://t.me/seucanal")  # altere para seu link real
-        ]
-    ]
-    teclado = InlineKeyboardMarkup(botoes)
-    await update.message.reply_text(mensagem, parse_mode="Markdown", reply_markup=teclado)
-
-# /menu reutiliza o /start
 async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start_cmd(update, context)
 
-# --- Handler dos botões ---
-async def botao_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-
-    if data == "cmd_snipe":
-        await snipe_cmd(update, context)
-    elif data == "cmd_stop":
-        await stop_cmd(update, context)
-    elif data == "cmd_sniperstatus":
-        await sniper_status_cmd(update, context)
-    elif data == "cmd_status":
-        await status_cmd(update, context)
-    elif data == "cmd_relatorio":
-        rel = risk_manager.gerar_relatorio()
-        await query.message.reply_text(f"📊 Relatório de eventos:\n{rel}")
-    elif data == "cmd_ping":
-        await ping_cmd(update, context)
-    elif data == "cmd_testnotify":
-        await test_notify_cmd(update, context)
-
-# --- Demais comandos originais continuam iguais ---
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         wallet_address = context.args[0] if context.args else None
@@ -223,7 +184,7 @@ async def test_notify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await context.bot.send_message(
             chat_id=chat_id,
-                    text=f"✅ Teste de notificação\n🕒 {timestamp}\n🆔 {unique_id}\n💬 Sniper pronto para narrar as operações!"
+            text=f"✅ Teste de notificação\n🕒 {timestamp}\n🆔 {unique_id}\n💬 Sniper pronto para narrar as operações!"
         )
         await update.message.reply_text(f"Mensagem de teste enviada (ID: {unique_id})")
     except Exception as e:
@@ -321,9 +282,7 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("sniperstatus", sniper_status_cmd))
     application.add_handler(CommandHandler("ping", ping_cmd))
     application.add_handler(CommandHandler("testnotify", test_notify_cmd))
-    application.add_handler(CommandHandler("relatorio", relatorio_cmd))
-    # Handler para botões inline
-    application.add_handler(CallbackQueryHandler(botao_handler))
+    application.add_handler(CommandHandler("relatorio", relatorio_cmd))  # NOVO COMANDO
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
     async def start_bot():
@@ -339,7 +298,7 @@ if __name__ == "__main__":
             BotCommand("sniperstatus", "Status do sniper"),
             BotCommand("ping", "Teste de vida (pong)"),
             BotCommand("testnotify", "Envia uma notificação de teste"),
-            BotCommand("relatorio", "Mostra o relatório de eventos")
+            BotCommand("relatorio", "Mostra o relatório de eventos")  # NOVO COMANDO
         ])
 
         try:
