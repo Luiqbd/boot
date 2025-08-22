@@ -107,6 +107,91 @@ def iniciar_sniper():
 def parar_sniper():
     stop_discovery(loop)
 
+# --- Handlers principais ---
+async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    mensagem = (
+        "🎯 **Bem-vindo ao Sniper Bot Criado por Luis Fernando**\n\n"
+        "📌 **Comandos disponíveis**\n"
+        "🟢 /snipe — Inicia o sniper.\n"
+        "🔴 /stop — Para o sniper.\n"
+        "📈 /sniperstatus — Status do sniper.\n"
+        "💰 /status — Mostra saldo ETH/WETH.\n"
+        "🏓 /ping — Teste de vida.\n"
+        "🛰️ /testnotify — Mensagem de teste.\n"
+        "📜 /menu — Reexibe este menu.\n"
+        "📊 /relatorio — Gera relatório do RiskManager.\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🛠 **Configuração Atual**\n"
+        f"{env_summary_text()}"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+    )
+    await update.message.reply_text(mensagem, parse_mode="Markdown")
+
+async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await start_cmd(update, context)
+
+async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        wallet_address = context.args[0] if context.args else None
+        status = get_wallet_status(wallet_address)
+        await update.message.reply_text(status)
+    except Exception as e:
+        logging.error(f"Erro no /status: {e}", exc_info=True)
+        await update.message.reply_text("⚠️ Erro ao verificar o status da carteira.")
+
+async def snipe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if sniper_thread and sniper_thread.is_alive():
+        await update.message.reply_text("⚠️ O sniper já está rodando.")
+        return
+    await update.message.reply_text("⚙️ Iniciando sniper... Monitorando novas pairs em todas as DEX.")
+    iniciar_sniper()
+
+async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    parar_sniper()
+    await update.message.reply_text("🛑 Sniper interrompido.")
+
+async def sniper_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        status = get_discovery_status() or {"text": "Status indisponível."}
+        await update.message.reply_text(status["text"])
+    except Exception as e:
+        logging.error(f"Erro no /sniperstatus: {e}", exc_info=True)
+        await update.message.reply_text("⚠️ Erro ao verificar o status do sniper.")
+
+async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"Você disse: {update.message.text}")
+
+async def ping_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uptime_seconds = int(time.time() - context.bot_data.get("start_time", time.time()))
+    uptime_str = str(datetime.timedelta(seconds=uptime_seconds))
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    await update.message.reply_text(
+        f"pong 🏓\n"
+        f"⏱ Uptime: {uptime_str}\n"
+        f"🕒 Agora: {now_str}"
+    )
+
+async def test_notify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        chat_id_str = TELEGRAM_CHAT_ID or "0"
+        chat_id = int(chat_id_str) if chat_id_str.isdigit() else 0
+        if chat_id == 0:
+            await update.message.reply_text("⚠️ TELEGRAM_CHAT_ID ausente ou inválido nas variáveis de ambiente.")
+            return
+
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        unique_id = str(uuid.uuid4())[:8]
+
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"✅ Teste de notificação\n🕒 {timestamp}\n🆔 {unique_id}\n💬 Sniper pronto para narrar as operações!"
+        )
+        await update.message.reply_text(f"Mensagem de teste enviada (ID: {unique_id})")
+    except Exception as e:
+        logging.error(f"Erro no /testnotify: {e}", exc_info=True)
+        await update.message.reply_text(f"⚠️ Erro ao enviar mensagem: {e}")
+
+# --- Novo comando /relatorio ---
 async def relatorio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         rel = risk_manager.gerar_relatorio()
