@@ -250,8 +250,14 @@ def iniciar_bot():
     application.add_handler(CommandHandler("testnotify", test_notify_cmd))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_cmd))
 
-    # Iniciar o loop do Telegram
-    Thread(target=application.run_polling, daemon=True).start()
+    # Função interna para criar loop na thread do polling
+    def start_polling():
+        loop_poll = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop_poll)
+        loop_poll.run_until_complete(application.run_polling())
+
+    # Iniciar o loop do Telegram em uma thread separada
+    Thread(target=start_polling, daemon=True).start()
 
 # --- Rotas Flask ---
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
