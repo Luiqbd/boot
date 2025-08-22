@@ -26,7 +26,7 @@ from config import config
 from risk_manager import RiskManager
 risk_manager = RiskManager()
 
-# --- Novo on_new_pair com RiskManager integrado ---
+# --- Função de evento ao encontrar novo par ---
 async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
     current_price = 1.0
     last_trade_price = 0.95
@@ -160,7 +160,15 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start_cmd(update, context)
 
-# --- Comando /relatorio ---
+async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        wallet_address = context.args[0] if context.args else get_active_address()
+        status = get_wallet_status(wallet_address)
+        await update.message.reply_text(f"📊 Status da carteira `{wallet_address}`:\n{status}", parse_mode="Markdown")
+    except Exception as e:
+        logging.error(f"Erro no /status: {e}", exc_info=True)
+        await update.message.reply_text("⚠️ Erro ao verificar o status da carteira.")
+
 async def relatorio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         rel = risk_manager.gerar_relatorio()
@@ -168,7 +176,6 @@ async def relatorio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logging.error(f"Erro ao gerar relatório: {e}", exc_info=True)
         await update.message.reply_text("⚠️ Erro ao gerar relatório.")
-
 # --- Healthcheck ---
 @app.route("/", methods=["GET", "HEAD"])
 def health():
@@ -243,6 +250,8 @@ if __name__ == "__main__":
     asyncio.set_event_loop(loop)
 
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
+    # Registro dos handlers
     application.add_handler(CommandHandler("start", start_cmd))
     application.add_handler(CommandHandler("menu", menu_cmd))
     application.add_handler(CommandHandler("status", status_cmd))
