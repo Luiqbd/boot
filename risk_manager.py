@@ -41,8 +41,11 @@ class RiskManager:
         self.realized_pnl_eth = Decimal("0")
         self.last_trade_time_by_pair = {}
 
-        # Histórico interno de eventos
+        # Histórico de eventos
         self.eventos = []
+
+        # 🆕 Armazena último motivo de bloqueio
+        self.last_block_reason = None
 
     def _registrar_evento(
         self,
@@ -66,11 +69,17 @@ class RiskManager:
         }
         self.eventos.append(evento)
 
-        # Log local
+        # 🆕 Atualiza último motivo de bloqueio
+        if tipo == "bloqueio":
+            self.last_block_reason = mensagem
+        elif tipo == "liberado":
+            self.last_block_reason = None
+
+        # Logs locais
         log_line = f"{mensagem} | {evento}"
         if tipo == "bloqueio":
             logger.warning(log_line)
-        elif tipo in ("erro_trade",):
+        elif tipo == "erro_trade":
             logger.error(log_line)
         else:
             logger.info(log_line)
@@ -82,7 +91,7 @@ class RiskManager:
             logger.error(f"[TELEGRAM] Falha ao enviar evento: {e}")
 
     def gerar_relatorio(self):
-        """Gera um relatório consolidado de todos os eventos."""
+        """Gera relatório consolidado de eventos."""
         if not self.eventos:
             return "Nenhum evento registrado ainda."
         linhas = []
@@ -106,8 +115,7 @@ class RiskManager:
         pair=None,
         now_ts=None
     ):
-        """Verifica se a trade é permitida, registrando motivo em caso negativo."""
-
+        """Verifica se a trade é permitida e registra motivo de bloqueio, se houver."""
         if self.daily_trades >= self.max_trades_per_day:
             self._registrar_evento("bloqueio", "🚫 Limite diário de trades atingido",
                                    pair, direction, trade_size_eth, current_price, last_trade_price)
@@ -153,7 +161,7 @@ class RiskManager:
                                        pair, direction, trade_size_eth, current_price, last_trade_price)
                 return False
 
-        # Se chegou até aqui, trade permitida
+        # Trade liberada
         self._registrar_evento("liberado", "✅ Trade liberada",
                                pair, direction, trade_size_eth, current_price, last_trade_price)
         return True
@@ -178,9 +186,10 @@ class RiskManager:
         self.realized_pnl_eth += Decimal(str(pnl_eth))
 
     def reset_daily_limits(self):
-        """Reseta todos os contadores diários."""
+        """Reseta todos os contadores e motivo de bloqueio."""
         self.daily_trades = 0
         self.loss_streak = 0
         self.realized_pnl_eth = Decimal("0")
         self.last_trade_time_by_pair.clear()
+        self.last_block_reason = None
         self._registrar_evento("reset", "🔄 Limites diários resetados")
