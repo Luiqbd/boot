@@ -14,7 +14,6 @@ from telegram.ext import (
 from threading import Thread
 import time
 import datetime
-import uuid
 from web3 import Web3
 
 # --- Importações sniper ---
@@ -26,7 +25,7 @@ from config import config
 from risk_manager import RiskManager
 risk_manager = RiskManager()
 
-# --- Função de evento ao encontrar novo par ---
+# --- Função ao encontrar novo par ---
 async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
     current_price = 1.0
     last_trade_price = 0.95
@@ -34,7 +33,6 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
     direction = "buy"
     pair = (token0, token1)
     now_ts = int(datetime.datetime.now().timestamp())
-
     min_liquidity_ok = True
     not_honeypot = True
 
@@ -48,7 +46,6 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         pair=pair,
         now_ts=now_ts
     )
-
     if not pode_operar:
         return
 
@@ -76,10 +73,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "0")
 
-# --- Funções auxiliares ---
-def str_to_bool(v: str) -> bool:
-    return str(v).strip().lower() in {"1", "true", "t", "yes", "y"}
-
+# --- Auxiliares ---
 def normalize_private_key(pk: str) -> str:
     if not pk:
         raise ValueError("PRIVATE_KEY não definida no ambiente.")
@@ -100,7 +94,6 @@ def env_summary_text() -> str:
         addr = get_active_address()
     except Exception as e:
         addr = f"Erro ao obter: {e}"
-
     return (
         f"🔑 Endereço: `{addr}`\n"
         f"🌐 Chain ID: {os.getenv('CHAIN_ID')}\n"
@@ -113,15 +106,13 @@ def env_summary_text() -> str:
         f"⏱ Intervalo: {os.getenv('INTERVAL')}s\n"
     )
 
-# --- Funções sniper ---
+# --- Sniper ---
 def iniciar_sniper():
     global sniper_thread
     if sniper_thread and sniper_thread.is_alive():
         logging.info("⚠️ O sniper já está rodando.")
         return
-
-    logging.info("⚙️ Iniciando sniper... Monitorando novos pares com liquidez em todas as DEX configuradas.")
-
+    logging.info("⚙️ Iniciando sniper...")
     def start_sniper():
         try:
             run_discovery(
@@ -130,30 +121,27 @@ def iniciar_sniper():
             )
         except Exception as e:
             logging.error(f"Erro no sniper: {e}", exc_info=True)
-
     sniper_thread = Thread(target=start_sniper, daemon=True)
     sniper_thread.start()
 
 def parar_sniper():
     stop_discovery(loop)
 
-# --- Handlers principais ---
+# --- Comandos ---
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mensagem = (
         "🎯 **Bem-vindo ao Sniper Bot Criado por Luis Fernando**\n\n"
-        "📌 **Comandos disponíveis**\n"
-        "🟢 /snipe — Inicia o sniper.\n"
-        "🔴 /stop — Para o sniper.\n"
-        "📈 /sniperstatus — Status do sniper.\n"
-        "💰 /status — Mostra saldo ETH/WETH.\n"
-        "🏓 /ping — Teste de vida.\n"
-        "🛰️ /testnotify — Mensagem de teste.\n"
-        "📜 /menu — Reexibe este menu.\n"
-        "📊 /relatorio — Gera relatório do RiskManager.\n"
+        "🟢 /snipe — Inicia o sniper\n"
+        "🔴 /stop — Para o sniper\n"
+        "📈 /sniperstatus — Status do sniper\n"
+        "💰 /status — Saldo ETH/WETH\n"
+        "🏓 /ping — Teste de vida\n"
+        "🛰️ /testnotify — Notificação de teste\n"
+        "📜 /menu — Reexibe este menu\n"
+        "📊 /relatorio — Relatório do RiskManager\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "🛠 **Configuração Atual**\n"
         f"{env_summary_text()}"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
     )
     await update.message.reply_text(mensagem, parse_mode="Markdown")
 
@@ -167,15 +155,60 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"📊 Status da carteira `{wallet_address}`:\n{status}", parse_mode="Markdown")
     except Exception as e:
         logging.error(f"Erro no /status: {e}", exc_info=True)
-        await update.message.reply_text("⚠️ Erro ao verificar o status da carteira.")
+        await update.message.reply_text("⚠️ Erro ao verificar o status.")
 
 async def relatorio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         rel = risk_manager.gerar_relatorio()
         await update.message.reply_text(f"📊 Relatório de eventos:\n{rel}")
     except Exception as e:
-        logging.error(f"Erro ao gerar relatório: {e}", exc_info=True)
+        logging.error(f"Erro no relatório: {e}", exc_info=True)
         await update.message.reply_text("⚠️ Erro ao gerar relatório.")
+
+async def snipe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        iniciar_sniper()
+        await update.message.reply_text("🟢 Sniper iniciado com sucesso.")
+    except Exception as e:
+        logging.error(f"Erro ao iniciar sniper: {e}", exc_info=True)
+        await update.message.reply_text("⚠️ Erro ao iniciar o sniper.")
+
+async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        parar_sniper()
+        await update.message.reply_text("🔴 Sniper parado.")
+    except Exception as e:
+        logging.error(f"Erro ao parar sniper: {e}", exc_info=True)
+        await update.message.reply_text("⚠️ Erro ao parar o sniper.")
+
+async def sniper_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        status = get_discovery_status()
+        await update.message.reply_text(f"📈 Status do sniper:\n{status}")
+    except Exception as e:
+        logging.error(f"Erro no status sniper: {e}", exc_info=True)
+        await update.message.reply_text("⚠️ Erro ao obter status.")
+
+async def ping_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    start_time = time.time()
+    msg = await update.message.reply_text("🏓 Pong!")
+    elapsed_ms = int((time.time() - start_time) * 1000)
+    await msg.edit_text(f"🏓 Pong! ({elapsed_ms} ms)")
+
+async def test_notify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await context.bot.send_message(
+            chat_id=TELEGRAM_CHAT_ID,
+            text="🔔 Notificação de teste enviada."
+        )
+        await update.message.reply_text("✅ Notificação enviada.")
+    except Exception as e:
+        logging.error(f"Erro no teste notify: {e}", exc_info=True)
+        await update.message.reply_text("⚠️ Erro ao enviar notificação.")
+
+async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"📩 Você disse: {update.message.text}")
+
 # --- Healthcheck ---
 @app.route("/", methods=["GET", "HEAD"])
 def health():
@@ -209,7 +242,6 @@ def set_webhook_with_retry(max_attempts=5, delay=3):
     if not TELEGRAM_TOKEN or not WEBHOOK_URL:
         logging.error("WEBHOOK não configurado: faltam TELEGRAM_TOKEN ou WEBHOOK_URL.")
         return
-
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
     for attempt in range(1, max_attempts + 1):
         try:
@@ -248,10 +280,9 @@ if __name__ == "__main__":
         raise SystemExit(1)
 
     asyncio.set_event_loop(loop)
-
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
-    # Registro dos handlers
+    # --- Registro dos handlers ---
     application.add_handler(CommandHandler("start", start_cmd))
     application.add_handler(CommandHandler("menu", menu_cmd))
     application.add_handler(CommandHandler("status", status_cmd))
@@ -278,7 +309,6 @@ if __name__ == "__main__":
             BotCommand("testnotify", "Envia uma notificação de teste"),
             BotCommand("relatorio", "Mostra o relatório de eventos")
         ])
-
         try:
             dex_lines = [
                 f"- {d['name']} | type={d['type']} | factory={d['factory']} | router={d['router']}"
