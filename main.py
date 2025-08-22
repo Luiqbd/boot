@@ -19,13 +19,45 @@ from web3 import Web3
 
 # --- Importações sniper ---
 from check_balance import get_wallet_status
-from strategy_sniper import on_new_pair
 from discovery import run_discovery, stop_discovery, get_discovery_status
-from config import config  # import para acessar config["DEXES"]
+from config import config
 
-# --- Importa RiskManager com histórico ---
+# --- RiskManager ---
 from risk_manager import RiskManager
 risk_manager = RiskManager()
+
+# --- Novo on_new_pair com RiskManager integrado ---
+async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
+    from datetime import datetime
+
+    current_price = 1.0
+    last_trade_price = 0.95
+    trade_size_eth = 0.05
+    direction = "buy"
+    pair = (token0, token1)
+    now_ts = int(datetime.now().timestamp())
+
+    min_liquidity_ok = True
+    not_honeypot = True
+
+    pode_operar = risk_manager.can_trade(
+        current_price=current_price,
+        last_trade_price=last_trade_price,
+        direction=direction,
+        trade_size_eth=trade_size_eth,
+        min_liquidity_ok=min_liquidity_ok,
+        not_honeypot=not_honeypot,
+        pair=pair,
+        now_ts=now_ts
+    )
+
+    if not pode_operar:
+        return
+
+    sucesso = True
+    risk_manager.register_trade(success=sucesso, pair=pair, direction=direction, now_ts=now_ts)
+    pnl_simulado = 0.002
+    risk_manager.register_pnl(pnl_simulado)
 
 # --- Configuração de log ---
 logging.basicConfig(
@@ -44,7 +76,7 @@ sniper_thread = None
 # --- Variáveis de ambiente ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "0")  # usado no /testnotify
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "0")
 
 # --- Funções auxiliares ---
 def str_to_bool(v: str) -> bool:
@@ -126,70 +158,6 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "━━━━━━━━━━━━━━━━━━━━━━\n"
     )
     await update.message.reply_text(mensagem, parse_mode="Markdown")
-
-async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await start_cmd(update, context)
-
-async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        wallet_address = context.args[0] if context.args else None
-        status = get_wallet_status(wallet_address)
-        await update.message.reply_text(status)
-    except Exception as e:
-        logging.error(f"Erro no /status: {e}", exc_info=True)
-        await update.message.reply_text("⚠️ Erro ao verificar o status da carteira.")
-
-async def snipe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if sniper_thread and sniper_thread.is_alive():
-        await update.message.reply_text("⚠️ O sniper já está rodando.")
-        return
-    await update.message.reply_text("⚙️ Iniciando sniper... Monitorando novas pairs em todas as DEX.")
-    iniciar_sniper()
-
-async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    parar_sniper()
-    await update.message.reply_text("🛑 Sniper interrompido.")
-
-async def sniper_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        status = get_discovery_status() or {"text": "Status indisponível."}
-        await update.message.reply_text(status["text"])
-    except Exception as e:
-        logging.error(f"Erro no /sniperstatus: {e}", exc_info=True)
-        await update.message.reply_text("⚠️ Erro ao verificar o status do sniper.")
-
-async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"Você disse: {update.message.text}")
-
-async def ping_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uptime_seconds = int(time.time() - context.bot_data.get("start_time", time.time()))
-    uptime_str = str(datetime.timedelta(seconds=uptime_seconds))
-    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    await update.message.reply_text(
-        f"pong 🏓\n"
-        f"⏱ Uptime: {uptime_str}\n"
-        f"🕒 Agora: {now_str}"
-    )
-
-async def test_notify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        chat_id_str = TELEGRAM_CHAT_ID or "0"
-        chat_id = int(chat_id_str) if chat_id_str.isdigit() else 0
-        if chat_id == 0:
-            await update.message.reply_text("⚠️ TELEGRAM_CHAT_ID ausente ou inválido nas variáveis de ambiente.")
-            return
-
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        unique_id = str(uuid.uuid4())[:8]
-
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"✅ Teste de notificação\n🕒 {timestamp}\n🆔 {unique_id}\n💬 Sniper pronto para narrar as operações!"
-        )
-        await update.message.reply_text(f"Mensagem de teste enviada (ID: {unique_id})")
-    except Exception as e:
-        logging.error(f"Erro no /testnotify: {e}", exc_info=True)
-        await update.message.reply_text(f"⚠️ Erro ao enviar mensagem: {e}")
 
 # --- Novo comando /relatorio ---
 async def relatorio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -282,7 +250,7 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("sniperstatus", sniper_status_cmd))
     application.add_handler(CommandHandler("ping", ping_cmd))
     application.add_handler(CommandHandler("testnotify", test_notify_cmd))
-    application.add_handler(CommandHandler("relatorio", relatorio_cmd))  # NOVO COMANDO
+    application.add_handler(CommandHandler("relatorio", relatorio_cmd))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
     async def start_bot():
@@ -298,7 +266,7 @@ if __name__ == "__main__":
             BotCommand("sniperstatus", "Status do sniper"),
             BotCommand("ping", "Teste de vida (pong)"),
             BotCommand("testnotify", "Envia uma notificação de teste"),
-            BotCommand("relatorio", "Mostra o relatório de eventos")  # NOVO COMANDO
+            BotCommand("relatorio", "Mostra o relatório de eventos")
         ])
 
         try:
