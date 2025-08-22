@@ -28,14 +28,12 @@ risk_manager = RiskManager()
 
 # --- Novo on_new_pair com RiskManager integrado ---
 async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
-    from datetime import datetime
-
     current_price = 1.0
     last_trade_price = 0.95
     trade_size_eth = 0.05
     direction = "buy"
     pair = (token0, token1)
-    now_ts = int(datetime.now().timestamp())
+    now_ts = int(datetime.datetime.now().timestamp())
 
     min_liquidity_ok = True
     not_honeypot = True
@@ -159,7 +157,10 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(mensagem, parse_mode="Markdown")
 
-# --- Novo comando /relatorio ---
+async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await start_cmd(update, context)
+
+# --- Comando /relatorio ---
 async def relatorio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         rel = risk_manager.gerar_relatorio()
