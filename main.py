@@ -216,8 +216,7 @@ async def test_notify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text="🔔 Notificação de teste enviada."
         )
         await update.message.reply_text("✅ Notificação enviada.")
-
-except Exception as e:
+    except Exception as e:
         logging.error(f"Erro ao enviar notificação de teste: {e}", exc_info=True)
         await update.message.reply_text("⚠️ Falha ao enviar notificação.")
 
@@ -249,8 +248,6 @@ def iniciar_bot():
     application.add_handler(CommandHandler("sniperstatus", sniper_status_cmd))
     application.add_handler(CommandHandler("ping", ping_cmd))
     application.add_handler(CommandHandler("testnotify", test_notify_cmd))
-
-    # Mensagem de texto genérica (se desejar futuramente tratar outros textos)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_cmd))
 
     # Iniciar o loop do Telegram
