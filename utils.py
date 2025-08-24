@@ -151,13 +151,12 @@ def configure_rate_limiter_from_config(config):
     except Exception:
         log.warning("Falha ao aplicar configs do rate limiter.", exc_info=True)
 
-
 def is_contract_verified(token_address: str, api_key: str = BASESCAN_API_KEY) -> bool:
     rate_limiter.before_api_call()
 
     if not api_key:
         log.warning("⚠️ BASESCAN_API_KEY não configurada — pulando verificação de contrato.")
-        return True
+        return True  # ou False, se quiser bloquear
 
     if is_v2_key(api_key):
         params = {
@@ -191,7 +190,7 @@ def is_token_concentrated(token_address: str, top_limit_pct: float, api_key: str
 
     if not api_key:
         log.warning("⚠️ BASESCAN_API_KEY não configurada — pulando verificação de concentração.")
-        return False
+        return False  # ou True, se quiser considerar concentrado
 
     if is_v2_key(api_key):
         params = {
@@ -223,4 +222,8 @@ def is_token_concentrated(token_address: str, top_limit_pct: float, api_key: str
                 pct = 0.0
             if pct >= top_limit_pct:
                 return True
-        return
+        return False
+
+    except Exception as e:
+        log.error(f"Erro ao verificar concentração de holders: {e}", exc_info=True)
+        return True
