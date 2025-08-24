@@ -1,6 +1,9 @@
 import os
 from web3 import Web3
 
+# ---------------------------------------------------
+# Funções auxiliares
+# ---------------------------------------------------
 def str_to_bool(v: str) -> bool:
     return str(v).strip().lower() in {"1", "true", "t", "yes", "y"}
 
@@ -11,31 +14,32 @@ def normalize_private_key(pk: str) -> str:
     if pk.startswith("0x"):
         pk = pk[2:]
     if len(pk) != 64 or not all(c in "0123456789abcdefABCDEF" for c in pk):
-        raise ValueError(f"Chave privada inválida ({pk[:4]}...): formato incorreto ou tamanho incorreto")
+        raise ValueError(f"Chave privada inválida ({pk[:4]}...): formato ou tamanho incorreto")
     return pk
-
-# --- Carrega e valida PRIVATE_KEY ---
-raw_private_key = os.getenv("PRIVATE_KEY")
-try:
-    PRIVATE_KEY = normalize_private_key(raw_private_key)
-except ValueError as e:
-    raise RuntimeError(f"Erro ao processar PRIVATE_KEY: {e}")
 
 def checksum_addr(addr_env: str, default: str = None) -> str:
     if not addr_env and default:
         addr_env = default
     return Web3.to_checksum_address(addr_env)
 
-# WETH oficial na Base
+# ---------------------------------------------------
+# Carrega e valida chave privada
+# ---------------------------------------------------
+raw_private_key = os.getenv("PRIVATE_KEY")
+try:
+    PRIVATE_KEY = normalize_private_key(raw_private_key)
+except ValueError as e:
+    raise RuntimeError(f"Erro ao processar PRIVATE_KEY: {e}")
+
+# ---------------------------------------------------
+# Tokens oficiais na Base Mainnet
+# ---------------------------------------------------
 WETH = checksum_addr(os.getenv("WETH"), "0x4200000000000000000000000000000000000006")
+USDC = checksum_addr(os.getenv("USDC"), "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913")
 
-# USDC oficial na Base (Circle)
-USDC = checksum_addr(
-    os.getenv("USDC"),
-    "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
-)
-
-# Lista de DEX monitoradas — endereços oficiais na Base
+# ---------------------------------------------------
+# Lista de DEX monitoradas — endereços oficiais Base
+# ---------------------------------------------------
 DEXES = [
     {
         "name": "Aerodrome V2",
@@ -75,10 +79,13 @@ DEXES = [
     },
 ]
 
+# ---------------------------------------------------
+# Config final
+# ---------------------------------------------------
 config = {
     "PYTHON_VERSION": os.getenv("PYTHON_VERSION", "3.10.12"),
 
-    # RPC e credenciais
+    # Blockchain
     "RPC_URL": os.getenv("RPC_URL", "https://mainnet.base.org"),
     "PRIVATE_KEY": PRIVATE_KEY,
     "CHAIN_ID": int(os.getenv("CHAIN_ID", "8453")),
@@ -88,7 +95,7 @@ config = {
     "USDC": USDC,
 
     # Execução
-    "DEFAULT_SLIPPAGE_BPS": int(os.getenv("SLIPPAGE_BPS", "1200")),
+    "DEFAULT_SLIPPAGE_BPS": int(os.getenv("SLIPPAGE_BPS", "50")),  # default 0.5%
     "TX_DEADLINE_SEC": int(os.getenv("TX_DEADLINE_SEC", "45")),
     "INTERVAL": int(os.getenv("INTERVAL", "3")),
     "DRY_RUN": str_to_bool(os.getenv("DRY_RUN", "true")),
@@ -97,11 +104,13 @@ config = {
     "TELEGRAM_TOKEN": os.getenv("TELEGRAM_TOKEN"),
     "TELEGRAM_CHAT_ID": int(os.getenv("TELEGRAM_CHAT_ID", "0")),
 
-    # Lista de DEX
+    # DEX
     "DEXES": DEXES
 }
 
-# --- Validações ---
+# ---------------------------------------------------
+# Validações
+# ---------------------------------------------------
 def _require(name: str, cond: bool):
     if not cond:
         raise ValueError(f"Config inválida: {name} — valor atual: {config.get(name)}")
@@ -118,7 +127,9 @@ for dex in config["DEXES"]:
     if not (isinstance(dex["router"], str) and len(dex["router"]) == 42):
         raise ValueError(f"Router inválido em {dex['name']}")
 
-# --- Debug opcional ---
+# ---------------------------------------------------
+# Debug opcional
+# ---------------------------------------------------
 if str_to_bool(os.getenv("DEBUG_CONFIG", "false")):
     signer_addr = Web3().eth.account.from_key(PRIVATE_KEY).address
     print(f"Signer Address: {signer_addr}")
