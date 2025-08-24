@@ -1,3 +1,4 @@
+import os
 import requests
 import logging
 from collections import deque
@@ -9,6 +10,9 @@ log = logging.getLogger(__name__)
 ETHERSCAN_V1_URL = "https://api.basescan.org/api"
 ETHERSCAN_V2_URL = "https://api.etherscan.io/api"
 CHAIN_ID = "base-mainnet"  # usado apenas na V2
+
+# Lê a chave direto do ambiente
+BASESCAN_API_KEY = os.getenv("BASESCAN_API_KEY")
 
 
 def is_v2_key(api_key: str) -> bool:
@@ -37,7 +41,7 @@ class ApiRateLimiter:
         self.daily_cd = daily_cooldown_sec
         self.pause_enabled = pause_enabled
 
-        self.calls_window = deque()  # timestamps de 1s
+        self.calls_window = deque()
         self.daily_count = 0
         self.day_anchor = self._today_utc()
         self.paused_until: datetime | None = None
@@ -59,7 +63,6 @@ class ApiRateLimiter:
             self._notify("🔁 Limite diário de API resetado (novo dia).")
 
     def set_notifier(self, notify_callable):
-        """notify_callable: função que recebe uma string (ex.: lambda msg: safe_notify(bot, msg, loop))"""
         self._notifier = notify_callable
 
     def _notify(self, msg: str):
@@ -78,46 +81,38 @@ class ApiRateLimiter:
         now = datetime.now(timezone.utc)
         if now >= self.paused_until:
             self.paused_until = None
-            self._notify("▶️ Sniper retomado: janela de pausa por limite de API encerrou.")
+            self._notify("▶️ Sniper retomado: pausa de limite de API encerrada.")
             return False
         return True
 
     def before_api_call(self):
-        """Chame isto imediatamente antes de fazer uma chamada à API."""
         self._reset_daily_if_needed()
 
-        # Se já está pausado, bloqueia
         if self.is_paused():
             raise RuntimeError("API rate-limited: paused")
 
-        # Limpa janela de 1 segundo
         now = datetime.now(timezone.utc)
         one_sec_ago = now - timedelta(seconds=1)
         while self.calls_window and self.calls_window[0] < one_sec_ago:
             self.calls_window.popleft()
 
-        # Aviso de QPS alto
         if not self._warned_qps and len(self.calls_window) >= int(self.qps_limit * self.warn_pct):
             self._warned_qps = True
             self._notify(f"⚠️ Aproximando do limite de QPS ({len(self.calls_window)}/{self.qps_limit}/s).")
 
-        # Estouro de QPS: pausa curta
         if len(self.calls_window) >= self.qps_limit:
             if self.pause_enabled:
                 self.paused_until = now + timedelta(seconds=self.qps_cd)
                 self._notify(f"⏸️ Pausa automática {self.qps_cd}s: limite de QPS atingido ({self.qps_limit}/s).")
             raise RuntimeError("API rate-limited: QPS exceeded")
 
-        # Reserva a chamada (conta mesmo se a request falhar)
         self.calls_window.append(now)
         self.daily_count += 1
 
-        # Aviso de diário alto
         if not self._warned_daily and self.daily_count >= int(self.daily_limit * self.warn_pct):
             self._warned_daily = True
             self._notify(f"⚠️ Aproximando do limite diário ({self.daily_count}/{self.daily_limit}).")
 
-        # Pausa por diário alto
         if self.daily_count >= int(self.daily_limit * self.pause_daily_pct):
             if self.pause_enabled:
                 until = min(
@@ -133,7 +128,6 @@ class ApiRateLimiter:
             raise RuntimeError("API rate-limited: daily threshold reached")
 
 
-# Instância padrão do rate limiter
 rate_limiter = ApiRateLimiter(
     qps_limit=5,
     daily_limit=100000,
@@ -158,8 +152,7 @@ def configure_rate_limiter_from_config(config):
         log.warning("Falha ao aplicar configs do rate limiter.", exc_info=True)
 
 
-def is_contract_verified(token_address: str, api_key: str) -> bool:
-    """Verifica se o contrato está verificado, com fallback se API_KEY ausente."""
+def is_contract_verified(token_address: str, api_key: str = BASESCAN_API_KEY) -> bool:
     rate_limiter.before_api_call()
 
     if not api_key:
@@ -192,8 +185,7 @@ def is_contract_verified(token_address: str, api_key: str) -> bool:
         return False
 
 
-def is_token_concentrated(token_address: str, api_key: str, top_limit_pct: float) -> bool:
-    """Verifica concentração de holders, com fallback se API_KEY ausente."""
+def is_token_concentrated(token_address: str, top_limit_pct: float, api_key: str = BASESCAN_API_KEY) -> bool:
     rate_limiter.before_api_call()
 
     if not api_key:
@@ -217,4 +209,14 @@ def is_token_concentrated(token_address: str, api_key: str, top_limit_pct: float
         resp = requests.get(url, params=params, timeout=10)
         data = resp.json()
         for holder in data.get("result", []):
-            pct_str = holder.get("Percentage", "0").replace("%", "").
+            pct_str = holder.get("Percentage", "0").replace("%", "").strip()
+            try:
+                pct = float(pct_str)
+            except ValueError:
+                pct = 0.0
+            if pct >= top_limit_pct:
+                return True
+        return False
+    except Exception as e:
+        log.error(f"Erro ao verificar concentração de holders: {e}", exc_info=True)
+        return True
