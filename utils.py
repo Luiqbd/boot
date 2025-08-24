@@ -15,9 +15,9 @@ CHAIN_ID = "base-mainnet"  # usado apenas na V2
 BASESCAN_API_KEY = os.getenv("BASESCAN_API_KEY")
 
 
-def is_v2_key(api_key: str) -> bool:
+def is_v2_key(api_key) -> bool:
     """Checa se a chave parece ser do formato v2."""
-    if not api_key:
+    if not isinstance(api_key, str) or not api_key:
         return False
     return api_key.startswith("CX") or len(api_key) > 40
 
