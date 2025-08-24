@@ -177,7 +177,8 @@ def is_contract_verified(token_address: str, api_key: str = BASESCAN_API_KEY) ->
         data = resp.json()
         return (
             data.get("status") == "1"
-            and data.get("result")
+            and isinstance(data.get("result"), list)
+            and data["result"]
             and data["result"][0].get("SourceCode")
         )
     except Exception as e:
@@ -212,7 +213,7 @@ def is_token_concentrated(token_address: str, top_limit_pct: float, api_key: str
         result = data.get("result", [])
         if not isinstance(result, list):
             log.error(f"Resposta inesperada do BaseScan: {result}")
-            return True  # ou False conforme estratégia
+            return True  # ou False, conforme sua estratégia
 
         for holder in result:
             pct_str = holder.get("Percentage", "0").replace("%", "").strip()
@@ -220,4 +221,6 @@ def is_token_concentrated(token_address: str, top_limit_pct: float, api_key: str
                 pct = float(pct_str)
             except ValueError:
                 pct = 0.0
-            if pct >= top_limit_pct
+            if pct >= top_limit_pct:
+                return True
+        return
