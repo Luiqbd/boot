@@ -95,9 +95,13 @@ def iniciar_sniper():
 
     def start_sniper():
         try:
-            run_discovery(
-                lambda dex, pair, t0, t1: on_new_pair(
-                    dex, pair, t0, t1, bot=application.bot, loop=loop
+            # Corrigido: executa coroutine de forma thread-safe no loop existente
+            asyncio.run_coroutine_threadsafe(
+                run_discovery(
+                    lambda dex, pair, t0, t1: on_new_pair(
+                        dex, pair, t0, t1, bot=application.bot, loop=loop
+                    ),
+                    loop
                 ),
                 loop
             )
