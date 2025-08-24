@@ -6,17 +6,17 @@ from datetime import datetime, timedelta, timezone
 
 log = logging.getLogger(__name__)
 
-# Endpoints
+# Endpoints (V1 legacy e V2 multichain)
 ETHERSCAN_V1_URL = "https://api.basescan.org/api"
-ETHERSCAN_V2_URL = "https://api.etherscan.io/api"
-CHAIN_ID = "base-mainnet"
+ETHERSCAN_V2_URL = "https://api.etherscan.io/v2/api"
+CHAIN_ID_BASE = "8453"  # Base Mainnet (Etherscan V2 chainid)
 
-# Lê a chave do ambiente
-BASESCAN_API_KEY = os.getenv("BASESCAN_API_KEY")
+# Chave do ambiente (pode ser única do Etherscan)
+BASESCAN_API_KEY = os.getenv("BASESCAN_API_KEY") or os.getenv("ETHERSCAN_API_KEY")
 
 
 def is_v2_key(api_key) -> bool:
-    """Checa se a chave parece ser do formato v2."""
+    """Detecta se a chave parece ser do formato v2 (Etherscan Multichain)."""
     if not isinstance(api_key, str) or not api_key:
         return False
     return api_key.startswith("CX") or len(api_key) > 40
@@ -151,71 +151,49 @@ def configure_rate_limiter_from_config(config):
     except Exception:
         log.warning("Falha ao aplicar configs do rate limiter.", exc_info=True)
 
-def is_contract_verified(token_address: str, api_key: str = BASESCAN_API_KEY) -> bool:
-    rate_limiter.before_api_call()
-
-    if not api_key:
-        log.warning("⚠️ BASESCAN_API_KEY não configurada — pulando verificação de contrato.")
-        return True  # ou False, se quiser bloquear
-
-    if is_v2_key(api_key):
-        params = {
-            "module": "contract", "action": "getsourcecode",
-            "address": token_address, "chain": CHAIN_ID, "apikey": api_key
-        }
-        url = ETHERSCAN_V2_URL
-    else:
-        params = {
-            "module": "contract", "action": "getsourcecode",
-            "address": token_address, "apikey": api_key
-        }
-        url = ETHERSCAN_V1_URL
-
-    try:
-        resp = requests.get(url, params=params, timeout=10)
-        data = resp.json()
-        return (
-            data.get("status") == "1"
-            and isinstance(data.get("result"), list)
-            and data["result"]
-            and data["result"][0].get("SourceCode")
-        )
-    except Exception as e:
-        log.error(f"Erro ao verificar contrato: {e}", exc_info=True)
-        return False
-
-
 def is_token_concentrated(token_address: str, top_limit_pct: float, api_key: str = BASESCAN_API_KEY) -> bool:
+    """
+    Verifica se um token está concentrado em poucos holders acima de top_limit_pct.
+    Agora suporta Etherscan API V2 multichain (usando chainid para rede Base).
+    """
     rate_limiter.before_api_call()
 
     if not api_key:
-        log.warning("⚠️ BASESCAN_API_KEY não configurada — pulando verificação de concentração.")
-        return False  # ou True, se quiser considerar concentrado
+        log.warning("⚠️ ETHERSCAN_API_KEY não configurada — pulando verificação de concentração.")
+        return False  # ou True se quiser ser mais restritivo
 
     if is_v2_key(api_key):
+        # V2 multichain — chainid 8453 = Base Mainnet
         params = {
-            "module": "token", "action": "tokenholderlist",
-            "contractaddress": token_address, "chain": CHAIN_ID, "apikey": api_key
+            "module": "token",
+            "action": "tokenholderlist",
+            "contractaddress": token_address,
+            "chainid": "8453",
+            "apikey": api_key
         }
         url = ETHERSCAN_V2_URL
     else:
+        # V1 legacy (BaseScan antigo)
         params = {
-            "module": "token", "action": "tokenholderlist",
-            "contractaddress": token_address, "apikey": api_key
+            "module": "token",
+            "action": "tokenholderlist",
+            "contractaddress": token_address,
+            "apikey": api_key
         }
         url = ETHERSCAN_V1_URL
 
     try:
         resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
         data = resp.json()
 
         result = data.get("result", [])
         if not isinstance(result, list):
-            log.error(f"Resposta inesperada do BaseScan: {result}")
-            return True  # ou False, conforme sua estratégia
+            log.error(f"Resposta inesperada do explorer: {result}")
+            return True  # ser conservador: assume concentrado
 
         for holder in result:
-            pct_str = holder.get("Percentage", "0").replace("%", "").strip()
+            pct_str = str(holder.get("Percentage", "0")).replace("%", "").strip()
             try:
                 pct = float(pct_str)
             except ValueError:
@@ -226,4 +204,4 @@ def is_token_concentrated(token_address: str, top_limit_pct: float, api_key: str
 
     except Exception as e:
         log.error(f"Erro ao verificar concentração de holders: {e}", exc_info=True)
-        return True
+        return True  # por segurança, assume concentrado
