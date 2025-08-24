@@ -23,24 +23,16 @@ from utils import (
 
 log = logging.getLogger("sniper")
 
-# Instância global do RiskManager
 risk_manager = RiskManager()
-
-# Bot simples via token/chat_id
 bot_notify = Bot(token=config["TELEGRAM_TOKEN"])
 
-# >>> NOVO: variáveis de config para os filtros
 API_KEY = config.get("BASESCAN_API_KEY")
 BLOCK_UNVERIFIED = config.get("BLOCK_UNVERIFIED", False)
 TOP_HOLDER_LIMIT = float(config.get("TOP_HOLDER_LIMIT", 30.0))
 
-# >>> NOVO: aplicar configs do Rate Limiter e conectar notificador
 configure_rate_limiter_from_config(config)
 rate_limiter.set_notifier(lambda msg: safe_notify(bot_notify, msg))
 
-# -----------------------------------------------
-# ABI mínimo para teste rápido de honeypot (Routers V2-compatíveis)
-# -----------------------------------------------
 DEX_ROUTER_ABI = [
     {
         "name": "getAmountsOut",
@@ -54,14 +46,10 @@ DEX_ROUTER_ABI = [
     }
 ]
 
-# -----------------------------------------------
-# Anti-duplicação de mensagens
-# -----------------------------------------------
 _last_msgs = {}
-_DUP_INTERVAL = 5  # segundos
+_DUP_INTERVAL = 5
 
 def notify(msg: str):
-    """Envia mensagem simples ao Telegram (canal único)."""
     try:
         coro = bot_notify.send_message(
             chat_id=config["TELEGRAM_CHAT_ID"],
@@ -76,15 +64,12 @@ def notify(msg: str):
         log.error(f"Erro ao enviar notificação: {e}", exc_info=True)
 
 def safe_notify(alert: TelegramAlert | None, msg: str, loop: asyncio.AbstractEventLoop | None = None):
-    """Envia mensagem ao Telegram evitando duplicação e usando apenas um caminho de envio."""
     now = time()
     msg_key = hash(msg)
-
     if msg_key in _last_msgs and (now - _last_msgs[msg_key]) < _DUP_INTERVAL:
         log.debug(f"[DUPE] Mensagem ignorada: {msg}")
         return
     _last_msgs[msg_key] = now
-
     try:
         if alert:
             coro = alert.send_message(
@@ -104,11 +89,7 @@ def safe_notify(alert: TelegramAlert | None, msg: str, loop: asyncio.AbstractEve
     except Exception as e:
         log.error(f"Falha ao enviar alerta: {e}", exc_info=True)
 
-# -----------------------------------------------
-# Consulta de saldo
-# -----------------------------------------------
 def get_token_balance(web3: Web3, token_address: str, owner_address: str, erc20_abi: list) -> Decimal:
-    """Consulta saldo de um token ERC20 em unidades humanas."""
     try:
         token = web3.eth.contract(address=Web3.to_checksum_address(token_address), abi=erc20_abi)
         raw_balance = token.functions.balanceOf(Web3.to_checksum_address(owner_address)).call()
@@ -118,11 +99,7 @@ def get_token_balance(web3: Web3, token_address: str, owner_address: str, erc20_
         log.error(f"Erro ao obter saldo do token {token_address}: {e}", exc_info=True)
         return Decimal(0)
 
-# -----------------------------------------------
-# Filtros adicionais
-# -----------------------------------------------
 def has_high_tax(token_address: str, max_tax_pct: float = 10.0) -> bool:
-    """Placeholder para verificar se token tem taxa acima do permitido."""
     try:
         return False
     except Exception as e:
@@ -130,7 +107,6 @@ def has_high_tax(token_address: str, max_tax_pct: float = 10.0) -> bool:
         return False
 
 def has_min_volume(dex_client: DexClient, token_in: str, token_out: str, min_volume_eth: float) -> bool:
-    """Verifica se o par tem volume >= min_volume_eth nas últimas transações."""
     try:
         volume_eth = dex_client.get_recent_volume(token_in, token_out)
         return float(volume_eth) >= float(min_volume_eth)
@@ -139,7 +115,6 @@ def has_min_volume(dex_client: DexClient, token_in: str, token_out: str, min_vol
         return False
 
 def is_honeypot(token_address: str, router_address: str, weth_address: str, test_amount_eth: float, strict: bool = False) -> bool:
-    """Teste rápido de honeypot."""
     try:
         web3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
         router = web3.eth.contract(address=Web3.to_checksum_address(router_address), abi=DEX_ROUTER_ABI)
@@ -150,26 +125,18 @@ def is_honeypot(token_address: str, router_address: str, weth_address: str, test
         log.warning(f"Falha no teste de honeypot ({token_address}): {e}")
         return True if strict else False
 
-# -----------------------------------------------
-# Anti-duplicação de pares
-# -----------------------------------------------
 _recent_pairs = {}
-_PAIR_DUP_INTERVAL = 5  # segundos
+_PAIR_DUP_INTERVAL = 5
 
-# -----------------------------------------------
-# Fluxo principal de novo par
-# -----------------------------------------------
 async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
-    from utils import rate_limiter  # >>> NOVO: import interno para evitar ciclos
+    from utils import rate_limiter
 
-    # >>> NOVO: Checagem de pausa automática do sniper
     if rate_limiter.is_paused():
         safe_notify(bot, "⏸️ Sniper pausado por limite de API. Ignorando novos pares.", loop)
         return
 
     now = time()
     pair_key = (pair_addr.lower(), token0.lower(), token1.lower())
-
     if pair_key in _recent_pairs and (now - _recent_pairs[pair_key]) < _PAIR_DUP_INTERVAL:
         log.debug(f"[DUPE] Par ignorado: {pair_addr} {token0}/{token1}")
         return
@@ -180,10 +147,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
     try:
         web3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
         weth = Web3.to_checksum_address(config["WETH"])
-        if token0.lower() == weth.lower():
-            target_token = Web3.to_checksum_address(token1)
-        else:
-            target_token = Web3.to_checksum_address(token0)
+        target_token = Web3.to_checksum_address(token1) if token0.lower() == weth.lower() else Web3.to_checksum_address(token0)
 
         amt_eth = Decimal(str(config.get("TRADE_SIZE_ETH", 0.1)))
         if amt_eth <= 0:
@@ -191,12 +155,9 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
             return
 
         MIN_LIQ_WETH = float(config.get("MIN_LIQ_WETH", 0.5))
-        try:
-            liq_ok = DexClient(web3, dex_info["router"]).has_min_liquidity(target_token, weth, MIN_LIQ_WETH)
-        except Exception as e:
-            log.error(f"Erro ao verificar liquidez: {e}", exc_info=True)
-            liq_ok = False
+        dex_client = DexClient(web3, dex_info["router"])
 
+        liq_ok = dex_client.has_min_liquidity(pair_addr, weth, MIN_LIQ_WETH)
         if not liq_ok:
             safe_notify(bot, f"⚠️ Pool ignorada por liquidez insuficiente (< {MIN_LIQ_WETH} WETH)", loop)
             return
@@ -215,20 +176,15 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
             safe_notify(bot, f"🚫 Token {target_token} com concentração alta de supply", loop)
             return
 
+        preco_atual = dex_client.get_token_price(target_token, weth)
+        slip_limit = dex_client.calc_dynamic_slippage(pair_addr, weth, float(amt_eth))
     except Exception as e:
         log.error(f"Falha ao preparar contexto do par: {e}", exc_info=True)
         return
 
-    # Preço atual
-    try:
-        preco_atual = dex_client.get_token_price(target_token, weth)
-    except Exception as e:
-        log.error(f"Erro ao consultar preço do par: {e}", exc_info=True)
-        return
+    log.info(f"[Pré-Risk] {token0}/{token1} preço={preco_atual} ETH | size={amt_eth} ETH | slippage={slip_limit*100:.2f}%")
 
-    log.info(f"[Pré-Risk] {token0}/{token1} preço={preco_atual} ETH | size={amt_eth} ETH")
-
-    # Execução de compra
+    # --- Execução de compra ---
     try:
         exchange_client = ExchangeClient(router_address=dex_info["router"])
         trade_exec = TradeExecutor(exchange_client=exchange_client, dry_run=config["DRY_RUN"])
@@ -243,7 +199,8 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         amount_eth=amt_eth,
         current_price=preco_atual,
         last_trade_price=None,
-        amount_out_min=None
+        amount_out_min=None,
+        slippage=slip_limit
     )
 
     if tx_buy:
@@ -253,7 +210,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         safe_notify(bot, f"🚫 Compra não executada para {target_token}\nMotivo: {motivo}", loop)
         return
 
-    # Monitoramento de venda (TP, SL, Trailing)
+    # --- Monitoramento de venda ---
     highest_price = preco_atual
     trail_pct = float(config.get("TRAIL_PCT", 0.05))
     tp_pct = float(config.get("TAKE_PROFIT_PCT", config.get("TP_PCT", 0.2)))
@@ -314,3 +271,4 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
     finally:
         if not sold and not is_discovery_running():
             safe_notify(bot, f"⏹ Monitoramento encerrado para {target_token} (sniper parado).", loop)
+
