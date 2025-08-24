@@ -1,6 +1,4 @@
-# strategy_sniper.py
 import logging
-import datetime
 import asyncio
 from decimal import Decimal
 from web3 import Web3
@@ -57,10 +55,20 @@ def safe_notify(alert: TelegramAlert | None, msg: str, loop: asyncio.AbstractEve
     except Exception as e:
         log.error(f"Falha no notify(): {e}", exc_info=True)
 
+def get_token_balance(web3: Web3, token_address: str, owner_address: str, erc20_abi: list) -> Decimal:
+    """Consulta saldo de um token ERC20 em unidades humanas."""
+    try:
+        token = web3.eth.contract(address=Web3.to_checksum_address(token_address), abi=erc20_abi)
+        raw_balance = token.functions.balanceOf(Web3.to_checksum_address(owner_address)).call()
+        decimals = token.functions.decimals().call()
+        return Decimal(raw_balance) / Decimal(10 ** decimals)
+    except Exception as e:
+        log.error(f"Erro ao obter saldo do token {token_address}: {e}")
+        return Decimal(0)
+
 async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
     log.info(f"Novo par recebido: {dex_info['name']} {pair_addr} {token0}/{token1}")
 
-    # Inicialização segura
     try:
         web3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
         weth = Web3.to_checksum_address(config["WETH"])
@@ -74,30 +82,24 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
             log.error("TRADE_SIZE_ETH inválido; abortando.")
             return
 
-        # Criar cliente da DEX para preço e liquidez
         dex_client = DexClient(web3, dex_info["router"])
-
     except Exception as e:
         log.error(f"Falha ao preparar contexto do par: {e}", exc_info=True)
         return
 
-    # Checar liquidez mínima (opcional)
     min_liq_ok = dex_client.has_min_liquidity(target_token, weth, config.get("MIN_LIQ_WETH", 0.5))
-
-    # Preço atual
     preco_atual = dex_client.get_token_price(target_token, weth)
 
-    log.info(
-        f"[Pré-Risk] {token0}/{token1} preço={preco_atual} ETH | size={amt_eth}ETH | liq_ok={min_liq_ok} | honeypot_ok=True"
-    )
+    log.info(f"[Pré-Risk] {token0}/{token1} preço={preco_atual} ETH | size={amt_eth}ETH | liq_ok={min_liq_ok}")
 
-    # Executor seguro — agora usando router dinâmico do par
-    safe_exec = SafeTradeExecutor(
-        executor=TradeExecutor(exchange_client=ExchangeClient(web3, router_address=dex_info["router"]), dry_run=config["DRY_RUN"]),
-        risk_manager=risk_manager
-    )
+    try:
+        exchange_client = ExchangeClient(router_address=dex_info["router"])
+        trade_exec = TradeExecutor(exchange_client=exchange_client, dry_run=config["DRY_RUN"])
+        safe_exec = SafeTradeExecutor(executor=trade_exec, risk_manager=risk_manager)
+    except Exception as e:
+        log.error(f"Falha ao criar ExchangeClient/Executor: {e}", exc_info=True)
+        return
 
-    # Compra
     tx_buy = safe_exec.buy(
         token_in=weth,
         token_out=target_token,
@@ -138,10 +140,18 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
             stop_price = highest_price * (1 - trail_pct)
 
         if price >= take_profit_price or price <= stop_price:
+            # Obtém saldo atual de tokens antes de vender
+            token_balance = get_token_balance(
+                web3, target_token, exchange_client.wallet, exchange_client.erc20_abi
+            )
+            if token_balance <= 0:
+                log.warning("Saldo do token é zero — nada para vender.")
+                break
+
             tx_sell = safe_exec.sell(
                 token_in=target_token,
                 token_out=weth,
-                amount_eth=amt_eth,
+                amount_eth=token_balance,
                 current_price=price,
                 last_trade_price=entry_price
             )
