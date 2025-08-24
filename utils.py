@@ -27,16 +27,9 @@ def is_v2_key(api_key) -> bool:
 # Rate Limiter
 # ===========================
 class ApiRateLimiter:
-    def __init__(
-        self,
-        qps_limit: int,
-        daily_limit: int,
-        warn_pct: float,
-        pause_daily_pct: float,
-        qps_cooldown_sec: int,
-        daily_cooldown_sec: int,
-        pause_enabled: bool = True
-    ):
+    def __init__(self, qps_limit: int, daily_limit: int, warn_pct: float,
+                 pause_daily_pct: float, qps_cooldown_sec: int,
+                 daily_cooldown_sec: int, pause_enabled: bool = True):
         self.qps_limit = qps_limit
         self.daily_limit = daily_limit
         self.warn_pct = warn_pct
@@ -205,7 +198,6 @@ def is_contract_verified(token_address: str, api_key: str = BASESCAN_API_KEY) ->
     except Exception as e:
         log.error(f"Erro ao verificar contrato {token_address}: {e}", exc_info=True)
         return False
-
 
 def is_token_concentrated(token_address: str, top_limit_pct: float, api_key: str = BASESCAN_API_KEY) -> bool:
     """
