@@ -13,8 +13,13 @@ from trade_executor import TradeExecutor
 from safe_trade_executor import SafeTradeExecutor
 from risk_manager import RiskManager
 
-# >>> NOVO: import para filtros de contrato/holders
-from utils import is_contract_verified, is_token_concentrated
+# >>> NOVO: import para filtros + rate limiter
+from utils import (
+    is_contract_verified,
+    is_token_concentrated,
+    rate_limiter,
+    configure_rate_limiter_from_config
+)
 
 log = logging.getLogger("sniper")
 
@@ -28,6 +33,10 @@ bot_notify = Bot(token=config["TELEGRAM_TOKEN"])
 API_KEY = config.get("BASESCAN_API_KEY")
 BLOCK_UNVERIFIED = config.get("BLOCK_UNVERIFIED", False)
 TOP_HOLDER_LIMIT = float(config.get("TOP_HOLDER_LIMIT", 30.0))
+
+# >>> NOVO: aplicar configs do Rate Limiter e conectar notificador
+configure_rate_limiter_from_config(config)
+rate_limiter.set_notifier(lambda msg: safe_notify(bot_notify, msg))
 
 # -----------------------------------------------
 # ABI mínimo para teste rápido de honeypot (Routers V2-compatíveis)
@@ -151,6 +160,13 @@ _PAIR_DUP_INTERVAL = 5  # segundos
 # Fluxo principal de novo par
 # -----------------------------------------------
 async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
+    from utils import rate_limiter  # >>> NOVO: import interno para evitar ciclos
+
+    # >>> NOVO: Checagem de pausa automática do sniper
+    if rate_limiter.is_paused():
+        safe_notify(bot, "⏸️ Sniper pausado por limite de API. Ignorando novos pares.", loop)
+        return
+
     now = time()
     pair_key = (pair_addr.lower(), token0.lower(), token1.lower())
 
@@ -185,19 +201,16 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
             safe_notify(bot, f"⚠️ Pool ignorada por liquidez insuficiente (< {MIN_LIQ_WETH} WETH)", loop)
             return
 
-        # Checa taxa
         MAX_TAX_PCT = float(config.get("MAX_TAX_PCT", 10.0))
         if has_high_tax(target_token, MAX_TAX_PCT):
             safe_notify(bot, f"⚠️ Token ignorado por taxa acima de {MAX_TAX_PCT}%", loop)
             return
 
-        # >>> NOVO: Checagem de contrato verificado
         if not is_contract_verified(target_token, API_KEY):
             safe_notify(bot, f"⚠️ Token {target_token} com contrato não verificado no BaseScan", loop)
             if BLOCK_UNVERIFIED:
                 return
 
-        # >>> NOVO: Checagem de concentração de holders
         if is_token_concentrated(target_token, API_KEY, TOP_HOLDER_LIMIT):
             safe_notify(bot, f"🚫 Token {target_token} com concentração alta de supply", loop)
             return
@@ -240,9 +253,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         safe_notify(bot, f"🚫 Compra não executada para {target_token}\nMotivo: {motivo}", loop)
         return
 
-    # -------------------------------------------
     # Monitoramento de venda (TP, SL, Trailing)
-    # -------------------------------------------
     highest_price = preco_atual
     trail_pct = float(config.get("TRAIL_PCT", 0.05))
     tp_pct = float(config.get("TAKE_PROFIT_PCT", config.get("TP_PCT", 0.2)))
@@ -272,7 +283,6 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
                 highest_price = price
                 stop_price = highest_price * (1 - trail_pct)
 
-            # Condições de saída: TP, Trailing, Hard SL
             should_sell = (price >= take_profit_price) or (price <= stop_price) or (price <= hard_stop_price)
             if should_sell:
                 try:
@@ -288,7 +298,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
                 tx_sell = safe_exec.sell(
                     token_in=target_token,
                     token_out=weth,
-                    amount_eth=token_balance,  # mantém nomeação conforme executor existente
+                    amount_eth=token_balance,
                     current_price=price,
                     last_trade_price=entry_price
                 )
