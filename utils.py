@@ -10,8 +10,13 @@ ETHERSCAN_V1_URL = "https://api.basescan.org/api"
 ETHERSCAN_V2_URL = "https://api.etherscan.io/api"
 CHAIN_ID = "base-mainnet"  # usado apenas na V2
 
+
 def is_v2_key(api_key: str) -> bool:
+    """Checa se a chave parece ser do formato v2."""
+    if not api_key:
+        return False
     return api_key.startswith("CX") or len(api_key) > 40
+
 
 class ApiRateLimiter:
     def __init__(
@@ -115,7 +120,6 @@ class ApiRateLimiter:
         # Pausa por diário alto
         if self.daily_count >= int(self.daily_limit * self.pause_daily_pct):
             if self.pause_enabled:
-                # pausa até cooldown ou virada do dia, o que vier primeiro
                 until = min(
                     now + timedelta(seconds=self.daily_cd),
                     self.day_anchor + timedelta(days=1)
@@ -128,7 +132,8 @@ class ApiRateLimiter:
                 )
             raise RuntimeError("API rate-limited: daily threshold reached")
 
-# Crie o limiter com valores padrão; você pode reconfigurar a partir do config no startup
+
+# Instância padrão do rate limiter
 rate_limiter = ApiRateLimiter(
     qps_limit=5,
     daily_limit=100000,
@@ -138,6 +143,7 @@ rate_limiter = ApiRateLimiter(
     daily_cooldown_sec=3600,
     pause_enabled=True
 )
+
 
 def configure_rate_limiter_from_config(config):
     try:
@@ -151,10 +157,14 @@ def configure_rate_limiter_from_config(config):
     except Exception:
         log.warning("Falha ao aplicar configs do rate limiter.", exc_info=True)
 
+
 def is_contract_verified(token_address: str, api_key: str) -> bool:
-    """V1/V2 automático com rate limiting."""
-    # Checagem de pausa e contagem
+    """Verifica se o contrato está verificado, com fallback se API_KEY ausente."""
     rate_limiter.before_api_call()
+
+    if not api_key:
+        log.warning("⚠️ BASESCAN_API_KEY não configurada — pulando verificação de contrato.")
+        return True  # ou False se quiser bloquear
 
     if is_v2_key(api_key):
         params = {
@@ -172,14 +182,23 @@ def is_contract_verified(token_address: str, api_key: str) -> bool:
     try:
         resp = requests.get(url, params=params, timeout=10)
         data = resp.json()
-        return data.get("status") == "1" and data["result"] and data["result"][0].get("SourceCode")
+        return (
+            data.get("status") == "1"
+            and data.get("result")
+            and data["result"][0].get("SourceCode")
+        )
     except Exception as e:
         log.error(f"Erro ao verificar contrato: {e}", exc_info=True)
         return False
 
+
 def is_token_concentrated(token_address: str, api_key: str, top_limit_pct: float) -> bool:
-    """V1/V2 automático com rate limiting."""
+    """Verifica concentração de holders, com fallback se API_KEY ausente."""
     rate_limiter.before_api_call()
+
+    if not api_key:
+        log.warning("⚠️ BASESCAN_API_KEY não configurada — pulando verificação de concentração.")
+        return False  # ou True se quiser considerar concentrado
 
     if is_v2_key(api_key):
         params = {
@@ -198,14 +217,4 @@ def is_token_concentrated(token_address: str, api_key: str, top_limit_pct: float
         resp = requests.get(url, params=params, timeout=10)
         data = resp.json()
         for holder in data.get("result", []):
-            pct_str = holder.get("Percentage", "0").replace("%", "").strip()
-            try:
-                pct = float(pct_str)
-            except ValueError:
-                pct = 0.0
-            if pct >= top_limit_pct:
-                return True
-        return False
-    except Exception as e:
-        log.error(f"Erro ao verificar concentração de holders: {e}", exc_info=True)
-        return True
+            pct_str = holder.get("Percentage", "0").replace("%", "").
