@@ -1,5 +1,5 @@
+# strategy_sniper.py
 import logging
-import math
 import datetime
 import asyncio
 from decimal import Decimal
@@ -57,42 +57,12 @@ def safe_notify(alert: TelegramAlert | None, msg: str, loop: asyncio.AbstractEve
     except Exception as e:
         log.error(f"Falha no notify(): {e}", exc_info=True)
 
-ROUTER_ABI = [{
-    "name": "getAmountsOut",
-    "type": "function",
-    "stateMutability": "view",
-    "inputs": [
-        {"name": "amountIn", "type": "uint256"},
-        {"name": "path", "type": "address[]"}
-    ],
-    "outputs": [{"name": "", "type": "uint256[]"}]
-}]
-
-def amount_out_min(router_contract, amount_in_wei, path, slippage_bps):
-    out = router_contract.functions.getAmountsOut(amount_in_wei, path).call()[-1]
-    return math.floor(out * (1 - slippage_bps / 10_000))
-
-def get_token_price_in_weth(router_contract, token, weth):
-    amt_in = 10 ** 18
-    path = [token, weth]
-    try:
-        out = router_contract.functions.getAmountsOut(amt_in, path).call()[-1]
-        return out / 1e18 if out > 0 else None
-    except Exception as e:
-        log.warning(f"Falha ao obter preço: {e}")
-        return None
-
 async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
     log.info(f"Novo par recebido: {dex_info['name']} {pair_addr} {token0}/{token1}")
 
     # Inicialização segura
     try:
         web3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
-        router_contract = web3.eth.contract(
-            address=Web3.to_checksum_address(dex_info["router"]),
-            abi=ROUTER_ABI
-        )
-
         weth = Web3.to_checksum_address(config["WETH"])
         if token0.lower() == weth.lower():
             target_token = Web3.to_checksum_address(token1)
@@ -103,20 +73,28 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         if amt_eth <= 0:
             log.error("TRADE_SIZE_ETH inválido; abortando.")
             return
+
+        # Criar cliente da DEX para preço e liquidez
+        dex_client = DexClient(web3, dex_info["router"])
+
     except Exception as e:
         log.error(f"Falha ao preparar contexto do par: {e}", exc_info=True)
         return
 
-    preco_atual = get_token_price_in_weth(router_contract, target_token, weth)
+    # Checar liquidez mínima (opcional, já que discovery filtra V2)
+    min_liq_ok = dex_client.has_min_liquidity(target_token, weth, config.get("MIN_LIQ_WETH", 0.5))
+
+    # Preço atual
+    preco_atual = dex_client.get_token_price(target_token, weth)
 
     # Log pré-RiskManager
     log.info(
-        f"[Pré-Risk] {token0}/{token1} preço={preco_atual} ETH | size={amt_eth}ETH | liq_ok=True | honeypot_ok=True"
+        f"[Pré-Risk] {token0}/{token1} preço={preco_atual} ETH | size={amt_eth}ETH | liq_ok={min_liq_ok} | honeypot_ok=True"
     )
 
     # Executor seguro
     safe_exec = SafeTradeExecutor(
-        executor=TradeExecutor(exchange_client=ExchangeClient(web3)),
+        executor=TradeExecutor(exchange_client=ExchangeClient(web3), dry_run=config["DRY_RUN"]),
         risk_manager=risk_manager
     )
 
@@ -127,12 +105,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         amount_eth=amt_eth,
         current_price=preco_atual,
         last_trade_price=None,
-        amount_out_min=amount_out_min(
-            router_contract,
-            Web3.to_wei(amt_eth, "ether"),
-            [weth, target_token],
-            config.get("SLIPPAGE_BPS", 100)
-        )
+        amount_out_min=None  # TradeExecutor/DexClient calculam internamente se preciso
     )
 
     if tx_buy:
@@ -156,7 +129,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
 
     from discovery import is_discovery_running
     while is_discovery_running():
-        price = get_token_price_in_weth(router_contract, target_token, weth)
+        price = dex_client.get_token_price(target_token, weth)
         if not price:
             await asyncio.sleep(1)
             continue
