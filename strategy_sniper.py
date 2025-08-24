@@ -66,6 +66,24 @@ def get_token_balance(web3: Web3, token_address: str, owner_address: str, erc20_
         log.error(f"Erro ao obter saldo do token {token_address}: {e}")
         return Decimal(0)
 
+# -----------------------------------------------
+# Filtros adicionais de proteção
+# -----------------------------------------------
+def has_high_tax(token_address: str, max_tax_pct: float = 10.0) -> bool:
+    """
+    Placeholder para verificar se token tem taxa acima do permitido.
+    Dependendo do contrato, pode-se ler métodos específicos como 'buyTax' ou 'sellTax'.
+    """
+    try:
+        # Implementar leitura real se o token expuser métodos de taxa
+        return False
+    except Exception as e:
+        log.warning(f"Não foi possível verificar taxa do token {token_address}: {e}")
+        return False
+
+# -----------------------------------------------
+# Fluxo principal de novo par
+# -----------------------------------------------
 async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
     log.info(f"Novo par recebido: {dex_info['name']} {pair_addr} {token0}/{token1}")
 
@@ -82,12 +100,26 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
             log.error("TRADE_SIZE_ETH inválido; abortando.")
             return
 
+        # --- PRÉ-VALIDAÇÃO DE LIQUIDEZ ---
+        MIN_LIQ_WETH = config.get("MIN_LIQ_WETH", 0.5)  # mínimo em WETH
+        if not DexClient(web3, dex_info["router"]).has_min_liquidity(target_token, weth, MIN_LIQ_WETH):
+            log.warning(f"[SKIP] Liquidez abaixo de {MIN_LIQ_WETH} WETH — ignorando par {pair_addr}")
+            safe_notify(bot, f"⚠️ Pool ignorado por liquidez insuficiente ({MIN_LIQ_WETH} WETH mín.)", loop)
+            return
+
+        # --- PRÉ-VALIDAÇÃO DE TAXA ---
+        MAX_TAX_PCT = config.get("MAX_TAX_PCT", 10.0)
+        if has_high_tax(target_token, MAX_TAX_PCT):
+            log.warning(f"[SKIP] Token {target_token} com taxa acima de {MAX_TAX_PCT}% — ignorando.")
+            safe_notify(bot, f"⚠️ Token ignorado por taxa acima de {MAX_TAX_PCT}%", loop)
+            return
+
         dex_client = DexClient(web3, dex_info["router"])
     except Exception as e:
         log.error(f"Falha ao preparar contexto do par: {e}", exc_info=True)
         return
 
-    min_liq_ok = dex_client.has_min_liquidity(target_token, weth, config.get("MIN_LIQ_WETH", 0.5))
+    min_liq_ok = True  # já filtramos acima, então aqui não precisamos chamar de novo
     preco_atual = dex_client.get_token_price(target_token, weth)
 
     log.info(f"[Pré-Risk] {token0}/{token1} preço={preco_atual} ETH | size={amt_eth}ETH | liq_ok={min_liq_ok}")
@@ -140,7 +172,6 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
             stop_price = highest_price * (1 - trail_pct)
 
         if price >= take_profit_price or price <= stop_price:
-            # Obtém saldo atual de tokens antes de vender
             token_balance = get_token_balance(
                 web3, target_token, exchange_client.wallet, exchange_client.erc20_abi
             )
