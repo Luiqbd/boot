@@ -13,6 +13,9 @@ from trade_executor import TradeExecutor
 from safe_trade_executor import SafeTradeExecutor
 from risk_manager import RiskManager
 
+# >>> NOVO: import para filtros de contrato/holders
+from utils import is_contract_verified, is_token_concentrated
+
 log = logging.getLogger("sniper")
 
 # Instância global do RiskManager
@@ -20,6 +23,11 @@ risk_manager = RiskManager()
 
 # Bot simples via token/chat_id
 bot_notify = Bot(token=config["TELEGRAM_TOKEN"])
+
+# >>> NOVO: variáveis de config para os filtros
+API_KEY = config.get("BASESCAN_API_KEY")
+BLOCK_UNVERIFIED = config.get("BLOCK_UNVERIFIED", False)
+TOP_HOLDER_LIMIT = float(config.get("TOP_HOLDER_LIMIT", 30.0))
 
 # -----------------------------------------------
 # ABI mínimo para teste rápido de honeypot (Routers V2-compatíveis)
@@ -63,7 +71,6 @@ def safe_notify(alert: TelegramAlert | None, msg: str, loop: asyncio.AbstractEve
     now = time()
     msg_key = hash(msg)
 
-    # Bloqueia duplicatas recentes
     if msg_key in _last_msgs and (now - _last_msgs[msg_key]) < _DUP_INTERVAL:
         log.debug(f"[DUPE] Mensagem ignorada: {msg}")
         return
@@ -108,33 +115,27 @@ def get_token_balance(web3: Web3, token_address: str, owner_address: str, erc20_
 def has_high_tax(token_address: str, max_tax_pct: float = 10.0) -> bool:
     """Placeholder para verificar se token tem taxa acima do permitido."""
     try:
-        # Implementar leitura real se o token expuser métodos (ex.: buyTax/sellTax)
         return False
     except Exception as e:
         log.warning(f"Não foi possível verificar taxa do token {token_address}: {e}")
         return False
 
 def has_min_volume(dex_client: DexClient, token_in: str, token_out: str, min_volume_eth: float) -> bool:
-    """Verifica se o par tem volume >= min_volume_eth nas últimas transações (placeholder DexClient.get_recent_volume)."""
+    """Verifica se o par tem volume >= min_volume_eth nas últimas transações."""
     try:
-        volume_eth = dex_client.get_recent_volume(token_in, token_out)  # implementar no DexClient
+        volume_eth = dex_client.get_recent_volume(token_in, token_out)
         return float(volume_eth) >= float(min_volume_eth)
     except Exception as e:
         log.error(f"Erro ao verificar volume do par {token_in}/{token_out}: {e}", exc_info=True)
         return False
 
 def is_honeypot(token_address: str, router_address: str, weth_address: str, test_amount_eth: float, strict: bool = False) -> bool:
-    """
-    Teste rápido de honeypot: tenta calcular saída com getAmountsOut (routers V2-like).
-    - strict=False: em erro, NÃO bloqueia (retorna False) para evitar falsos positivos.
-    - strict=True: em erro, bloqueia (retorna True).
-    """
+    """Teste rápido de honeypot."""
     try:
         web3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
         router = web3.eth.contract(address=Web3.to_checksum_address(router_address), abi=DEX_ROUTER_ABI)
         amount_in_wei = int(Decimal(str(test_amount_eth)) * (10 ** 18))
         amounts = router.functions.getAmountsOut(amount_in_wei, [weth_address, token_address]).call()
-        # Se não houver rota/saída, pode indicar bloqueio
         return (len(amounts) < 2) or (int(amounts[-1]) == 0)
     except Exception as e:
         log.warning(f"Falha no teste de honeypot ({token_address}): {e}")
@@ -153,7 +154,6 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
     now = time()
     pair_key = (pair_addr.lower(), token0.lower(), token1.lower())
 
-    # Anti-duplicação de evento
     if pair_key in _recent_pairs and (now - _recent_pairs[pair_key]) < _PAIR_DUP_INTERVAL:
         log.debug(f"[DUPE] Par ignorado: {pair_addr} {token0}/{token1}")
         return
@@ -174,7 +174,6 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
             log.error("TRADE_SIZE_ETH inválido; abortando.")
             return
 
-        # Checa liquidez mínima (com fallback seguro em caso de exceção)
         MIN_LIQ_WETH = float(config.get("MIN_LIQ_WETH", 0.5))
         try:
             liq_ok = DexClient(web3, dex_info["router"]).has_min_liquidity(target_token, weth, MIN_LIQ_WETH)
@@ -186,24 +185,21 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
             safe_notify(bot, f"⚠️ Pool ignorada por liquidez insuficiente (< {MIN_LIQ_WETH} WETH)", loop)
             return
 
-        # Instancia cliente DEX (uma vez)
-        dex_client = DexClient(web3, dex_info["router"])
-
-        # Checa volume mínimo
-        MIN_VOLUME_ETH = float(config.get("MIN_VOLUME_ETH", 2.0))
-        if not has_min_volume(dex_client, weth, target_token, MIN_VOLUME_ETH):
-            safe_notify(bot, f"⚠️ Pool ignorada por volume insuficiente (< {MIN_VOLUME_ETH} ETH)", loop)
-            return
-
-        # Teste de honeypot (strict=False por padrão para evitar falsos positivos)
-        if is_honeypot(target_token, dex_info["router"], weth, 0.001, strict=False):
-            safe_notify(bot, f"🚫 Pool {target_token} bloqueada (possível honeypot)", loop)
-            return
-
         # Checa taxa
         MAX_TAX_PCT = float(config.get("MAX_TAX_PCT", 10.0))
         if has_high_tax(target_token, MAX_TAX_PCT):
             safe_notify(bot, f"⚠️ Token ignorado por taxa acima de {MAX_TAX_PCT}%", loop)
+            return
+
+        # >>> NOVO: Checagem de contrato verificado
+        if not is_contract_verified(target_token, API_KEY):
+            safe_notify(bot, f"⚠️ Token {target_token} com contrato não verificado no BaseScan", loop)
+            if BLOCK_UNVERIFIED:
+                return
+
+        # >>> NOVO: Checagem de concentração de holders
+        if is_token_concentrated(target_token, API_KEY, TOP_HOLDER_LIMIT):
+            safe_notify(bot, f"🚫 Token {target_token} com concentração alta de supply", loop)
             return
 
     except Exception as e:
