@@ -15,6 +15,7 @@ def is_contract_verified(token_address: str, api_key: str) -> bool:
         }
         resp = requests.get(url, params=params, timeout=10)
         data = resp.json()
+        # status "1" significa sucesso, e SourceCode não vazio significa contrato verificado
         if data.get("status") == "1" and data["result"] and data["result"][0].get("SourceCode"):
             return True
         return False
@@ -23,7 +24,9 @@ def is_contract_verified(token_address: str, api_key: str) -> bool:
         return False
 
 def is_token_concentrated(token_address: str, api_key: str, top_limit_pct: float) -> bool:
-    """Retorna True se algum holder tiver >= top_limit_pct% do supply."""
+    """
+    Retorna True se algum holder tiver >= top_limit_pct% do supply.
+    """
     try:
         url = "https://api.basescan.org/api"
         params = {
@@ -35,7 +38,11 @@ def is_token_concentrated(token_address: str, api_key: str, top_limit_pct: float
         resp = requests.get(url, params=params, timeout=10)
         data = resp.json()
         for holder in data.get("result", []):
-            pct = float(holder.get("Percentage", "0").replace("%", ""))
+            pct_str = holder.get("Percentage", "0").replace("%", "").strip()
+            try:
+                pct = float(pct_str)
+            except ValueError:
+                pct = 0.0
             if pct >= top_limit_pct:
                 return True
         return False
