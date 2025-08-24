@@ -1,6 +1,7 @@
 import logging
 import asyncio
 from decimal import Decimal
+from time import time
 from web3 import Web3
 
 from config import config
@@ -20,6 +21,12 @@ risk_manager = RiskManager()
 # Bot simples via token/chat_id
 bot_notify = Bot(token=config["TELEGRAM_TOKEN"])
 
+# -----------------------------------------------
+# Anti-duplicação de mensagens
+# -----------------------------------------------
+_last_msgs = {}
+_DUP_INTERVAL = 5  # segundos
+
 def notify(msg: str):
     """Envia mensagem simples ao Telegram."""
     try:
@@ -36,13 +43,18 @@ def notify(msg: str):
         log.error(f"Erro ao enviar notificação: {e}")
 
 def safe_notify(alert: TelegramAlert | None, msg: str, loop: asyncio.AbstractEventLoop | None = None):
-    """
-    Envia mensagem via TelegramAlert + notify simples.
-    Corrigido para não usar métodos privados removidos nas novas versões.
-    """
-    if alert:
-        try:
-            # Método público compatível
+    """Envia mensagem ao Telegram evitando duplicação."""
+    global _last_msgs
+    now = time()
+    msg_key = hash(msg)
+
+    if msg_key in _last_msgs and (now - _last_msgs[msg_key]) < _DUP_INTERVAL:
+        log.debug(f"[DUPE] Mensagem ignorada: {msg}")
+        return
+    _last_msgs[msg_key] = now
+
+    try:
+        if alert:
             coro = alert.send_message(
                 chat_id=config["TELEGRAM_CHAT_ID"],
                 text=msg
@@ -55,13 +67,14 @@ def safe_notify(alert: TelegramAlert | None, msg: str, loop: asyncio.AbstractEve
                     running_loop.create_task(coro)
                 except RuntimeError:
                     asyncio.run(coro)
-        except Exception as e:
-            log.error(f"Falha ao agendar envio para alerta Telegram: {e}", exc_info=True)
-    try:
-        notify(msg)
+        else:
+            notify(msg)
     except Exception as e:
-        log.error(f"Falha no notify(): {e}", exc_info=True)
+        log.error(f"Falha ao enviar alerta: {e}", exc_info=True)
 
+# -----------------------------------------------
+# Consulta de saldo
+# -----------------------------------------------
 def get_token_balance(web3: Web3, token_address: str, owner_address: str, erc20_abi: list) -> Decimal:
     """Consulta saldo de um token ERC20 em unidades humanas."""
     try:
@@ -74,24 +87,35 @@ def get_token_balance(web3: Web3, token_address: str, owner_address: str, erc20_
         return Decimal(0)
 
 # -----------------------------------------------
-# Filtros adicionais de proteção
+# Filtros adicionais
 # -----------------------------------------------
 def has_high_tax(token_address: str, max_tax_pct: float = 10.0) -> bool:
-    """
-    Placeholder para verificar se token tem taxa acima do permitido.
-    Dependendo do contrato, pode-se ler métodos específicos como 'buyTax' ou 'sellTax'.
-    """
+    """Placeholder para verificar se token tem taxa acima do permitido."""
     try:
-        # Implementar leitura real se o token expuser métodos de taxa
         return False
     except Exception as e:
         log.warning(f"Não foi possível verificar taxa do token {token_address}: {e}")
         return False
 
 # -----------------------------------------------
+# Anti-duplicação de pares
+# -----------------------------------------------
+_recent_pairs = {}
+_PAIR_DUP_INTERVAL = 5  # segundos
+
+# -----------------------------------------------
 # Fluxo principal de novo par
 # -----------------------------------------------
 async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
+    global _recent_pairs
+    now = time()
+    pair_key = (pair_addr.lower(), token0.lower(), token1.lower())
+
+    if pair_key in _recent_pairs and (now - _recent_pairs[pair_key]) < _PAIR_DUP_INTERVAL:
+        log.debug(f"[DUPE] Par ignorado: {pair_addr} {token0}/{token1}")
+        return
+    _recent_pairs[pair_key] = now
+
     log.info(f"Novo par recebido: {dex_info['name']} {pair_addr} {token0}/{token1}")
 
     try:
@@ -107,14 +131,12 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
             log.error("TRADE_SIZE_ETH inválido; abortando.")
             return
 
-        # --- PRÉ-VALIDAÇÃO DE LIQUIDEZ ---
-        MIN_LIQ_WETH = config.get("MIN_LIQ_WETH", 0.5)  # mínimo em WETH
+        MIN_LIQ_WETH = config.get("MIN_LIQ_WETH", 0.5)
         if not DexClient(web3, dex_info["router"]).has_min_liquidity(target_token, weth, MIN_LIQ_WETH):
             log.warning(f"[SKIP] Liquidez abaixo de {MIN_LIQ_WETH} WETH — ignorando par {pair_addr}")
             safe_notify(bot, f"⚠️ Pool ignorado por liquidez insuficiente ({MIN_LIQ_WETH} WETH mín.)", loop)
             return
 
-        # --- PRÉ-VALIDAÇÃO DE TAXA ---
         MAX_TAX_PCT = config.get("MAX_TAX_PCT", 10.0)
         if has_high_tax(target_token, MAX_TAX_PCT):
             log.warning(f"[SKIP] Token {target_token} com taxa acima de {MAX_TAX_PCT}% — ignorando.")
@@ -126,10 +148,8 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         log.error(f"Falha ao preparar contexto do par: {e}", exc_info=True)
         return
 
-    min_liq_ok = True
     preco_atual = dex_client.get_token_price(target_token, weth)
-
-    log.info(f"[Pré-Risk] {token0}/{token1} preço={preco_atual} ETH | size={amt_eth}ETH | liq_ok={min_liq_ok}")
+    log.info(f"[Pré-Risk] {token0}/{token1} preço={preco_atual} ETH | size={amt_eth}ETH")
 
     try:
         exchange_client = ExchangeClient(router_address=dex_info["router"])
@@ -179,9 +199,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
             stop_price = highest_price * (1 - trail_pct)
 
         if price >= take_profit_price or price <= stop_price:
-            token_balance = get_token_balance(
-                web3, target_token, exchange_client.wallet, exchange_client.erc20_abi
-            )
+            token_balance = get_token_balance(web3, target_token, exchange_client.wallet, exchange_client.erc20_abi)
             if token_balance <= 0:
                 log.warning("Saldo do token é zero — nada para vender.")
                 break
