@@ -81,20 +81,19 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         log.error(f"Falha ao preparar contexto do par: {e}", exc_info=True)
         return
 
-    # Checar liquidez mínima (opcional, já que discovery filtra V2)
+    # Checar liquidez mínima (opcional)
     min_liq_ok = dex_client.has_min_liquidity(target_token, weth, config.get("MIN_LIQ_WETH", 0.5))
 
     # Preço atual
     preco_atual = dex_client.get_token_price(target_token, weth)
 
-    # Log pré-RiskManager
     log.info(
         f"[Pré-Risk] {token0}/{token1} preço={preco_atual} ETH | size={amt_eth}ETH | liq_ok={min_liq_ok} | honeypot_ok=True"
     )
 
-    # Executor seguro
+    # Executor seguro — agora usando router dinâmico do par
     safe_exec = SafeTradeExecutor(
-        executor=TradeExecutor(exchange_client=ExchangeClient(web3), dry_run=config["DRY_RUN"]),
+        executor=TradeExecutor(exchange_client=ExchangeClient(web3, router_address=dex_info["router"]), dry_run=config["DRY_RUN"]),
         risk_manager=risk_manager
     )
 
@@ -105,7 +104,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         amount_eth=amt_eth,
         current_price=preco_atual,
         last_trade_price=None,
-        amount_out_min=None  # TradeExecutor/DexClient calculam internamente se preciso
+        amount_out_min=None
     )
 
     if tx_buy:
