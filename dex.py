@@ -1,4 +1,3 @@
-# dex.py
 import os
 import json
 import logging
@@ -6,6 +5,32 @@ from web3 import Web3
 from config import config  # para gas, deadline e slippage vindos do ambiente
 
 logger = logging.getLogger(__name__)
+
+# ABI mínima Uniswap V2
+V2_PAIR_ABI = [
+    {
+        "name": "getReserves",
+        "outputs": [
+            {"type": "uint112", "name": "_reserve0"},
+            {"type": "uint112", "name": "_reserve1"},
+            {"type": "uint32", "name": "_blockTimestampLast"}
+        ],
+        "inputs": [],
+        "stateMutability": "view",
+        "type": "function"
+    }
+]
+
+# ABI mínima Uniswap V3
+V3_POOL_ABI = [
+    {
+        "name": "liquidity",
+        "outputs": [{"type": "uint128", "name": ""}],
+        "inputs": [],
+        "stateMutability": "view",
+        "type": "function"
+    }
+]
 
 class DexClient:
     def __init__(self, web3, router_address):
@@ -25,10 +50,21 @@ class DexClient:
             abi=router_abi
         )
 
+    def detect_version(self, pair_address: str) -> str:
+        """Detecta se o par/pool é V2 ou V3."""
+        pair = self.web3.eth.contract(address=Web3.to_checksum_address(pair_address))
+        try:
+            pair.get_function_by_name("getReserves")
+            return "v2"
+        except ValueError:
+            try:
+                pair.get_function_by_name("liquidity")
+                return "v3"
+            except ValueError:
+                return "unknown"
+
     def get_token_price(self, token_address, weth_address):
-        """
-        Retorna o preço do token em WETH (quanto 1 TOKEN vale em WETH)
-        """
+        """Retorna o preço do token em WETH (quanto 1 TOKEN vale em WETH)."""
         try:
             amt_in = self.web3.to_wei(1, "ether")
             path = [Web3.to_checksum_address(token_address), Web3.to_checksum_address(weth_address)]
@@ -44,9 +80,7 @@ class DexClient:
         self, token_address, amount_eth, recipient_address, weth_address,
         private_key, slippage_bps=None, tx_deadline_sec=None, gas_limit=None
     ):
-        """
-        Executa swap via Uniswap Router com proteção de slippage.
-        """
+        """Executa swap via Uniswap Router com proteção de slippage."""
         try:
             path = [
                 Web3.to_checksum_address(weth_address),
@@ -96,21 +130,37 @@ class DexClient:
             logger.warning(f"[HONEYPOT] Token {token_address} falhou na simulação de venda.")
             return True
 
-    def has_min_liquidity(self, token_address, weth_address, min_liq_weth=0.5):
-        """Verifica se o par tem pelo menos min_liq_weth de liquidez."""
+    def has_min_liquidity(self, pair_address, weth_address, min_liq_weth=0.5):
+        """
+        Verifica se o par/pool tem pelo menos min_liq_weth de liquidez.
+        Adapta para Uniswap V2 ou V3 automaticamente.
+        """
+        version = self.detect_version(pair_address)
         try:
-            path = [
-                Web3.to_checksum_address(weth_address),
-                Web3.to_checksum_address(token_address)
-            ]
-            one_weth = self.web3.to_wei(1, "ether")
-            amounts = self.router.functions.getAmountsOut(one_weth, path).call()
-            # Aqui medimos o retorno em tokens, mas queremos garantir que WETH no pool seja >= min_liq_weth
-            received_tokens = self.web3.from_wei(amounts[-1], "ether")
-            if received_tokens < min_liq_weth:
-                logger.warning(f"[LIQUIDEZ BAIXA] 1 WETH retorna {received_tokens:.4f} tokens — abaixo do mínimo exigido.")
+            if version == "v2":
+                pair = self.web3.eth.contract(
+                    address=Web3.to_checksum_address(pair_address),
+                    abi=V2_PAIR_ABI
+                )
+                reserves = pair.functions.getReserves().call()
+                reserve_weth = max(reserves[0], reserves[1]) / (10 ** 18)
+                logger.debug(f"[V2] Liquidez WETH detectada: {reserve_weth}")
+                return reserve_weth >= min_liq_weth
+
+            elif version == "v3":
+                pool = self.web3.eth.contract(
+                    address=Web3.to_checksum_address(pair_address),
+                    abi=V3_POOL_ABI
+                )
+                liq = pool.functions.liquidity().call()
+                reserve_weth_equiv = liq / (10 ** 18)
+                logger.debug(f"[V3] Liquidez equivalente WETH detectada: {reserve_weth_equiv}")
+                return reserve_weth_equiv >= min_liq_weth
+
+            else:
+                logger.warning(f"⚠️ Tipo de par desconhecido: {pair_address} — pulando verificação de liquidez")
                 return False
-            return True
+
         except Exception as e:
-            logger.error(f"Erro ao verificar liquidez: {e}")
+            logger.error(f"Erro ao verificar liquidez ({version.upper()}): {e}", exc_info=True)
             return False
