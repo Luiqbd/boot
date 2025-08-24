@@ -184,4 +184,14 @@ class RiskManager:
                     min_liquidity_req, min_liquidity_found, slippage_allowed, slippage_found, spread, origem)
                 return False
 
-        self._registrar_evento("liberado",
+        self._registrar_evento("liberado", "✅ Trade liberada",
+            pair, direction, trade_size_eth, current_price, last_trade_price,
+            min_liquidity_req, min_liquidity_found, slippage_allowed, slippage_found, spread, origem)
+        return True
+
+    def register_trade(self, success=True, pair=None, direction=None, now_ts=None):
+        origem = "register_trade"
+        self.daily_trades += 1
+        if success:
+            self.loss_streak = 0
+            self._registr
