@@ -44,7 +44,6 @@ def notify(msg: str):
 
 def safe_notify(alert: TelegramAlert | None, msg: str, loop: asyncio.AbstractEventLoop | None = None):
     """Envia mensagem ao Telegram evitando duplicação."""
-    global _last_msgs
     now = time()
     msg_key = hash(msg)
 
@@ -97,6 +96,28 @@ def has_high_tax(token_address: str, max_tax_pct: float = 10.0) -> bool:
         log.warning(f"Não foi possível verificar taxa do token {token_address}: {e}")
         return False
 
+def has_min_volume(dex_client: DexClient, token_in: str, token_out: str, min_volume_eth: float) -> bool:
+    """Verifica se o par tem volume >= min_volume_eth nas últimas transações."""
+    try:
+        volume_eth = dex_client.get_recent_volume(token_in, token_out)  # implementar no DexClient
+        return volume_eth >= min_volume_eth
+    except Exception as e:
+        log.error(f"Erro ao verificar volume do par {token_in}/{token_out}: {e}")
+        return False
+
+def is_honeypot(token_address: str, router_address: str, weth_address: str, test_amount_eth: float) -> bool:
+    """Simula uma venda para detectar honeypot."""
+    try:
+        web3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
+        router = web3.eth.contract(address=Web3.to_checksum_address(router_address), abi=DEX_ROUTER_ABI)
+        amount_out = router.functions.getAmountsOut(
+            int(test_amount_eth * 10**18), [weth_address, token_address]
+        ).call()
+        return amount_out[1] == 0
+    except Exception as e:
+        log.warning(f"Falha no teste de honeypot ({token_address}): {e}")
+        return True
+
 # -----------------------------------------------
 # Anti-duplicação de pares
 # -----------------------------------------------
@@ -107,7 +128,6 @@ _PAIR_DUP_INTERVAL = 5  # segundos
 # Fluxo principal de novo par
 # -----------------------------------------------
 async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
-    global _recent_pairs
     now = time()
     pair_key = (pair_addr.lower(), token0.lower(), token1.lower())
 
@@ -131,19 +151,30 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
             log.error("TRADE_SIZE_ETH inválido; abortando.")
             return
 
+        # Checa liquidez mínima
         MIN_LIQ_WETH = config.get("MIN_LIQ_WETH", 0.5)
         if not DexClient(web3, dex_info["router"]).has_min_liquidity(target_token, weth, MIN_LIQ_WETH):
-            log.warning(f"[SKIP] Liquidez abaixo de {MIN_LIQ_WETH} WETH — ignorando par {pair_addr}")
-            safe_notify(bot, f"⚠️ Pool ignorado por liquidez insuficiente ({MIN_LIQ_WETH} WETH mín.)", loop)
+            safe_notify(bot, f"⚠️ Pool ignorada por liquidez insuficiente ({MIN_LIQ_WETH} WETH mín.)", loop)
             return
 
+        # Checa volume mínimo
+        MIN_VOLUME_ETH = config.get("MIN_VOLUME_ETH", 2.0)
+        dex_client = DexClient(web3, dex_info["router"])
+        if not has_min_volume(dex_client, weth, target_token, MIN_VOLUME_ETH):
+            safe_notify(bot, f"⚠️ Pool ignorada por volume insuficiente (< {MIN_VOLUME_ETH} ETH)", loop)
+            return
+
+        # Teste de honeypot
+        if is_honeypot(target_token, dex_info["router"], weth, 0.001):
+            safe_notify(bot, f"🚫 Pool {target_token} bloqueada (possível honeypot)", loop)
+            return
+
+        # Checa taxa
         MAX_TAX_PCT = config.get("MAX_TAX_PCT", 10.0)
         if has_high_tax(target_token, MAX_TAX_PCT):
-            log.warning(f"[SKIP] Token {target_token} com taxa acima de {MAX_TAX_PCT}% — ignorando.")
             safe_notify(bot, f"⚠️ Token ignorado por taxa acima de {MAX_TAX_PCT}%", loop)
             return
 
-        dex_client = DexClient(web3, dex_info["router"])
     except Exception as e:
         log.error(f"Falha ao preparar contexto do par: {e}", exc_info=True)
         return
@@ -169,14 +200,10 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
     )
 
     if tx_buy:
-        msg = f"✅ Compra realizada: {target_token}\nTX: {tx_buy}"
-        log.info(msg)
-        safe_notify(bot, msg, loop)
+        safe_notify(bot, f"✅ Compra realizada: {target_token}\nTX: {tx_buy}", loop)
     else:
         motivo = getattr(risk_manager, "last_block_reason", "não informado")
-        warn = f"🚫 Compra não executada para {target_token}\nMotivo: {motivo}"
-        log.warning(warn)
-        safe_notify(bot, warn, loop)
+        safe_notify(bot, f"🚫 Compra não executada para {target_token}\nMotivo: {motivo}", loop)
         return
 
     # Monitoramento de venda
@@ -188,44 +215,4 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
     sold = False
 
     from discovery import is_discovery_running
-    while is_discovery_running():
-        price = dex_client.get_token_price(target_token, weth)
-        if not price:
-            await asyncio.sleep(1)
-            continue
-
-        if price > highest_price:
-            highest_price = price
-            stop_price = highest_price * (1 - trail_pct)
-
-        if price >= take_profit_price or price <= stop_price:
-            token_balance = get_token_balance(web3, target_token, exchange_client.wallet, exchange_client.erc20_abi)
-            if token_balance <= 0:
-                log.warning("Saldo do token é zero — nada para vender.")
-                break
-
-            tx_sell = safe_exec.sell(
-                token_in=target_token,
-                token_out=weth,
-                amount_eth=token_balance,
-                current_price=price,
-                last_trade_price=entry_price
-            )
-            if tx_sell:
-                msg = f"💰 Venda realizada: {target_token}\nTX: {tx_sell}"
-                log.info(msg)
-                safe_notify(bot, msg, loop)
-                sold = True
-            else:
-                motivo = getattr(risk_manager, "last_block_reason", "não informado")
-                warn = f"⚠️ Venda bloqueada: {motivo}"
-                log.warning(warn)
-                safe_notify(bot, warn, loop)
-            break
-
-        await asyncio.sleep(3)
-
-    if not sold and not is_discovery_running():
-        msg = f"⏹ Monitoramento encerrado para {target_token} (sniper parado)."
-        log.info(msg)
-        safe_notify(bot, msg, loop)
+    while is
