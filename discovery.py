@@ -6,9 +6,6 @@ from web3 import Web3
 from config import config
 from telegram import Bot
 
-# ---------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -16,14 +13,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("discovery")
 
-# ---------------------------------------------------------------------
-# Notificações
-# ---------------------------------------------------------------------
 bot_notify = Bot(token=config["TELEGRAM_TOKEN"])
 pnl_total = 0.0
 
 async def notify(msg: str):
-    """Envia mensagem via Telegram sem travar o loop."""
     try:
         await bot_notify.send_message(
             chat_id=config["TELEGRAM_CHAT_ID"],
@@ -32,9 +25,6 @@ async def notify(msg: str):
     except Exception as e:
         logger.error(f"Erro ao enviar notificação: {e}")
 
-# ---------------------------------------------------------------------
-# Constantes e ABIs
-# ---------------------------------------------------------------------
 PAIR_CREATED_SIG = Web3.to_hex(Web3.keccak(text="PairCreated(address,address,address,uint256)"))   # V2
 POOL_CREATED_SIG = Web3.to_hex(Web3.keccak(text="PoolCreated(address,address,uint24,int24,address)"))  # V3
 
@@ -55,9 +45,6 @@ PAIR_ABI = [
     {"constant": True, "inputs": [], "name": "token1", "outputs": [{"type": "address"}], "stateMutability": "view", "type": "function"},
 ]
 
-# ---------------------------------------------------------------------
-# Estado
-# ---------------------------------------------------------------------
 sniper_active = False
 sniper_start_time = None
 sniper_pair_count = 0
@@ -71,10 +58,6 @@ def safe_checksum(address: str) -> str:
     return Web3.to_checksum_address(address)
 
 def stop_discovery(loop=None):
-    """
-    Para a descoberta de novos pares.
-    :param loop: opcional — mantida por compatibilidade com main.py
-    """
     global sniper_active
     sniper_active = False
     logger.info("🛑 Monitoramento interrompido manualmente.")
@@ -107,15 +90,7 @@ def has_min_liquidity_v2(web3, pair_address, weth_address, min_weth_wei):
         logger.warning(f"Erro ao verificar liquidez no par {pair_address}: {e}")
         return False
 
-# ---------------------------------------------------------------------
-# Loop principal assíncrono
-# ---------------------------------------------------------------------
 async def run_discovery(callback_on_pair, loop=None):
-    """
-    Inicia a descoberta de novos pares.
-    :param callback_on_pair: função callback executada para cada par detectado
-    :param loop: opcional — mantida por compatibilidade com main.py
-    """
     global sniper_active, sniper_start_time, sniper_pair_count, last_pair_info, pnl_total
     sniper_active = True
     sniper_start_time = time.time()
@@ -161,11 +136,18 @@ async def run_discovery(callback_on_pair, loop=None):
                     token0 = safe_checksum("0x" + log["topics"][1].hex()[-40:])
                     token1 = safe_checksum("0x" + log["topics"][2].hex()[-40:])
 
+                    data_hex = log["data"].hex() if hasattr(log["data"], "hex") else str(log["data"])
+                    data_hex = data_hex[2:] if data_hex.startswith("0x") else data_hex
+                    if len(data_hex) < 64:
+                        logger.warning(f"Log data inesperado: {log['data']}")
+                        continue
+
                     if dex["type"] == "v2":
-                        data_hex = log["data"].hex() if hasattr(log["data"], "hex") else str(log["data"])
-                        pair_address = safe_checksum("0x" + data_hex[-40:])
+                        pair_word = data_hex[0:64]
+                        pair_address = safe_checksum("0x" + pair_word[-40:])
                     else:
-                        pair_address = safe_checksum("0x" + log["topics"][3].hex()[-40:])
+                        pool_word = data_hex[-64:]
+                        pair_address = safe_checksum("0x" + pool_word[-40:])
 
                     logger.info(f"📦 [{dex['name']}] Par detectado: {pair_address} ({token0} / {token1})")
 
