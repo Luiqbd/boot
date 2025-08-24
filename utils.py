@@ -9,9 +9,9 @@ log = logging.getLogger(__name__)
 # Endpoints
 ETHERSCAN_V1_URL = "https://api.basescan.org/api"
 ETHERSCAN_V2_URL = "https://api.etherscan.io/api"
-CHAIN_ID = "base-mainnet"  # usado apenas na V2
+CHAIN_ID = "base-mainnet"
 
-# Lê a chave direto do ambiente
+# Lê a chave do ambiente
 BASESCAN_API_KEY = os.getenv("BASESCAN_API_KEY")
 
 
@@ -157,7 +157,7 @@ def is_contract_verified(token_address: str, api_key: str = BASESCAN_API_KEY) ->
 
     if not api_key:
         log.warning("⚠️ BASESCAN_API_KEY não configurada — pulando verificação de contrato.")
-        return True  # ou False se quiser bloquear
+        return True
 
     if is_v2_key(api_key):
         params = {
@@ -190,7 +190,7 @@ def is_token_concentrated(token_address: str, top_limit_pct: float, api_key: str
 
     if not api_key:
         log.warning("⚠️ BASESCAN_API_KEY não configurada — pulando verificação de concentração.")
-        return False  # ou True se quiser considerar concentrado
+        return False
 
     if is_v2_key(api_key):
         params = {
@@ -208,15 +208,16 @@ def is_token_concentrated(token_address: str, top_limit_pct: float, api_key: str
     try:
         resp = requests.get(url, params=params, timeout=10)
         data = resp.json()
-        for holder in data.get("result", []):
+
+        result = data.get("result", [])
+        if not isinstance(result, list):
+            log.error(f"Resposta inesperada do BaseScan: {result}")
+            return True  # ou False conforme estratégia
+
+        for holder in result:
             pct_str = holder.get("Percentage", "0").replace("%", "").strip()
             try:
                 pct = float(pct_str)
             except ValueError:
                 pct = 0.0
-            if pct >= top_limit_pct:
-                return True
-        return False
-    except Exception as e:
-        log.error(f"Erro ao verificar concentração de holders: {e}", exc_info=True)
-        return True
+            if pct >= top_limit_pct
