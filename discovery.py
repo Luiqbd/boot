@@ -143,9 +143,11 @@ async def run_discovery(callback_on_pair, loop=None):
                         continue
 
                     if dex["type"] == "v2":
+                        # pair address = primeiro word do data
                         pair_word = data_hex[0:64]
                         pair_address = safe_checksum("0x" + pair_word[-40:])
                     else:
+                        # pool address = último word do data
                         pool_word = data_hex[-64:]
                         pair_address = safe_checksum("0x" + pool_word[-40:])
 
