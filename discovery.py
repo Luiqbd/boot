@@ -70,7 +70,11 @@ def safe_checksum(address: str) -> str:
         address = "0x" + str(address)
     return Web3.to_checksum_address(address)
 
-def stop_discovery():
+def stop_discovery(loop=None):
+    """
+    Para a descoberta de novos pares.
+    :param loop: opcional — mantida por compatibilidade com main.py
+    """
     global sniper_active
     sniper_active = False
     logger.info("🛑 Monitoramento interrompido manualmente.")
@@ -106,7 +110,12 @@ def has_min_liquidity_v2(web3, pair_address, weth_address, min_weth_wei):
 # ---------------------------------------------------------------------
 # Loop principal assíncrono
 # ---------------------------------------------------------------------
-async def run_discovery(callback_on_pair):
+async def run_discovery(callback_on_pair, loop=None):
+    """
+    Inicia a descoberta de novos pares.
+    :param callback_on_pair: função callback executada para cada par detectado
+    :param loop: opcional — mantida por compatibilidade com main.py
+    """
     global sniper_active, sniper_start_time, sniper_pair_count, last_pair_info, pnl_total
     sniper_active = True
     sniper_start_time = time.time()
