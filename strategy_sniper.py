@@ -36,10 +36,17 @@ def notify(msg: str):
         log.error(f"Erro ao enviar notificação: {e}")
 
 def safe_notify(alert: TelegramAlert | None, msg: str, loop: asyncio.AbstractEventLoop | None = None):
-    """Envia mensagem via TelegramAlert + notify simples."""
+    """
+    Envia mensagem via TelegramAlert + notify simples.
+    Corrigido para não usar métodos privados removidos nas novas versões.
+    """
     if alert:
         try:
-            coro = alert._send_async(msg)
+            # Método público compatível
+            coro = alert.send_message(
+                chat_id=config["TELEGRAM_CHAT_ID"],
+                text=msg
+            )
             if loop and loop.is_running():
                 asyncio.run_coroutine_threadsafe(coro, loop)
             else:
@@ -119,7 +126,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         log.error(f"Falha ao preparar contexto do par: {e}", exc_info=True)
         return
 
-    min_liq_ok = True  # já filtramos acima, então aqui não precisamos chamar de novo
+    min_liq_ok = True
     preco_atual = dex_client.get_token_price(target_token, weth)
 
     log.info(f"[Pré-Risk] {token0}/{token1} preço={preco_atual} ETH | size={amt_eth}ETH | liq_ok={min_liq_ok}")
