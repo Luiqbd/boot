@@ -11,16 +11,22 @@ from config import config
 
 logger = logging.getLogger(__name__)
 
+
 def _to_wei_eth(web3: Web3, amount_eth) -> int:
     """Converte valor em ETH para Wei com Decimal para precisão."""
     return web3.to_wei(Decimal(str(amount_eth)), "ether")
+
 
 def _is_empty_code(code) -> bool:
     """Retorna True se o contrato não estiver implantado (bytecode vazio)."""
     return code is None or len(code) == 0
 
+
 class ExchangeClient:
     def __init__(self, router_address: str):
+        """
+        :param router_address: Endereço do router (ex.: Uniswap/PancakeSwap) detectado dinamicamente
+        """
         # Conexão Web3
         self.web3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
         self.private_key = config["PRIVATE_KEY"]
@@ -56,7 +62,9 @@ class ExchangeClient:
     def _nonce(self) -> int:
         return self.web3.eth.get_transaction_count(self.wallet, "pending")
 
-    def _amount_out_min(self, amount_in: int, path: List[str], slippage_bps: Optional[int] = None) -> Tuple[int, int]:
+    def _amount_out_min(
+        self, amount_in: int, path: List[str], slippage_bps: Optional[int] = None
+    ) -> Tuple[int, int]:
         try:
             amounts = self.router.functions.getAmountsOut(int(amount_in), path).call()
         except Exception as e:
@@ -106,8 +114,14 @@ class ExchangeClient:
         tx_hash = self.web3.eth.send_raw_transaction(signed.rawTransaction)
         return self.web3.to_hex(tx_hash)
 
-    def buy_token(self, token_in_weth: str, token_out: str, amount_in_wei: int,
-                  amount_out_min: Optional[int] = None, slippage_bps: Optional[int] = None) -> str:
+    def buy_token(
+        self,
+        token_in_weth: str,
+        token_out: str,
+        amount_in_wei: int,
+        amount_out_min: Optional[int] = None,
+        slippage_bps: Optional[int] = None
+    ) -> str:
         path = [Web3.to_checksum_address(token_in_weth), Web3.to_checksum_address(token_out)]
         if amount_out_min in (None, 0):
             amount_out_min, _ = self._amount_out_min(int(amount_in_wei), path, slippage_bps)
@@ -136,8 +150,14 @@ class ExchangeClient:
         tx_hash = self.web3.eth.send_raw_transaction(signed.rawTransaction)
         return self.web3.to_hex(tx_hash)
 
-    def sell_token(self, token_in: str, token_out_weth: str, amount_in_base_units: int,
-                   amount_out_min: Optional[int] = None, slippage_bps: Optional[int] = None) -> str:
+    def sell_token(
+        self,
+        token_in: str,
+        token_out_weth: str,
+        amount_in_base_units: int,
+        amount_out_min: Optional[int] = None,
+        slippage_bps: Optional[int] = None
+    ) -> str:
         path = [Web3.to_checksum_address(token_in), Web3.to_checksum_address(token_out_weth)]
         if amount_out_min in (None, 0):
             amount_out_min, _ = self._amount_out_min(int(amount_in_base_units), path, slippage_bps)
