@@ -21,9 +21,7 @@ BASESCAN_API_KEY = (
 
 def is_v2_key(api_key) -> bool:
     """Retorna True se a chave parece ser do formato Etherscan API V2 multichain."""
-    if not isinstance(api_key, str) or not api_key:
-        return False
-    return api_key.startswith("CX") or len(api_key) > 40
+    return isinstance(api_key, str) and api_key and (api_key.startswith("CX") or len(api_key) > 40)
 
 # ===========================
 # Rate Limiter
@@ -133,7 +131,7 @@ class ApiRateLimiter:
                 )
             raise RuntimeError("API rate-limited: daily threshold reached")
 
-# Instância global
+# Instância global do rate limiter
 rate_limiter = ApiRateLimiter(
     qps_limit=5,
     daily_limit=100000,
@@ -161,7 +159,6 @@ def is_contract_verified(token_address: str, api_key: str = BASESCAN_API_KEY) ->
     """
     Verifica se um contrato está verificado na Base (ChainID 8453) usando Etherscan API V2 multichain.
     Mantém compatibilidade com API V1 legado.
-    Retorna True se verificado, False caso contrário.
     """
     rate_limiter.before_api_call()
 
@@ -209,6 +206,7 @@ def is_contract_verified(token_address: str, api_key: str = BASESCAN_API_KEY) ->
         log.error(f"Erro ao verificar contrato {token_address}: {e}", exc_info=True)
         return False
 
+
 def is_token_concentrated(token_address: str, top_limit_pct: float, api_key: str = BASESCAN_API_KEY) -> bool:
     """
     Verifica se um token está concentrado em poucos holders acima do limite (top_limit_pct).
@@ -219,10 +217,9 @@ def is_token_concentrated(token_address: str, top_limit_pct: float, api_key: str
 
     if not api_key:
         log.warning("⚠️ ETHERSCAN_API_KEY não configurada — pulando verificação de concentração.")
-        return False  # ou True, se preferir considerar concentrado por segurança
+        return False
 
     if is_v2_key(api_key):
-        # API V2 — multichain
         params = {
             "module": "token",
             "action": "tokenholderlist",
@@ -232,7 +229,6 @@ def is_token_concentrated(token_address: str, top_limit_pct: float, api_key: str
         }
         url = ETHERSCAN_V2_URL
     else:
-        # API V1 — BaseScan
         params = {
             "module": "token",
             "action": "tokenholderlist",
@@ -266,7 +262,8 @@ def is_token_concentrated(token_address: str, top_limit_pct: float, api_key: str
         return True  # Conservador: assume concentrado
 
 
-def testar_etherscan_v2(api_key: str = BASESCAN_API_KEY, address: str = "0x4200000000000000000000000000000000000006"):
+def testar_etherscan_v2(api_key: str = BASESCAN_API_KEY,
+                        address: str = "0x4200000000000000000000000000000000000006") -> bool:
     """
     Testa a conexão com o Etherscan API V2 na Base (chainid=8453).
     Faz até 3 tentativas, aumenta o timeout e loga o tempo de resposta.
