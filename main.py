@@ -24,7 +24,7 @@ from strategy_sniper import on_new_pair  # versão revisada
 from discovery import run_discovery, stop_discovery, get_discovery_status
 from config import config
 
-# --- Importa RiskManager (opcional: unificar instância com estratégia) ---
+# --- Importa RiskManager ---
 from risk_manager import RiskManager
 risk_manager = RiskManager()
 
@@ -109,8 +109,6 @@ def iniciar_sniper():
 
 def parar_sniper():
     stop_discovery(loop)
-
-# main.py — Parte 2/2
 
 # --- Handlers principais ---
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -302,8 +300,7 @@ if __name__ == "__main__":
 
     # Agenda o bot, inicia Flask e registra o webhook
     loop.create_task(start_bot())
-    flask_thread = Thread(target=start_flask, daemon=True)
-    flask_thread.start()
+    Thread(target=start_flask, daemon=True).start()
     Thread(target=set_webhook_with_retry, daemon=True).start()
 
     logging.info("🚀 Bot e servidor Flask iniciados")
