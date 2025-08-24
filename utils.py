@@ -3,38 +3,70 @@ import logging
 
 log = logging.getLogger(__name__)
 
+# Endpoints
+ETHERSCAN_V1_URL = "https://api.basescan.org/api"
+ETHERSCAN_V2_URL = "https://api.etherscan.io/api"
+CHAIN_ID = "base-mainnet"  # usado apenas na V2
+
+def is_v2_key(api_key: str) -> bool:
+    """Detecta se a chave é da API V2 (Multichain) por padrão de prefixo ou tamanho."""
+    return api_key.startswith("CX") or len(api_key) > 40
+
 def is_contract_verified(token_address: str, api_key: str) -> bool:
-    """Verifica se o contrato do token está verificado no BaseScan."""
+    """Verifica se o contrato está verificado, usando V1 ou V2 conforme a chave."""
     try:
-        url = "https://api.basescan.org/api"
-        params = {
-            "module": "contract",
-            "action": "getsourcecode",
-            "address": token_address,
-            "apikey": api_key
-        }
+        if is_v2_key(api_key):
+            # V2 Multichain
+            params = {
+                "module": "contract",
+                "action": "getsourcecode",
+                "address": token_address,
+                "chain": CHAIN_ID,
+                "apikey": api_key
+            }
+            url = ETHERSCAN_V2_URL
+        else:
+            # V1 BaseScan
+            params = {
+                "module": "contract",
+                "action": "getsourcecode",
+                "address": token_address,
+                "apikey": api_key
+            }
+            url = ETHERSCAN_V1_URL
+
         resp = requests.get(url, params=params, timeout=10)
         data = resp.json()
-        # status "1" significa sucesso, e SourceCode não vazio significa contrato verificado
         if data.get("status") == "1" and data["result"] and data["result"][0].get("SourceCode"):
             return True
         return False
     except Exception as e:
-        log.error(f"Erro ao checar verificação do contrato: {e}", exc_info=True)
+        log.error(f"Erro ao verificar contrato: {e}", exc_info=True)
         return False
 
 def is_token_concentrated(token_address: str, api_key: str, top_limit_pct: float) -> bool:
-    """
-    Retorna True se algum holder tiver >= top_limit_pct% do supply.
-    """
+    """Verifica concentração de holders, usando V1 ou V2 conforme a chave."""
     try:
-        url = "https://api.basescan.org/api"
-        params = {
-            "module": "token",
-            "action": "tokenholderlist",
-            "contractaddress": token_address,
-            "apikey": api_key
-        }
+        if is_v2_key(api_key):
+            # V2 Multichain
+            params = {
+                "module": "token",
+                "action": "tokenholderlist",
+                "contractaddress": token_address,
+                "chain": CHAIN_ID,
+                "apikey": api_key
+            }
+            url = ETHERSCAN_V2_URL
+        else:
+            # V1 BaseScan
+            params = {
+                "module": "token",
+                "action": "tokenholderlist",
+                "contractaddress": token_address,
+                "apikey": api_key
+            }
+            url = ETHERSCAN_V1_URL
+
         resp = requests.get(url, params=params, timeout=10)
         data = resp.json()
         for holder in data.get("result", []):
@@ -48,4 +80,4 @@ def is_token_concentrated(token_address: str, api_key: str, top_limit_pct: float
         return False
     except Exception as e:
         log.error(f"Erro ao verificar concentração de holders: {e}", exc_info=True)
-        return True  # Em caso de erro, assume risco
+        return True
