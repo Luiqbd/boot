@@ -1,3 +1,4 @@
+# main.py — Parte 1/2
 import os
 import asyncio
 import logging
@@ -19,11 +20,11 @@ from web3 import Web3
 
 # --- Importações sniper ---
 from check_balance import get_wallet_status
-from strategy_sniper import on_new_pair
+from strategy_sniper import on_new_pair  # versão revisada
 from discovery import run_discovery, stop_discovery, get_discovery_status
-from config import config  # import para acessar config["DEXES"]
+from config import config
 
-# --- Importa RiskManager com histórico ---
+# --- Importa RiskManager (opcional: unificar instância com estratégia) ---
 from risk_manager import RiskManager
 risk_manager = RiskManager()
 
@@ -44,7 +45,7 @@ sniper_thread = None
 # --- Variáveis de ambiente ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "0")  # usado no /testnotify
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "0")
 
 # --- Funções auxiliares ---
 def str_to_bool(v: str) -> bool:
@@ -77,10 +78,10 @@ def env_summary_text() -> str:
         f"🔗 RPC: {os.getenv('RPC_URL')}\n"
         f"💵 Trade: {os.getenv('TRADE_SIZE_ETH')} ETH\n"
         f"📉 Slippage: {os.getenv('SLIPPAGE_BPS')} bps\n"
-        f"🛑 Stop Loss: {os.getenv('STOP_LOSS_PCT')}%\n"
         f"🏆 Take Profit: {os.getenv('TAKE_PROFIT_PCT')}%\n"
         f"💧 Min. Liquidez WETH: {os.getenv('MIN_LIQ_WETH')}\n"
         f"⏱ Intervalo: {os.getenv('INTERVAL')}s\n"
+        f"🧪 Dry Run: {os.getenv('DRY_RUN')}"
     )
 
 # --- Funções sniper ---
@@ -90,12 +91,14 @@ def iniciar_sniper():
         logging.info("⚠️ O sniper já está rodando.")
         return
 
-    logging.info("⚙️ Iniciando sniper... Monitorando novos pares com liquidez em todas as DEX configuradas.")
+    logging.info("⚙️ Iniciando sniper... Monitorando novos pares com liquidez nas DEX configuradas.")
 
     def start_sniper():
         try:
             run_discovery(
-                lambda dex, pair, t0, t1: on_new_pair(dex, pair, t0, t1, bot=application.bot),
+                lambda dex, pair, t0, t1: on_new_pair(
+                    dex, pair, t0, t1, bot=application.bot, loop=loop
+                ),
                 loop
             )
         except Exception as e:
@@ -106,6 +109,8 @@ def iniciar_sniper():
 
 def parar_sniper():
     stop_discovery(loop)
+
+# main.py — Parte 2/2
 
 # --- Handlers principais ---
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -122,8 +127,8 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📊 /relatorio — Gera relatório do RiskManager.\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "🛠 **Configuração Atual**\n"
-        f"{env_summary_text()}"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{env_summary_text()}\n"
+        "━━━━━━━━━━━━━━━━━━━━━━"
     )
     await update.message.reply_text(mensagem, parse_mode="Markdown")
 
@@ -165,11 +170,7 @@ async def ping_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uptime_seconds = int(time.time() - context.bot_data.get("start_time", time.time()))
     uptime_str = str(datetime.timedelta(seconds=uptime_seconds))
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    await update.message.reply_text(
-        f"pong 🏓\n"
-        f"⏱ Uptime: {uptime_str}\n"
-        f"🕒 Agora: {now_str}"
-    )
+    await update.message.reply_text(f"pong 🏓\n⏱ Uptime: {uptime_str}\n🕒 Agora: {now_str}")
 
 async def test_notify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -191,7 +192,6 @@ async def test_notify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"Erro no /testnotify: {e}", exc_info=True)
         await update.message.reply_text(f"⚠️ Erro ao enviar mensagem: {e}")
 
-# --- Novo comando /relatorio ---
 async def relatorio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         rel = risk_manager.gerar_relatorio()
@@ -233,7 +233,6 @@ def set_webhook_with_retry(max_attempts=5, delay=3):
     if not TELEGRAM_TOKEN or not WEBHOOK_URL:
         logging.error("WEBHOOK não configurado: faltam TELEGRAM_TOKEN ou WEBHOOK_URL.")
         return
-
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
     for attempt in range(1, max_attempts + 1):
         try:
@@ -282,7 +281,7 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("sniperstatus", sniper_status_cmd))
     application.add_handler(CommandHandler("ping", ping_cmd))
     application.add_handler(CommandHandler("testnotify", test_notify_cmd))
-    application.add_handler(CommandHandler("relatorio", relatorio_cmd))  # NOVO COMANDO
+    application.add_handler(CommandHandler("relatorio", relatorio_cmd))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
     async def start_bot():
@@ -298,19 +297,10 @@ if __name__ == "__main__":
             BotCommand("sniperstatus", "Status do sniper"),
             BotCommand("ping", "Teste de vida (pong)"),
             BotCommand("testnotify", "Envia uma notificação de teste"),
-            BotCommand("relatorio", "Mostra o relatório de eventos")  # NOVO COMANDO
+            BotCommand("relatorio", "Mostra o relatório de eventos")
         ])
 
-        try:
-            dex_lines = [
-                f"- {d['name']} | type={d['type']} | factory={d['factory']} | router={d['router']}"
-                for d in config.get("DEXES", [])
-            ]
-            if dex_lines:
-                logging.info("🔎 DEX monitoradas:\n" + "\n".join(dex_lines))
-        except Exception as e:
-            logging.warning(f"Não foi possível listar DEXES no startup: {e}")
-
+    # Agenda o bot, inicia Flask e registra o webhook
     loop.create_task(start_bot())
     flask_thread = Thread(target=start_flask, daemon=True)
     flask_thread.start()
