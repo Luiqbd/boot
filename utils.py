@@ -6,23 +6,29 @@ from datetime import datetime, timedelta, timezone
 
 log = logging.getLogger(__name__)
 
-# Endpoints
-ETHERSCAN_V1_URL = "https://api.basescan.org/api"       # legado
-ETHERSCAN_V2_URL = "https://api.etherscan.io/v2/api"    # multichain
-CHAIN_ID_BASE = "8453"  # Base Mainnet
+# ===========================
+# Configuração de Endpoints
+# ===========================
+ETHERSCAN_V1_URL = "https://api.basescan.org/api"       # API legado BaseScan
+ETHERSCAN_V2_URL = "https://api.etherscan.io/v2/api"    # API multichain Etherscan
+CHAIN_ID_BASE = "8453"  # Base Mainnet (Etherscan V2)
 
-# Lê a chave do ambiente (preferência para a ETHERSCAN_API_KEY)
+# Leitura da chave de API
+# Preferência para ETHERSCAN_API_KEY, mas aceita BASESCAN_API_KEY
 BASESCAN_API_KEY = (
-    os.getenv("BASESCAN_API_KEY")
-    or os.getenv("ETHERSCAN_API_KEY")
+    os.getenv("ETHERSCAN_API_KEY")
+    or os.getenv("BASESCAN_API_KEY")
 )
 
 def is_v2_key(api_key) -> bool:
-    """Detecta se a chave parece ser do formato V2 multichain."""
+    """Retorna True se a chave parece ser do formato Etherscan API V2 multichain."""
     if not isinstance(api_key, str) or not api_key:
         return False
     return api_key.startswith("CX") or len(api_key) > 40
 
+# ===========================
+# Rate Limiter
+# ===========================
 class ApiRateLimiter:
     def __init__(
         self,
@@ -128,6 +134,7 @@ class ApiRateLimiter:
                 )
             raise RuntimeError("API rate-limited: daily threshold reached")
 
+# Instância global do rate limiter
 rate_limiter = ApiRateLimiter(
     qps_limit=5,
     daily_limit=100000,
@@ -139,6 +146,7 @@ rate_limiter = ApiRateLimiter(
 )
 
 def configure_rate_limiter_from_config(config):
+    """Permite configurar o rate limiter via dicionário de config."""
     try:
         rate_limiter.qps_limit = int(config.get("RATE_QPS_LIMIT", rate_limiter.qps_limit))
         rate_limiter.daily_limit = int(config.get("RATE_DAILY_LIMIT", rate_limiter.daily_limit))
@@ -152,18 +160,18 @@ def configure_rate_limiter_from_config(config):
 
 def is_contract_verified(token_address: str, api_key: str = BASESCAN_API_KEY) -> bool:
     """
-    Verifica se um contrato está verificado na Base (ChainID 8453) usando Etherscan API V2.
-    Mantém compatibilidade com BaseScan API V1.
+    Verifica se um contrato está verificado na Base (ChainID 8453) usando Etherscan API V2 multichain.
+    Mantém compatibilidade com API V1 legado.
     Retorna True se verificado, False caso contrário.
     """
     rate_limiter.before_api_call()
 
     if not api_key:
         log.warning("⚠️ ETHERSCAN_API_KEY não configurada — pulando verificação de contrato.")
-        return True  # ou False se quiser bloquear sem chave
+        return True  # ou False se preferir bloquear sem chave
 
     if is_v2_key(api_key):
-        # V2 multichain — chainid da Base
+        # API V2 — multichain
         params = {
             "module": "contract",
             "action": "getsourcecode",
@@ -173,7 +181,7 @@ def is_contract_verified(token_address: str, api_key: str = BASESCAN_API_KEY) ->
         }
         url = ETHERSCAN_V2_URL
     else:
-        # V1 legado
+        # API V1 — BaseScan
         params = {
             "module": "contract",
             "action": "getsourcecode",
@@ -183,7 +191,7 @@ def is_contract_verified(token_address: str, api_key: str = BASESCAN_API_KEY) ->
         url = ETHERSCAN_V1_URL
 
     try:
-        resp = requests.get(url, params=params, timeout=10)
+        resp = requests.get(url, params=params, timeout=15)
         resp.raise_for_status()
         data = resp.json()
 
@@ -207,17 +215,17 @@ def is_contract_verified(token_address: str, api_key: str = BASESCAN_API_KEY) ->
 
 def is_token_concentrated(token_address: str, top_limit_pct: float, api_key: str = BASESCAN_API_KEY) -> bool:
     """
-    Verifica se um token está concentrado em poucos holders acima de top_limit_pct.
-    Suporte a Etherscan API V2 (multichain) e fallback para BaseScan API V1.
+    Verifica se um token está concentrado em poucos holders acima do limite (top_limit_pct).
+    Suporta Etherscan API V2 multichain e mantém fallback para API V1 legado.
     """
     rate_limiter.before_api_call()
 
     if not api_key:
         log.warning("⚠️ ETHERSCAN_API_KEY não configurada — pulando verificação de concentração.")
-        return False  # ou True se quiser considerar concentrado
+        return False  # ou True se preferir considerar concentrado por segurança
 
     if is_v2_key(api_key):
-        # V2 multichain — chainid da Base
+        # API V2 — multichain
         params = {
             "module": "token",
             "action": "tokenholderlist",
@@ -227,7 +235,7 @@ def is_token_concentrated(token_address: str, top_limit_pct: float, api_key: str
         }
         url = ETHERSCAN_V2_URL
     else:
-        # V1 legado
+        # API V1 — BaseScan
         params = {
             "module": "token",
             "action": "tokenholderlist",
@@ -237,14 +245,14 @@ def is_token_concentrated(token_address: str, top_limit_pct: float, api_key: str
         url = ETHERSCAN_V1_URL
 
     try:
-        resp = requests.get(url, params=params, timeout=10)
+        resp = requests.get(url, params=params, timeout=15)
         resp.raise_for_status()
         data = resp.json()
 
         result = data.get("result", [])
         if not isinstance(result, list):
             log.error(f"Resposta inesperada do explorer: {result}")
-            return True  # ser conservador: assume concentrado
+            return True  # conservador: assume concentrado
 
         for holder in result:
             pct_str = str(holder.get("Percentage", "0")).replace("%", "").strip()
@@ -258,4 +266,4 @@ def is_token_concentrated(token_address: str, top_limit_pct: float, api_key: str
 
     except Exception as e:
         log.error(f"Erro ao verificar concentração de holders: {e}", exc_info=True)
-        return True  # por segurança, assume concentrado
+        return True  # conservador: assume concentrado
