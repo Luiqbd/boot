@@ -13,7 +13,6 @@ from trade_executor import TradeExecutor
 from safe_trade_executor import SafeTradeExecutor
 from risk_manager import RiskManager
 
-# Import extra para filtros + rate limiter
 from utils import (
     is_contract_verified,
     is_token_concentrated,
@@ -25,7 +24,6 @@ log = logging.getLogger("sniper")
 risk_manager = RiskManager()
 bot_notify = Bot(token=config["TELEGRAM_TOKEN"])
 
-# Ajuste: usa ETHERSCAN_API_KEY
 API_KEY = config.get("ETHERSCAN_API_KEY")
 BLOCK_UNVERIFIED = config.get("BLOCK_UNVERIFIED", False)
 TOP_HOLDER_LIMIT = float(config.get("TOP_HOLDER_LIMIT", 30.0))
@@ -179,107 +177,103 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         preco_atual = dex_client.get_token_price(target_token, weth)
         slip_limit = dex_client.calc_dynamic_slippage(pair_addr, weth, float(amt_eth))
 
-    except Exception as e:
-        log.error(f"Falha ao preparar contexto do par: {e}", exc_info=True)
-        return
+        log.info(f"[Pré-Risk] {token0}/{token1} preço={preco_atual} ETH | size={amt_eth} ETH | slippage={slip_limit*100:.2f}%")
 
-log.info(f"[Pré-Risk] {token0}/{token1} preço={preco_atual} ETH | size={amt_eth} ETH | slippage={slip_limit*100:.2f}%")
+        # --- Execução de compra ---
+        try:
+            exchange_client = ExchangeClient(router_address=dex_info["router"])
+            trade_exec = TradeExecutor(exchange_client=exchange_client, dry_run=config["DRY_RUN"])
+            safe_exec = SafeTradeExecutor(executor=trade_exec, risk_manager=risk_manager)
+        except Exception as e:
+            log.error(f"Falha ao criar ExchangeClient/Executor: {e}", exc_info=True)
+            return
 
-    # --- Execução de compra ---
-    try:
-        exchange_client = ExchangeClient(router_address=dex_info["router"])
-        trade_exec = TradeExecutor(exchange_client=exchange_client, dry_run=config["DRY_RUN"])
-        safe_exec = SafeTradeExecutor(executor=trade_exec, risk_manager=risk_manager)
-    except Exception as e:
-        log.error(f"Falha ao criar ExchangeClient/Executor: {e}", exc_info=True)
-        return
+        tx_buy = safe_exec.buy(
+            token_in=weth,
+            token_out=target_token,
+            amount_eth=amt_eth,
+            current_price=preco_atual,
+            last_trade_price=None,
+            amount_out_min=None,
+            slippage=slip_limit
+        )
 
-    tx_buy = safe_exec.buy(
-        token_in=weth,
-        token_out=target_token,
-        amount_eth=amt_eth,
-        current_price=preco_atual,
-        last_trade_price=None,
-        amount_out_min=None,
-        slippage=slip_limit
-    )
+        if tx_buy:
+            safe_notify(bot, f"✅ Compra realizada: {target_token}\nTX: {tx_buy}", loop)
+        else:
+            motivo = getattr(risk_manager, "last_block_reason", "não informado")
+            safe_notify(bot, f"🚫 Compra não executada para {target_token}\nMotivo: {motivo}", loop)
+            return
 
-    if tx_buy:
-        safe_notify(bot, f"✅ Compra realizada: {target_token}\nTX: {tx_buy}", loop)
-    else:
-        motivo = getattr(risk_manager, "last_block_reason", "não informado")
-        safe_notify(bot, f"🚫 Compra não executada para {target_token}\nMotivo: {motivo}", loop)
-        return
+# --- Monitoramento de venda ---
+        highest_price = preco_atual
+        trail_pct = float(config.get("TRAIL_PCT", 0.05))
+        tp_pct = float(config.get("TAKE_PROFIT_PCT", config.get("TP_PCT", 0.2)))
+        sl_pct = float(config.get("STOP_LOSS_PCT", 0.05))
 
-    # --- Monitoramento de venda ---
-    highest_price = preco_atual
-    trail_pct = float(config.get("TRAIL_PCT", 0.05))
-    tp_pct = float(config.get("TAKE_PROFIT_PCT", config.get("TP_PCT", 0.2)))
-    sl_pct = float(config.get("STOP_LOSS_PCT", 0.05))
+        entry_price = preco_atual
+        take_profit_price = entry_price * (1 + tp_pct)
+        hard_stop_price = entry_price * (1 - sl_pct)
+        stop_price = highest_price * (1 - trail_pct)
+        sold = False
 
-    entry_price = preco_atual
-    take_profit_price = entry_price * (1 + tp_pct)
-    hard_stop_price = entry_price * (1 - sl_pct)
-    stop_price = highest_price * (1 - trail_pct)
-    sold = False
+        from discovery import is_discovery_running
 
-    from discovery import is_discovery_running
-
-    try:
-        while is_discovery_running():
-            try:
-                price = dex_client.get_token_price(target_token, weth)
-            except Exception as e:
-                log.warning(f"Falha ao atualizar preço: {e}")
-                await asyncio.sleep(1)
-                continue
-
-            if not price:
-                await asyncio.sleep(1)
-                continue
-
-            if price > highest_price:
-                highest_price = price
-                stop_price = highest_price * (1 - trail_pct)
-
-            should_sell = (
-                price >= take_profit_price or
-                price <= stop_price or
-                price <= hard_stop_price
-            )
-
-            if should_sell:
+        try:
+            while is_discovery_running():
                 try:
-                    token_balance = get_token_balance(
-                        web3,
-                        target_token,
-                        exchange_client.wallet,
-                        exchange_client.erc20_abi
-                    )
+                    price = dex_client.get_token_price(target_token, weth)
                 except Exception as e:
-                    log.error(f"Erro ao consultar saldo para venda: {e}", exc_info=True)
-                    break
+                    log.warning(f"Falha ao atualizar preço: {e}")
+                    await asyncio.sleep(1)
+                    continue
 
-                if token_balance <= 0:
-                    log.warning("Saldo do token é zero — nada para vender.")
-                    break
+                if not price:
+                    await asyncio.sleep(1)
+                    continue
 
-                tx_sell = safe_exec.sell(
-                    token_in=target_token,
-                    token_out=weth,
-                    amount_eth=token_balance,
-                    current_price=price,
-                    last_trade_price=entry_price
+                if price > highest_price:
+                    highest_price = price
+                    stop_price = highest_price * (1 - trail_pct)
+
+                should_sell = (
+                    price >= take_profit_price or
+                    price <= stop_price or
+                    price <= hard_stop_price
                 )
-                if tx_sell:
-                    safe_notify(bot, f"💰 Venda realizada: {target_token}\nTX: {tx_sell}", loop)
-                    sold = True
-                else:
-                    motivo = getattr(risk_manager, "last_block_reason", "não informado")
-                    safe_notify(bot, f"⚠️ Venda bloqueada: {motivo}", loop)
-                break
 
-            await asyncio.sleep(int(config.get("INTERVAL", 3)))
-    finally:
-        if not sold and not is_discovery_running():
-            safe_notify(bot, f"⏹ Monitoramento encerrado para {target_token} (sniper parado).", loop)
+                if should_sell:
+                    try:
+                        token_balance = get_token_balance(
+                            web3,
+                            target_token,
+                            exchange_client.wallet,
+                            exchange_client.erc20_abi
+                        )
+                    except Exception as e:
+                        log.error(f"Erro ao consultar saldo para venda: {e}", exc_info=True)
+                        break
+
+                    if token_balance <= 0:
+                        log.warning("Saldo do token é zero — nada para vender.")
+                        break
+
+                    tx_sell = safe_exec.sell(
+                        token_in=target_token,
+                        token_out=weth,
+                        amount_eth=token_balance,
+                        current_price=price,
+                        last_trade_price=entry_price
+                    )
+                    if tx_sell:
+                        safe_notify(bot, f"💰 Venda realizada: {target_token}\nTX: {tx_sell}", loop)
+                        sold = True
+                    else:
+                        motivo = getattr(risk_manager, "last_block_reason", "não informado")
+                        safe_notify(bot, f"⚠️ Venda bloqueada: {motivo}", loop)
+                    break
+
+                await asyncio.sleep(int(config.get("INTERVAL", 3)))
+        finally:
+            if not sold and not is_discovery_running():
+                safe_notify(bot, f"⏹ Monitoramento encerrado para {target_token} (sniper parado).", loop)
