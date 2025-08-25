@@ -13,7 +13,7 @@ from trade_executor import TradeExecutor
 from safe_trade_executor import SafeTradeExecutor
 from risk_manager import RiskManager
 
-# >>> Import extra para filtros + rate limiter
+# Import extra para filtros + rate limiter
 from utils import (
     is_contract_verified,
     is_token_concentrated,
@@ -224,6 +224,7 @@ log.info(f"[Pré-Risk] {token0}/{token1} preço={preco_atual} ETH | size={amt_et
     sold = False
 
     from discovery import is_discovery_running
+
     try:
         while is_discovery_running():
             try:
