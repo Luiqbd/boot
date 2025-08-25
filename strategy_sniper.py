@@ -13,7 +13,7 @@ from trade_executor import TradeExecutor
 from safe_trade_executor import SafeTradeExecutor
 from risk_manager import RiskManager
 
-# >>> NOVO: import para filtros + rate limiter
+# >>> Import extra para filtros + rate limiter
 from utils import (
     is_contract_verified,
     is_token_concentrated,
@@ -25,7 +25,7 @@ log = logging.getLogger("sniper")
 risk_manager = RiskManager()
 bot_notify = Bot(token=config["TELEGRAM_TOKEN"])
 
-# 🔹 Ajuste: agora busca ETHERSCAN_API_KEY
+# Ajuste: usa ETHERSCAN_API_KEY
 API_KEY = config.get("ETHERSCAN_API_KEY")
 BLOCK_UNVERIFIED = config.get("BLOCK_UNVERIFIED", False)
 TOP_HOLDER_LIMIT = float(config.get("TOP_HOLDER_LIMIT", 30.0))
@@ -249,7 +249,12 @@ log.info(f"[Pré-Risk] {token0}/{token1} preço={preco_atual} ETH | size={amt_et
 
             if should_sell:
                 try:
-                    token_balance = get_token_balance(web3, target_token, exchange_client.wallet, exchange_client.erc20_abi)
+                    token_balance = get_token_balance(
+                        web3,
+                        target_token,
+                        exchange_client.wallet,
+                        exchange_client.erc20_abi
+                    )
                 except Exception as e:
                     log.error(f"Erro ao consultar saldo para venda: {e}", exc_info=True)
                     break
