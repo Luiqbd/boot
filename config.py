@@ -62,7 +62,7 @@ DEXES = [
     {
         "name": "Uniswap V3",
         "factory": checksum_addr(os.getenv("UNI_V3_FACTORY"), "0x33128a8fC17869897Dce68Ed026d694621f6FDfD"),
-        "router": checksum_addr(os.getenv("UNI_V3_ROUTER"), "0x2626664c2603336E57B271c5C0b26F421741e481"),  # corrigido para Base
+        "router": checksum_addr(os.getenv("UNI_V3_ROUTER"), "0x2626664c2603336E57B271c5C0b26F421741e481"),
         "type": "v3"
     },
     {
@@ -101,7 +101,7 @@ config = {
     "USDC": USDC,
 
     # Execução
-    "DEFAULT_SLIPPAGE_BPS": int(os.getenv("SLIPPAGE_BPS", "50")),  # default 0.5%
+    "DEFAULT_SLIPPAGE_BPS": int(os.getenv("SLIPPAGE_BPS", "50")),
     "TX_DEADLINE_SEC": int(os.getenv("TX_DEADLINE_SEC", "45")),
     "INTERVAL": int(os.getenv("INTERVAL", "3")),
     "DRY_RUN": str_to_bool(os.getenv("DRY_RUN", "true")),
@@ -109,6 +109,9 @@ config = {
     # Telegram
     "TELEGRAM_TOKEN": os.getenv("TELEGRAM_TOKEN"),
     "TELEGRAM_CHAT_ID": int(os.getenv("TELEGRAM_CHAT_ID", "0")),
+
+    # Etherscan
+    "ETHERSCAN_API_KEY": os.getenv("ETHERSCAN_API_KEY"),
 
     # DEX
     "DEXES": DEXES
