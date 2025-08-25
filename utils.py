@@ -20,12 +20,12 @@ CHAIN_ID_BASE = "8453"  # Base Mainnet (Etherscan V2)
 # ===========================
 # Leitura segura da chave
 # ===========================
-BASESCAN_API_KEY = str(os.getenv("ETHERSCAN_API_KEY", "")).strip()
+ETHERSCAN_API_KEY = str(os.getenv("ETHERSCAN_API_KEY", "")).strip()
 
-if not BASESCAN_API_KEY or len(BASESCAN_API_KEY) < 10:
+if not ETHERSCAN_API_KEY or len(ETHERSCAN_API_KEY) < 10:
     log.warning("⚠️ ETHERSCAN_API_KEY não configurada ou inválida.")
 else:
-    log.info(f"[INFO] ETHERSCAN_API_KEY carregada: {BASESCAN_API_KEY[:6]}...")
+    log.info(f"[INFO] ETHERSCAN_API_KEY carregada: {ETHERSCAN_API_KEY[:6]}...")
 
 def is_v2_key(api_key) -> bool:
     return True if api_key else False
@@ -153,7 +153,7 @@ def configure_rate_limiter_from_config(config):
     except Exception:
         log.warning("Falha ao aplicar configs do rate limiter.", exc_info=True)
 
-def is_contract_verified(token_address: str, api_key: str = BASESCAN_API_KEY) -> bool:
+def is_contract_verified(token_address: str, api_key: str = ETHERSCAN_API_KEY) -> bool:
     rate_limiter.before_api_call()
 
     if not api_key:
@@ -191,7 +191,13 @@ def is_contract_verified(token_address: str, api_key: str = BASESCAN_API_KEY) ->
         log.error(f"Erro ao verificar contrato {token_address}: {e} | URL: {url} Params: {params}", exc_info=True)
         return False
 
-def is_token_concentrated(token_address: str, top_limit_pct: float, api_key: str = BASESCAN_API_KEY) -> bool:
+def is_token_concentrated(token_address: str, top_limit_pct: float, api_key: str = ETHERSCAN_API_KEY) -> bool:
+    rate_limiter.before_api_call()
+
+    if not api_key:
+        log.warning("⚠️ ETHERSCAN_API_KEY não configurada — pulando verificação de concentração.")
+        return False
+def is_token_concentrated(token_address: str, top_limit_pct: float, api_key: str = ETHERSCAN_API_KEY) -> bool:
     rate_limiter.before_api_call()
 
     if not api_key:
@@ -231,7 +237,8 @@ def is_token_concentrated(token_address: str, top_limit_pct: float, api_key: str
         log.error(f"Erro ao verificar concentração de holders: {e} | URL: {url} Params: {params}", exc_info=True)
         return True  # Conservador
 
-def testar_etherscan_v2(api_key: str = BASESCAN_API_KEY,
+
+def testar_etherscan_v2(api_key: str = ETHERSCAN_API_KEY,
                         address: str = "0x4200000000000000000000000000000000000006") -> bool:
     """
     Testa a conexão com o Etherscan API V2 na Base (chainid=8453).
