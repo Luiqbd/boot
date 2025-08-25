@@ -179,11 +179,11 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         preco_atual = dex_client.get_token_price(target_token, weth)
         slip_limit = dex_client.calc_dynamic_slippage(pair_addr, weth, float(amt_eth))
 
-except Exception as e:
+    except Exception as e:
         log.error(f"Falha ao preparar contexto do par: {e}", exc_info=True)
         return
 
-    log.info(f"[Pré-Risk] {token0}/{token1} preço={preco_atual} ETH | size={amt_eth} ETH | slippage={slip_limit*100:.2f}%")
+log.info(f"[Pré-Risk] {token0}/{token1} preço={preco_atual} ETH | size={amt_eth} ETH | slippage={slip_limit*100:.2f}%")
 
     # --- Execução de compra ---
     try:
