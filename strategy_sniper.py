@@ -22,11 +22,11 @@ from utils import (
 )
 
 log = logging.getLogger("sniper")
-
 risk_manager = RiskManager()
 bot_notify = Bot(token=config["TELEGRAM_TOKEN"])
 
-API_KEY = config.get("BASESCAN_API_KEY")
+# 🔹 Ajuste: agora busca ETHERSCAN_API_KEY
+API_KEY = config.get("ETHERSCAN_API_KEY")
 BLOCK_UNVERIFIED = config.get("BLOCK_UNVERIFIED", False)
 TOP_HOLDER_LIMIT = float(config.get("TOP_HOLDER_LIMIT", 30.0))
 
@@ -178,7 +178,8 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
 
         preco_atual = dex_client.get_token_price(target_token, weth)
         slip_limit = dex_client.calc_dynamic_slippage(pair_addr, weth, float(amt_eth))
-    except Exception as e:
+
+except Exception as e:
         log.error(f"Falha ao preparar contexto do par: {e}", exc_info=True)
         return
 
@@ -240,7 +241,12 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
                 highest_price = price
                 stop_price = highest_price * (1 - trail_pct)
 
-            should_sell = (price >= take_profit_price) or (price <= stop_price) or (price <= hard_stop_price)
+            should_sell = (
+                price >= take_profit_price or
+                price <= stop_price or
+                price <= hard_stop_price
+            )
+
             if should_sell:
                 try:
                     token_balance = get_token_balance(web3, target_token, exchange_client.wallet, exchange_client.erc20_abi)
@@ -271,4 +277,3 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
     finally:
         if not sold and not is_discovery_running():
             safe_notify(bot, f"⏹ Monitoramento encerrado para {target_token} (sniper parado).", loop)
-
