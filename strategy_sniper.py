@@ -209,7 +209,6 @@ async def onnewpair(dexinfo, pairaddr, token0, token1, bot=None, loop=None):
         motivo = getattr(riskmanager, "lastblock_reason", "não informado")
         safenotify(bot, f"🚫 Compra não executada para {targettoken}\nMotivo: {motivo}", loop)
         return
-
 --- Monitoramento de venda ---
     highestprice = precoatual
     trailpct = float(config.get("TRAILPCT", 0.05))
@@ -271,3 +270,4 @@ async def onnewpair(dexinfo, pairaddr, token0, token1, bot=None, loop=None):
     finally:
         if not sold and not isdiscoveryrunning():
             safenotify(bot, f"⏹ Monitoramento encerrado para {targettoken} (sniper parado).", loop)
+
