@@ -128,14 +128,20 @@ _recent_pairs = {}
 _PAIR_DUP_INTERVAL = 5
 
 async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
-    from utils import rate_limiter
-
+    # 1) pausa por rate limiter
     if rate_limiter.is_paused():
-        risk_manager.last_block_reason = "Rate limiter pausado"
-        risk_manager.last_token = f"{token0}/{token1}"
+        current_pair = f"{token0}/{token1}"
+        risk_manager.record_event(
+            event="Par ignorado",
+            dex=dex_info["name"],
+            pair=pair_addr,
+            tokens=current_pair,
+            details="Rate limiter pausado"
+        )
         safe_notify(bot, "⏸️ Sniper pausado por limite de API. Ignorando novos pares.", loop)
         return
 
+    # 2) filtro de duplicata rápida
     now = time()
     pair_key = (pair_addr.lower(), token0.lower(), token1.lower())
     if pair_key in _recent_pairs and (now - _recent_pairs[pair_key]) < _PAIR_DUP_INTERVAL:
@@ -143,76 +149,168 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         return
     _recent_pairs[pair_key] = now
 
-    # Estatísticas
-    risk_manager.pares_encontrados = getattr(risk_manager, "pares_encontrados", 0) + 1
-    risk_manager.last_token = f"{token0}/{token1}"
-    risk_manager.last_block_reason = None  # reset
-
     log.info(f"Novo par recebido: {dex_info['name']} {pair_addr} {token0}/{token1}")
 
     try:
+        # inicialização de contexto
         web3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
+        block = web3.eth.get_block_number()                                # >>> RISK
         weth = Web3.to_checksum_address(config["WETH"])
         target_token = Web3.to_checksum_address(token1) if token0.lower() == weth.lower() else Web3.to_checksum_address(token0)
 
         amt_eth = Decimal(str(config.get("TRADE_SIZE_ETH", 0.1)))
         if amt_eth <= 0:
-            risk_manager.last_block_reason = "TRADE_SIZE_ETH inválido"
+            risk_manager.record_event(
+                event="Erro",
+                dex=dex_info["name"],
+                pair=pair_addr,
+                tokens=f"{token0}/{token1}",
+                block=block,
+                details="TRADE_SIZE_ETH inválido"
+            )
             log.error("TRADE_SIZE_ETH inválido; abortando.")
             return
 
         MIN_LIQ_WETH = float(config.get("MIN_LIQ_WETH", 0.5))
         dex_client = DexClient(web3, dex_info["router"])
 
-        liq_ok = dex_client.has_min_liquidity(pair_addr, weth, MIN_LIQ_WETH)
-        if not liq_ok:
-            risk_manager.last_block_reason = f"Liquidez insuficiente (< {MIN_LIQ_WETH} WETH)"
+        # métricas iniciais
+        liq = dex_client.get_liquidity(pair_addr, weth)                    # >>> RISK
+        price = dex_client.get_token_price(target_token, weth)             # >>> RISK
+        slip_limit = dex_client.calc_dynamic_slippage(pair_addr, weth, float(amt_eth))  # >>> RISK
+
+        # evento de recebimento
+        risk_manager.record_event(
+            event="Par recebido",
+            dex=dex_info["name"],
+            pair=pair_addr,
+            tokens=f"{token0}/{token1}",
+            liquidity=liq,
+            price=price,
+            block=block
+        )
+
+        # checagem de liquidez
+        if liq < MIN_LIQ_WETH:
+            risk_manager.record_event(
+                event="Pool ignorada",
+                dex=dex_info["name"],
+                pair=pair_addr,
+                tokens=f"{token0}/{token1}",
+                liquidity=liq,
+                price=price,
+                block=block,
+                details=f"Liquidez < {MIN_LIQ_WETH} WETH"
+            )
             safe_notify(bot, f"⚠️ Pool ignorada por liquidez insuficiente (< {MIN_LIQ_WETH} WETH)", loop)
             return
 
+        # checagem de taxação alta
         MAX_TAX_PCT = float(config.get("MAX_TAX_PCT", 10.0))
         if has_high_tax(target_token, MAX_TAX_PCT):
-            risk_manager.last_block_reason = f"Taxa acima de {MAX_TAX_PCT}%"
+            risk_manager.record_event(
+                event="Pool ignorada",
+                dex=dex_info["name"],
+                pair=pair_addr,
+                tokens=f"{token0}/{token1}",
+                liquidity=liq,
+                price=price,
+                block=block,
+                details=f"Taxa > {MAX_TAX_PCT}%"
+            )
             safe_notify(bot, f"⚠️ Token ignorado por taxa acima de {MAX_TAX_PCT}%", loop)
             return
 
+        # contrato verificado?
         if not is_contract_verified(target_token, API_KEY):
-            risk_manager.last_block_reason = "Contrato não verificado"
-            safe_notify(bot, f"⚠️ Token {target_token} com contrato não verificado no BaseScan", loop)
+            risk_manager.record_event(
+                event="Pool ignorada",
+                dex=dex_info["name"],
+                pair=pair_addr,
+                tokens=f"{token0}/{token1}",
+                block=block,
+                details="Contrato não verificado"
+            )
+            safe_notify(bot, f"⚠️ Token {target_token} não verificado no BaseScan", loop)
             if BLOCK_UNVERIFIED:
                 return
 
+        # concentração de supply
         if is_token_concentrated(target_token, API_KEY, TOP_HOLDER_LIMIT):
-            risk_manager.last_block_reason = f"Alta concentração de supply (> {TOP_HOLDER_LIMIT}%)"
+            risk_manager.record_event(
+                event="Pool ignorada",
+                dex=dex_info["name"],
+                pair=pair_addr,
+                tokens=f"{token0}/{token1}",
+                block=block,
+                details=f"Concentração > {TOP_HOLDER_LIMIT}%"
+            )
             safe_notify(bot, f"🚫 Token {target_token} com concentração alta de supply", loop)
             return
 
-        preco_atual = dex_client.get_token_price(target_token, weth)
-        slip_limit = dex_client.calc_dynamic_slippage(pair_addr, weth, float(amt_eth))
+        # preço e slippage já calculados acima
 
     except Exception as e:
-        risk_manager.last_block_reason = f"Erro no contexto do par: {e}"
+        risk_manager.record_event(
+            event="Erro",
+            dex=dex_info["name"],
+            pair=pair_addr,
+            tokens=f"{token0}/{token1}",
+            details=f"Erro no contexto do par: {e}"
+        )
         log.error(f"Falha ao preparar contexto do par: {e}", exc_info=True)
         return
 
-    log.info(f"[Pré-Risk] {token0}/{token1} preço={preco_atual} ETH | size={amt_eth} ETH | slippage={slip_limit*100:.2f}%")
+    log.info(f"[Pré-Risk] {token0}/{token1} preço={price} ETH | size={amt_eth} ETH | slippage={slip_limit*100:.2f}%")
 
-    # >>> Chama a Parte 2 para tentar comprar/monitorar
+    # >>> chamada à segunda parte, que fará a compra e venda
     await executar_compra_e_monitoramento(
-        dex_info, web3, weth, target_token, preco_atual, slip_limit, amt_eth, bot, loop, dex_client
+        dex_info, web3, weth, target_token, price, slip_limit, amt_eth, bot, loop, dex_client
     )
 
-async def executar_compra_e_monitoramento(dex_info, web3, weth, target_token, preco_atual, slip_limit, amt_eth, bot, loop, dex_client):
+async def executar_compra_e_monitoramento(
+    dex_info,
+    web3: Web3,
+    weth: str,
+    target_token: str,
+    preco_atual: float,
+    slip_limit: float,
+    amt_eth: Decimal,
+    bot,
+    loop,
+    dex_client: DexClient
+):
+    # Captura bloco atual
+    try:
+        block_number = web3.eth.get_block_number()
+    except Exception:
+        block_number = None
+
     # --- Execução de compra ---
     try:
         exchange_client = ExchangeClient(router_address=dex_info["router"])
-        trade_exec = TradeExecutor(exchange_client=exchange_client, dry_run=config["DRY_RUN"])
-        safe_exec = SafeTradeExecutor(executor=trade_exec, risk_manager=risk_manager)
+        trade_exec      = TradeExecutor(exchange_client=exchange_client, dry_run=config["DRY_RUN"])
+        safe_exec       = SafeTradeExecutor(executor=trade_exec, risk_manager=risk_manager)
     except Exception as e:
-        risk_manager.last_block_reason = f"Falha ao criar ExchangeClient/Executor: {e}"
-        log.error(risk_manager.last_block_reason, exc_info=True)
+        risk_manager.record_event(
+            event="Erro setup executor",
+            dex=dex_info["name"],
+            pair="",
+            tokens=f"{target_token}",
+            block=block_number,
+            details=str(e)
+        )
+        log.error(f"Falha ao criar ExchangeClient/Executor: {e}", exc_info=True)
         return
 
+    # Prepara parâmetros
+    slippage_pct = slip_limit * 100
+    try:
+        gas_price = web3.eth.gas_price / 1e9  # Gwei
+    except Exception:
+        gas_price = None
+
+    # Tenta comprar
     tx_buy = safe_exec.buy(
         token_in=weth,
         token_out=target_token,
@@ -224,31 +322,70 @@ async def executar_compra_e_monitoramento(dex_info, web3, weth, target_token, pr
     )
 
     if tx_buy:
+        # Aguarda receipt para coletar gas, bloco
+        try:
+            receipt = web3.eth.wait_for_transaction_receipt(tx_buy, timeout=120)
+            gas_used   = receipt.gasUsed
+            gas_price_tx = (receipt.effectiveGasPrice or receipt.gasPrice) / 1e9
+            blk_tx     = receipt.blockNumber
+        except Exception:
+            gas_used    = None
+            gas_price_tx= gas_price
+            blk_tx      = block_number
+
+        risk_manager.record_event(
+            event="Compra realizada",
+            dex=dex_info["name"],
+            pair="",
+            tokens=f"{target_token}",
+            price=preco_atual,
+            block=blk_tx,
+            tx_hash=tx_buy,
+            gas_used=gas_used,
+            gas_price=gas_price_tx,
+            slippage=slippage_pct
+        )
         safe_notify(bot, f"✅ Compra realizada: {target_token}\nTX: {tx_buy}", loop)
-        risk_manager.last_block_reason = None
     else:
         motivo = getattr(risk_manager, "last_block_reason", "não informado")
+        risk_manager.record_event(
+            event="Compra falhou",
+            dex=dex_info["name"],
+            pair="",
+            tokens=f"{target_token}",
+            price=preco_atual,
+            block=block_number,
+            details=motivo
+        )
         safe_notify(bot, f"🚫 Compra não executada para {target_token}\nMotivo: {motivo}", loop)
         return
 
     # --- Monitoramento de venda ---
-    highest_price = preco_atual
-    trail_pct = float(config.get("TRAIL_PCT", 0.05))
-    tp_pct = float(config.get("TAKE_PROFIT_PCT", config.get("TP_PCT", 0.2)))
-    sl_pct = float(config.get("STOP_LOSS_PCT", 0.05))
-
-    entry_price = preco_atual
-    take_profit_price = entry_price * (1 + tp_pct)
-    hard_stop_price = entry_price * (1 - sl_pct)
-    stop_price = highest_price * (1 - trail_pct)
-    sold = False
+    highest_price      = preco_atual
+    trail_pct          = float(config.get("TRAIL_PCT", 0.05))
+    tp_pct             = float(config.get("TAKE_PROFIT_PCT", config.get("TP_PCT", 0.2)))
+    sl_pct             = float(config.get("STOP_LOSS_PCT", 0.05))
+    entry_price        = preco_atual
+    take_profit_price  = entry_price * (1 + tp_pct)
+    hard_stop_price    = entry_price * (1 - sl_pct)
+    stop_price         = highest_price * (1 - trail_pct)
+    sold               = False
 
     from discovery import is_discovery_running
     try:
         while is_discovery_running():
+            # Atualiza preço
             try:
                 price = dex_client.get_token_price(target_token, weth)
             except Exception as e:
+                risk_manager.record_event(
+                    event="Erro atualização preço",
+                    dex=dex_info["name"],
+                    pair="",
+                    tokens=f"{target_token}",
+                    block=web3.eth.get_block_number(),
+                    details=str(e)
+                )
                 log.warning(f"Falha ao atualizar preço: {e}")
                 await asyncio.sleep(1)
                 continue
@@ -257,17 +394,28 @@ async def executar_compra_e_monitoramento(dex_info, web3, weth, target_token, pr
                 await asyncio.sleep(1)
                 continue
 
+            # Novo topo?
             if price > highest_price:
                 highest_price = price
-                stop_price = highest_price * (1 - trail_pct)
+                stop_price    = highest_price * (1 - trail_pct)
+                risk_manager.record_event(
+                    event="Novo topo de preço",
+                    dex=dex_info["name"],
+                    pair="",
+                    tokens=f"{target_token}",
+                    price=highest_price,
+                    block=web3.eth.get_block_number(),
+                    details=f"Stop ajustado para {stop_price:.6f} ETH"
+                )
 
+            # Decide vender?
             should_sell = (
                 price >= take_profit_price or
                 price <= stop_price or
                 price <= hard_stop_price
             )
-
             if should_sell:
+                # Captura saldo
                 try:
                     token_balance = get_token_balance(
                         web3, target_token,
@@ -275,15 +423,30 @@ async def executar_compra_e_monitoramento(dex_info, web3, weth, target_token, pr
                         exchange_client.erc20_abi
                     )
                 except Exception as e:
-                    risk_manager.last_block_reason = f"Erro ao consultar saldo para venda: {e}"
-                    log.error(risk_manager.last_block_reason, exc_info=True)
+                    risk_manager.record_event(
+                        event="Erro consulta saldo",
+                        dex=dex_info["name"],
+                        pair="",
+                        tokens=f"{target_token}",
+                        block=web3.eth.get_block_number(),
+                        details=str(e)
+                    )
+                    log.error(f"Erro ao consultar saldo para venda: {e}", exc_info=True)
                     break
 
                 if token_balance <= 0:
-                    risk_manager.last_block_reason = "Saldo do token é zero"
-                    log.warning(risk_manager.last_block_reason)
+                    risk_manager.record_event(
+                        event="Venda abortada",
+                        dex=dex_info["name"],
+                        pair="",
+                        tokens=f"{target_token}",
+                        block=web3.eth.get_block_number(),
+                        details="Saldo do token é zero"
+                    )
+                    log.warning("Saldo do token é zero — nada para vender.")
                     break
 
+                # Tenta vender
                 tx_sell = safe_exec.sell(
                     token_in=target_token,
                     token_out=weth,
@@ -291,16 +454,55 @@ async def executar_compra_e_monitoramento(dex_info, web3, weth, target_token, pr
                     current_price=price,
                     last_trade_price=entry_price
                 )
+
                 if tx_sell:
+                    # Aguarda receipt
+                    try:
+                        receipt = web3.eth.wait_for_transaction_receipt(tx_sell, timeout=120)
+                        gas_used    = receipt.gasUsed
+                        gas_price_tx= (receipt.effectiveGasPrice or receipt.gasPrice) / 1e9
+                        blk_tx      = receipt.blockNumber
+                    except Exception:
+                        gas_used    = None
+                        gas_price_tx= gas_price
+                        blk_tx      = web3.eth.get_block_number()
+
+                    risk_manager.record_event(
+                        event="Venda realizada",
+                        dex=dex_info["name"],
+                        pair="",
+                        tokens=f"{target_token}",
+                        price=price,
+                        block=blk_tx,
+                        tx_hash=tx_sell,
+                        gas_used=gas_used,
+                        gas_price=gas_price_tx,
+                        slippage=None
+                    )
                     safe_notify(bot, f"💰 Venda realizada: {target_token}\nTX: {tx_sell}", loop)
-                    risk_manager.last_block_reason = None
                     sold = True
                 else:
                     motivo = getattr(risk_manager, "last_block_reason", "não informado")
+                    risk_manager.record_event(
+                        event="Venda falhou",
+                        dex=dex_info["name"],
+                        pair="",
+                        tokens=f"{target_token}",
+                        block=web3.eth.get_block_number(),
+                        details=motivo
+                    )
                     safe_notify(bot, f"⚠️ Venda bloqueada: {motivo}", loop)
                 break
 
             await asyncio.sleep(int(config.get("INTERVAL", 3)))
     finally:
         if not sold and not is_discovery_running():
+            risk_manager.record_event(
+                event="Monitoramento encerrado",
+                dex=dex_info["name"],
+                pair="",
+                tokens=f"{target_token}",
+                block=web3.eth.get_block_number(),
+                details="Sniper parado"
+            )
             safe_notify(bot, f"⏹ Monitoramento encerrado para {target_token} (sniper parado).", loop)
