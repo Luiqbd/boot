@@ -131,6 +131,8 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
     from utils import rate_limiter
 
     if rate_limiter.is_paused():
+        risk_manager.last_block_reason = "Rate limiter pausado"
+        risk_manager.last_token = f"{token0}/{token1}"
         safe_notify(bot, "⏸️ Sniper pausado por limite de API. Ignorando novos pares.", loop)
         return
 
@@ -141,6 +143,11 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         return
     _recent_pairs[pair_key] = now
 
+    # Estatísticas
+    risk_manager.pares_encontrados = getattr(risk_manager, "pares_encontrados", 0) + 1
+    risk_manager.last_token = f"{token0}/{token1}"
+    risk_manager.last_block_reason = None  # reset
+
     log.info(f"Novo par recebido: {dex_info['name']} {pair_addr} {token0}/{token1}")
 
     try:
@@ -150,6 +157,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
 
         amt_eth = Decimal(str(config.get("TRADE_SIZE_ETH", 0.1)))
         if amt_eth <= 0:
+            risk_manager.last_block_reason = "TRADE_SIZE_ETH inválido"
             log.error("TRADE_SIZE_ETH inválido; abortando.")
             return
 
@@ -158,20 +166,24 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
 
         liq_ok = dex_client.has_min_liquidity(pair_addr, weth, MIN_LIQ_WETH)
         if not liq_ok:
+            risk_manager.last_block_reason = f"Liquidez insuficiente (< {MIN_LIQ_WETH} WETH)"
             safe_notify(bot, f"⚠️ Pool ignorada por liquidez insuficiente (< {MIN_LIQ_WETH} WETH)", loop)
             return
 
         MAX_TAX_PCT = float(config.get("MAX_TAX_PCT", 10.0))
         if has_high_tax(target_token, MAX_TAX_PCT):
+            risk_manager.last_block_reason = f"Taxa acima de {MAX_TAX_PCT}%"
             safe_notify(bot, f"⚠️ Token ignorado por taxa acima de {MAX_TAX_PCT}%", loop)
             return
 
         if not is_contract_verified(target_token, API_KEY):
+            risk_manager.last_block_reason = "Contrato não verificado"
             safe_notify(bot, f"⚠️ Token {target_token} com contrato não verificado no BaseScan", loop)
             if BLOCK_UNVERIFIED:
                 return
 
         if is_token_concentrated(target_token, API_KEY, TOP_HOLDER_LIMIT):
+            risk_manager.last_block_reason = f"Alta concentração de supply (> {TOP_HOLDER_LIMIT}%)"
             safe_notify(bot, f"🚫 Token {target_token} com concentração alta de supply", loop)
             return
 
@@ -179,18 +191,26 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         slip_limit = dex_client.calc_dynamic_slippage(pair_addr, weth, float(amt_eth))
 
     except Exception as e:
+        risk_manager.last_block_reason = f"Erro no contexto do par: {e}"
         log.error(f"Falha ao preparar contexto do par: {e}", exc_info=True)
         return
 
     log.info(f"[Pré-Risk] {token0}/{token1} preço={preco_atual} ETH | size={amt_eth} ETH | slippage={slip_limit*100:.2f}%")
 
-# --- Execução de compra ---
+    # >>> Chama a Parte 2 para tentar comprar/monitorar
+    await executar_compra_e_monitoramento(
+        dex_info, web3, weth, target_token, preco_atual, slip_limit, amt_eth, bot, loop, dex_client
+    )
+
+async def executar_compra_e_monitoramento(dex_info, web3, weth, target_token, preco_atual, slip_limit, amt_eth, bot, loop, dex_client):
+    # --- Execução de compra ---
     try:
         exchange_client = ExchangeClient(router_address=dex_info["router"])
         trade_exec = TradeExecutor(exchange_client=exchange_client, dry_run=config["DRY_RUN"])
         safe_exec = SafeTradeExecutor(executor=trade_exec, risk_manager=risk_manager)
     except Exception as e:
-        log.error(f"Falha ao criar ExchangeClient/Executor: {e}", exc_info=True)
+        risk_manager.last_block_reason = f"Falha ao criar ExchangeClient/Executor: {e}"
+        log.error(risk_manager.last_block_reason, exc_info=True)
         return
 
     tx_buy = safe_exec.buy(
@@ -205,6 +225,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
 
     if tx_buy:
         safe_notify(bot, f"✅ Compra realizada: {target_token}\nTX: {tx_buy}", loop)
+        risk_manager.last_block_reason = None
     else:
         motivo = getattr(risk_manager, "last_block_reason", "não informado")
         safe_notify(bot, f"🚫 Compra não executada para {target_token}\nMotivo: {motivo}", loop)
@@ -254,11 +275,13 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
                         exchange_client.erc20_abi
                     )
                 except Exception as e:
-                    log.error(f"Erro ao consultar saldo para venda: {e}", exc_info=True)
+                    risk_manager.last_block_reason = f"Erro ao consultar saldo para venda: {e}"
+                    log.error(risk_manager.last_block_reason, exc_info=True)
                     break
 
                 if token_balance <= 0:
-                    log.warning("Saldo do token é zero — nada para vender.")
+                    risk_manager.last_block_reason = "Saldo do token é zero"
+                    log.warning(risk_manager.last_block_reason)
                     break
 
                 tx_sell = safe_exec.sell(
@@ -270,6 +293,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
                 )
                 if tx_sell:
                     safe_notify(bot, f"💰 Venda realizada: {target_token}\nTX: {tx_sell}", loop)
+                    risk_manager.last_block_reason = None
                     sold = True
                 else:
                     motivo = getattr(risk_manager, "last_block_reason", "não informado")
