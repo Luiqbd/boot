@@ -25,7 +25,6 @@ log = logging.getLogger("sniper")
 risk_manager = RiskManager()
 bot_notify = Bot(token=config["TELEGRAM_TOKEN"])
 
-# 🔹 Ajuste: agora busca ETHERSCAN_API_KEY
 API_KEY = config.get("ETHERSCAN_API_KEY")
 BLOCK_UNVERIFIED = config.get("BLOCK_UNVERIFIED", False)
 TOP_HOLDER_LIMIT = float(config.get("TOP_HOLDER_LIMIT", 30.0))
@@ -179,13 +178,13 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         preco_atual = dex_client.get_token_price(target_token, weth)
         slip_limit = dex_client.calc_dynamic_slippage(pair_addr, weth, float(amt_eth))
 
-except Exception as e:
+    except Exception as e:
         log.error(f"Falha ao preparar contexto do par: {e}", exc_info=True)
         return
 
     log.info(f"[Pré-Risk] {token0}/{token1} preço={preco_atual} ETH | size={amt_eth} ETH | slippage={slip_limit*100:.2f}%")
 
-    # --- Execução de compra ---
+# --- Execução de compra ---
     try:
         exchange_client = ExchangeClient(router_address=dex_info["router"])
         trade_exec = TradeExecutor(exchange_client=exchange_client, dry_run=config["DRY_RUN"])
@@ -249,7 +248,11 @@ except Exception as e:
 
             if should_sell:
                 try:
-                    token_balance = get_token_balance(web3, target_token, exchange_client.wallet, exchange_client.erc20_abi)
+                    token_balance = get_token_balance(
+                        web3, target_token,
+                        exchange_client.wallet,
+                        exchange_client.erc20_abi
+                    )
                 except Exception as e:
                     log.error(f"Erro ao consultar saldo para venda: {e}", exc_info=True)
                     break
