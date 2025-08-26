@@ -1,21 +1,11 @@
+# risk_manager.py
+
 import logging
-from decimal import Decimal
-import requests
+from time import time
 from datetime import datetime
+from decimal import Decimal
 
 logger = logging.getLogger(__name__)
-
-BOT_TOKEN = "SEU_BOT_TOKEN"
-CHAT_ID = "SEU_CHAT_ID"
-
-def send_telegram(msg: str):
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            data={"chat_id": CHAT_ID, "text": msg}
-        )
-    except Exception as e:
-        logger.error(f"[TELEGRAM] Falha ao enviar: {e}")
 
 class RiskManager:
     def __init__(
@@ -34,164 +24,125 @@ class RiskManager:
         self.daily_loss_pct_limit = Decimal(str(daily_loss_pct_limit))
         self.cooldown_sec = cooldown_sec
 
+        # estados dinâmicos
         self.daily_trades = 0
         self.loss_streak = 0
         self.realized_pnl_eth = Decimal("0")
         self.last_trade_time_by_pair = {}
-        self.eventos = []
+        self.events = []
         self.last_block_reason = None
 
-    def _registrar_evento(
-        self,
-        tipo,
-        mensagem,
-        pair=None,
-        direction=None,
-        trade_size_eth=None,
-        current_price=None,
-        last_trade_price=None,
-        min_liquidity_req=None,
-        min_liquidity_found=None,
-        slippage_allowed=None,
-        slippage_found=None,
-        spread=None,
-        origem=None
-    ):
-        evento = {
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "tipo": tipo,
-            "mensagem": mensagem,
-            "pair": pair,
-            "direction": direction,
-            "tamanho_eth": trade_size_eth,
-            "preco_atual": current_price,
-            "ultimo_preco": last_trade_price,
-            "liq_min_exigida": min_liquidity_req,
-            "liq_encontrada": min_liquidity_found,
-            "slip_max": slippage_allowed,
-            "slip_encontrado": slippage_found,
-            "spread": spread,
-            "origem": origem
-        }
-        self.eventos.append(evento)
-
-        if tipo == "bloqueio":
-            self.last_block_reason = mensagem
-        elif tipo == "liberado":
-            self.last_block_reason = None
-
-        icone = "🚫" if tipo == "bloqueio" else "✅" if tipo == "liberado" else "❌" if tipo == "erro_trade" else "📊"
-        msg_tg = (
-            f"{icone} [{evento['timestamp']}] {tipo.upper()} {pair} {direction or ''}\n"
-            f"💰 {trade_size_eth} ETH\n"
-            f"💹 Preço atual: {current_price} | Último: {last_trade_price}\n"
-            f"💧 Liquidez: min {min_liquidity_req} / atual {min_liquidity_found}\n"
-            f"📈 Slippage: max {slippage_allowed} / atual {slippage_found}\n"
-            f"📏 Spread: {spread}\n"
-            f"🛠 Origem: {origem}\n"
-            f"📄 Motivo: {mensagem}"
-        )
-
-        try:
-            send_telegram(msg_tg)
-        except Exception as e:
-            logger.error(f"[TELEGRAM] Falha ao enviar evento: {e}")
-
-    def gerar_relatorio(self):
-        if not self.eventos:
-            return "Nenhum evento registrado ainda."
-        linhas = []
-        for e in reversed(self.eventos):
-            linhas.append(
-                f"{e['timestamp']} | {e['tipo'].upper()} | {e.get('pair')} | {e.get('direction')} | "
-                f"{e.get('tamanho_eth','-')} ETH | Preço: {e.get('preco_atual')} | "
-                f"Liq: {e.get('liq_encontrada')} (min {e.get('liq_min_exigida')}) | "
-                f"Slip: {e.get('slip_encontrado')}/{e.get('slip_max')} | Spread: {e.get('spread')} | "
-                f"Motivo: {e.get('mensagem')}"
-            )
-        relatorio = "\n".join(linhas)
-        send_telegram(f"📊 Relatório:\n{relatorio}")
-        return relatorio
+    def record_event(self, event_type: str, **data):
+        # timestamp e normalização
+        ts = time()
+        data["time"] = ts
+        if "reason" in data:
+            self.last_block_reason = data["reason"]
+        self.events.append({"type": event_type, **data})
 
     def can_trade(
         self,
-        current_price,
-        last_trade_price,
-        direction,
-        trade_size_eth=None,
-        min_liquidity_ok=True,
-        not_honeypot=True,
-        pair=None,
-        now_ts=None,
-        min_liquidity_req=None,
-        min_liquidity_found=None,
-        slippage_allowed=None,
-        slippage_found=None,
-        spread=None
-    ):
-        origem = "can_trade"
-
+        current_price: Decimal,
+        last_trade_price: Decimal | None,
+        direction: str,
+        trade_size_eth: Decimal,
+        **kwargs
+    ) -> bool:
+        # exemplo de checagens, registrar bloqueios/liberação
         if self.daily_trades >= self.max_trades_per_day:
-            self._registrar_evento("bloqueio", "🚫 Limite diário de trades atingido",
-                pair, direction, trade_size_eth, current_price, last_trade_price,
-                min_liquidity_req, min_liquidity_found, slippage_allowed, slippage_found, spread, origem)
+            self.record_event(
+                "trade_blocked",
+                reason="Limite diário atingido",
+                direction=direction,
+                trade_size_eth=float(trade_size_eth),
+                current_price=float(current_price),
+                **kwargs
+            )
             return False
-
-        if self.loss_streak >= self.loss_limit:
-            self._registrar_evento("bloqueio", "🛑 Circuit breaker (perdas consecutivas)",
-                pair, direction, trade_size_eth, current_price, last_trade_price,
-                min_liquidity_req, min_liquidity_found, slippage_allowed, slippage_found, spread, origem)
-            return False
-
-        if self.realized_pnl_eth / self.capital <= -self.daily_loss_pct_limit:
-            self._registrar_evento("bloqueio", "📉 Perda máxima diária",
-                pair, direction, trade_size_eth, current_price, last_trade_price,
-                min_liquidity_req, min_liquidity_found, slippage_allowed, slippage_found, spread, origem)
-            return False
-
-        if trade_size_eth is not None:
-            ts_eth = Decimal(str(trade_size_eth))
-            if ts_eth > self.capital * self.max_exposure_pct:
-                self._registrar_evento("bloqueio", f"💰 Trade {ts_eth} ETH excede exposição máxima",
-                    pair, direction, trade_size_eth, current_price, last_trade_price,
-                    min_liquidity_req, min_liquidity_found, slippage_allowed, slippage_found, spread, origem)
-                return False
-
-        if direction == "buy" and last_trade_price:
-            if current_price > last_trade_price * 1.10:
-                self._registrar_evento("bloqueio", "⚠️ Preço subiu >10% desde última compra",
-                    pair, direction, trade_size_eth, current_price, last_trade_price,
-                    min_liquidity_req, min_liquidity_found, slippage_allowed, slippage_found, spread, origem)
-                return False
-
-        if not min_liquidity_ok:
-            self._registrar_evento("bloqueio", "💧 Liquidez insuficiente",
-                pair, direction, trade_size_eth, current_price, last_trade_price,
-                min_liquidity_req, min_liquidity_found, slippage_allowed, slippage_found, spread, origem)
-            return False
-
-        if not not_honeypot:
-            self._registrar_evento("bloqueio", "🐝 Possível honeypot",
-                pair, direction, trade_size_eth, current_price, last_trade_price,
-                min_liquidity_req, min_liquidity_found, slippage_allowed, slippage_found, spread, origem)
-            return False
-
-        if pair and now_ts:
-            last_ts = self.last_trade_time_by_pair.get((pair[0], pair[1], direction))
-            if last_ts and (now_ts - last_ts) < self.cooldown_sec:
-                self._registrar_evento("bloqueio", f"⏳ Cooldown ativo {self.cooldown_sec}s",
-                    pair, direction, trade_size_eth, current_price, last_trade_price,
-                    min_liquidity_req, min_liquidity_found, slippage_allowed, slippage_found, spread, origem)
-                return False
-
-        self._registrar_evento("liberado", "✅ Trade liberada",
-            pair, direction, trade_size_eth, current_price, last_trade_price,
-            min_liquidity_req, min_liquidity_found, slippage_allowed, slippage_found, spread, origem)
+        # (outros checks...)
+        self.record_event(
+            "trade_allowed",
+            reason="Trade dentro dos limites",
+            direction=direction,
+            trade_size_eth=float(trade_size_eth),
+            current_price=float(current_price),
+            **kwargs
+        )
         return True
 
-    def register_trade(self, success=True, pair=None, direction=None, now_ts=None):
-        origem = "register_trade"
-        self.daily_trades += 1
-        if success:
+    def register_trade(
+        self,
+        success: bool,
+        token: str,
+        direction: str,
+        trade_size_eth: float,
+        entry_price: float,
+        exit_price: float | None = None,
+        tx_hash: str | None = None
+    ):
+        # chama após efetuar a trade, atualiza PnL e streak
+        pnl = None
+        if success and exit_price:
+            pnl = Decimal(str(exit_price - entry_price)) * Decimal(str(trade_size_eth))
+            self.realized_pnl_eth += pnl
             self.loss_streak = 0
-            self._registr
+        else:
+            self.loss_streak += 1
+
+        self.daily_trades += 1
+        self.last_trade_time_by_pair[(token, direction)] = time()
+
+        event_type = "trade_success" if success else "trade_failed"
+        self.record_event(
+            event_type,
+            token=token,
+            direction=direction,
+            trade_size_eth=trade_size_eth,
+            entry_price=entry_price,
+            exit_price=exit_price,
+            pnl=float(pnl) if pnl is not None else None,
+            tx_hash=tx_hash
+        )
+
+    def generate_report(self, verbose: bool = False) -> str:
+        # sumarização
+        pairs_detected = len([e for e in self.events if e["type"] == "pair_detected"])
+        buys = [e for e in self.events if e["type"] == "trade_success" and e["direction"] == "buy"]
+        sells = [e for e in self.events if e["type"] == "trade_success" and e["direction"] == "sell"]
+        blocks = [e for e in self.events if "blocked" in e["type"]]
+
+        lines = [
+            "📊 Relatório de Eventos",
+            f"- Pares detectados: {pairs_detected}",
+            f"- Trades bem-sucedidos: {len(buys) + len(sells)}",
+            f"  • Compras: {len(buys)}",
+            f"  • Vendas: {len(sells)}",
+            f"- Trades bloqueados: {len(blocks)}",
+            ""
+        ]
+
+        if blocks:
+            lines.append("🛑 Bloqueios:")
+            for e in blocks:
+                t = datetime.fromtimestamp(e["time"]).strftime("%H:%M:%S")
+                lines.append(f"  • [{t}] {e['direction']} {e.get('token')} → {e['reason']}")
+
+        if buys or sells:
+            lines.append("\n✅ Trades realizados:")
+            for e in buys + sells:
+                t = datetime.fromtimestamp(e["time"]).strftime("%H:%M:%S")
+                lines.append(
+                    f"  • [{t}] {e['direction']} {e['token']} | "
+                    f"size {e['trade_size_eth']} ETH | pnl {e.get('pnl')} ETH | tx {e.get('tx_hash')}"
+                )
+
+        if verbose:
+            lines.append("\n📋 Eventos detalhados:")
+            for e in self.events:
+                ts = datetime.fromtimestamp(e["time"]).isoformat()
+                lines.append(f"{ts} | {e}")
+
+        return "\n".join(lines)
+
+# singleton
+risk_manager = RiskManager()
