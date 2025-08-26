@@ -1,284 +1,292 @@
-# strategy_sniper.py — Parte 1
-
-import logging
+import os
 import asyncio
-from decimal import Decimal
-from time import time
+import logging
+import requests
+from flask import Flask, request
+from telegram import Update, BotCommand
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters
+)
+from threading import Thread
+import time
+import datetime
+import uuid
 from web3 import Web3
 
+# sniper e discovery
+from check_balance import get_wallet_status
+from strategy_sniper import on_new_pair
+from discovery import run_discovery, stop_discovery, get_discovery_status
 from config import config
-from telegram import Bot
-from telegram_alert import TelegramAlert
-from dex import DexClient
-from exchange_client import ExchangeClient
-from trade_executor import TradeExecutor
-from safe_trade_executor import SafeTradeExecutor
 
-from utils import (
-    is_contract_verified,
-    is_token_concentrated,
-    rate_limiter,
-    configure_rate_limiter_from_config
-)
-
+# importa o singleton
 from risk_manager import risk_manager
 
-log = logging.getLogger("sniper")
-bot_notify = Bot(token=config["TELEGRAM_TOKEN"])
+# log básico
+logging.basicConfig(
+    format='[%(asctime)s] %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 
-configure_rate_limiter_from_config(config)
-rate_limiter.set_notifier(lambda msg: safe_notify(bot_notify, msg))
+# Flask
+app = Flask(__name__)
 
-# nosso cache local para evitar duplicatas rápidas
-_recent_pairs: dict[tuple[str, str, str], float] = {}
-_PAIR_DUP_INTERVAL = 5
+# globals
+loop = asyncio.new_event_loop()
+application = None
+sniper_thread = None
 
-def notify(msg: str):
-    coro = bot_notify.send_message(
-        chat_id=config["TELEGRAM_CHAT_ID"],
-        text=msg
-    )
+# ambiente
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+WEBHOOK_URL    = os.getenv("WEBHOOK_URL")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "0")
+
+# auxiliares
+def str_to_bool(v: str) -> bool:
+    return v.strip().lower() in {"1", "true", "t", "yes", "y"}
+
+def normalize_private_key(pk: str) -> str:
+    if not pk:
+        raise ValueError("PRIVATE_KEY não definida.")
+    pk = pk.strip()
+    if pk.startswith("0x"):
+        pk = pk[2:]
+    if len(pk) != 64 or not all(c in "0123456789abcdefABCDEF" for c in pk):
+        raise ValueError("PRIVATE_KEY inválida.")
+    return pk
+
+def get_active_address() -> str:
+    raw = os.getenv("PRIVATE_KEY")
+    pk = normalize_private_key(raw)
+    return Web3().eth.account.from_key(pk).address
+
+def env_summary_text() -> str:
     try:
-        loop = asyncio.get_running_loop()
-        loop.create_task(coro)
-    except RuntimeError:
-        asyncio.run(coro)
-
-def safe_notify(alert: TelegramAlert | None, msg: str, loop: asyncio.AbstractEventLoop | None = None):
-    now = time()
-    key = hash(msg)
-    if getattr(safe_notify, "_last_msgs", {}).get(key, 0) + _PAIR_DUP_INTERVAL > now:
-        return
-    safe_notify._last_msgs = getattr(safe_notify, "_last_msgs", {})
-    safe_notify._last_msgs[key] = now
-
-    if alert:
-        coro = alert.send_message(
-            chat_id=config["TELEGRAM_CHAT_ID"],
-            text=msg
-        )
-        if loop and loop.is_running():
-            asyncio.run_coroutine_threadsafe(coro, loop)
-        else:
-            try:
-                asyncio.get_running_loop().create_task(coro)
-            except RuntimeError:
-                asyncio.run(coro)
-    else:
-        notify(msg)
-
-async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
-    # 1) pausa por rate limiter
-    if rate_limiter.is_paused():
-        risk_manager.record_event("pair_skipped", reason="API rate limit pause", dex=dex_info["name"], pair=pair_addr)
-        safe_notify(bot, "⏸️ Sniper pausado por limite de API. Ignorando pares.", loop)
-        return
-
-    # 2) filtro de duplicata local
-    now = time()
-    key = (pair_addr.lower(), token0.lower(), token1.lower())
-    if key in _recent_pairs and (now - _recent_pairs[key]) < _PAIR_DUP_INTERVAL:
-        log.debug(f"[DUPE] Par ignorado localmente: {pair_addr} {token0}/{token1}")
-        return
-    _recent_pairs[key] = now
-
-    # registra o par detectado
-    log.info(f"[Novo par] {dex_info['name']} {pair_addr} {token0}/{token1}")
-    risk_manager.record_event(
-        "pair_detected",
-        dex=dex_info["name"],
-        pair=pair_addr,
-        token_in=token0,
-        token_out=token1
-    )
-
-    # prepara contexto
-    try:
-        web3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
-        weth = Web3.to_checksum_address(config["WETH"])
-        target = (
-            Web3.to_checksum_address(token1)
-            if token0.lower() == weth.lower()
-            else Web3.to_checksum_address(token0)
-        )
-
-        amt_eth = Decimal(str(config.get("TRADE_SIZE_ETH", 0.1)))
-        if amt_eth <= 0:
-            raise ValueError("TRADE_SIZE_ETH inválido")
-
-        dex_client = DexClient(web3, dex_info["router"])
-        MIN_LIQ = float(config.get("MIN_LIQ_WETH", 0.5))
-        liq_ok = dex_client.has_min_liquidity(pair_addr, weth, MIN_LIQ)
-        price = dex_client.get_token_price(target, weth)
-        slip = dex_client.calc_dynamic_slippage(pair_addr, weth, float(amt_eth))
-
-        if not liq_ok:
-            reason = f"liquidez < {MIN_LIQ} WETH"
-            risk_manager.record_event("pair_skipped", reason=reason, pair=pair_addr)
-            safe_notify(bot, f"⚠️ Pool ignorada: {reason}", loop)
-            return
-
-        MAX_TAX = float(config.get("MAX_TAX_PCT", 10.0))
-        if has_high_tax(target, MAX_TAX):
-            reason = f"taxa > {MAX_TAX}%"
-            risk_manager.record_event("pair_skipped", reason=reason, pair=pair_addr)
-            safe_notify(bot, f"⚠️ Token ignorado: {reason}", loop)
-            return
-
-        if not is_contract_verified(target, config.get("ETHERSCAN_API_KEY")) and config.get("BLOCK_UNVERIFIED", False):
-            reason = "contrato não verificado"
-            risk_manager.record_event("pair_skipped", reason=reason, pair=pair_addr)
-            safe_notify(bot, f"🚫 Token bloqueado: {reason}", loop)
-            return
-
-        TOP = float(config.get("TOP_HOLDER_LIMIT", 30.0))
-        if is_token_concentrated(target, config.get("ETHERSCAN_API_KEY"), TOP):
-            reason = "alta concentração de supply"
-            risk_manager.record_event("pair_skipped", reason=reason, pair=pair_addr)
-            safe_notify(bot, f"🚫 Token bloqueado: {reason}", loop)
-            return
-
+        addr = get_active_address()
     except Exception as e:
-        log.error(f"Erro preparando contexto: {e}", exc_info=True)
-        risk_manager.record_event("error", reason=str(e), pair=pair_addr)
-        return
-
-    # pronta para tentar compra
-    risk_manager.record_event(
-        "buy_attempt",
-        token=target,
-        amount_eth=float(amt_eth),
-        price=float(price),
-        slippage=float(slip)
+        addr = f"Erro: {e}"
+    return (
+        f"🔑 Endereço: `{addr}`\n"
+        f"🌐 Chain ID: {os.getenv('CHAIN_ID')}\n"
+        f"🔗 RPC: {os.getenv('RPC_URL')}\n"
+        f"💵 Trade: {os.getenv('TRADE_SIZE_ETH')} ETH\n"
+        f"📉 Slippage: {os.getenv('SLIPPAGE_BPS')} bps\n"
+        f"🏆 Take Profit: {os.getenv('TAKE_PROFIT_PCT')}%\n"
+        f"💧 Min. Liquidez WETH: {os.getenv('MIN_LIQ_WETH')}\n"
+        f"⏱ Intervalo: {os.getenv('INTERVAL')}s\n"
+        f"🧪 Dry Run: {os.getenv('DRY_RUN')}"
     )
 
-# strategy_sniper.py — Parte 2
+# sniper thread
+def iniciar_sniper():
+    global sniper_thread
+    if sniper_thread and sniper_thread.is_alive():
+        logging.info("⚠️ Sniper já rodando.")
+        return
 
-    # setup do executor
+    logging.info("⚙️ Iniciando sniper...")
+    def _run():
+        try:
+            asyncio.run_coroutine_threadsafe(
+                run_discovery(
+                    lambda dex, p, t0, t1: on_new_pair(
+                        dex, p, t0, t1, bot=application.bot, loop=loop
+                    ),
+                    loop
+                ),
+                loop
+            )
+        except Exception as e:
+            logging.error(f"Erro no sniper: {e}", exc_info=True)
+
+    sniper_thread = Thread(target=_run, daemon=True)
+    sniper_thread.start()
+
+def parar_sniper():
+    stop_discovery(loop)
+
+# handlers Telegram
+async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    texto = (
+        "🎯 *Sniper Bot*\n\n"
+        "Comandos:\n"
+        "• /snipe — Iniciar sniper\n"
+        "• /stop — Parar sniper\n"
+        "• /sniperstatus — Status do sniper\n"
+        "• /status — Saldo ETH/WETH\n"
+        "• /ping — Pong\n"
+        "• /testnotify — Teste de notificação\n"
+        "• /menu — Menu\n"
+        "• /relatorio — Relatório de eventos\n"
+        "━━━━━━━━━━━━━━\n"
+        f"{env_summary_text()}"
+    )
+    await update.message.reply_text(texto, parse_mode="Markdown")
+
+async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await start_cmd(update, context)
+
+async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        exchange = ExchangeClient(router_address=dex_info["router"])
-        trade_exec = TradeExecutor(exchange_client=exchange, dry_run=config["DRY_RUN"])
-        safe_exec = SafeTradeExecutor(executor=trade_exec, risk_manager=risk_manager)
+        addr = context.args[0] if context.args else None
+        sta = get_wallet_status(addr)
+        await update.message.reply_text(sta)
     except Exception as e:
-        log.error(f"Erro ao criar executor: {e}", exc_info=True)
-        risk_manager.record_event("error", reason=str(e), pair=pair_addr)
+        logging.error(f"/status erro: {e}", exc_info=True)
+        await update.message.reply_text("⚠️ Erro ao verificar carteira.")
+
+async def snipe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if sniper_thread and sniper_thread.is_alive():
+        await update.message.reply_text("⚠️ Sniper já rodando.")
         return
+    await update.message.reply_text("⚙️ Iniciando sniper...")
+    iniciar_sniper()
 
-    # executa compra
-    tx_buy = safe_exec.buy(
-        token_in=weth,
-        token_out=target,
-        amount_eth=amt_eth,
-        current_price=price,
-        last_trade_price=None,
-        amount_out_min=None,
-        slippage=slip
-    )
+async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    parar_sniper()
+    await update.message.reply_text("🛑 Sniper interrompido.")
 
-    if tx_buy:
-        risk_manager.record_event(
-            "buy_success",
-            token=target,
-            amount_eth=float(amt_eth),
-            price=float(price),
-            tx_hash=tx_buy
-        )
-        risk_manager.register_trade(
-            success=True,
-            token=target,
-            direction="buy",
-            trade_size_eth=float(amt_eth),
-            entry_price=float(price),
-            tx_hash=tx_buy
-        )
-        safe_notify(bot, f"✅ Compra realizada: {target}\nTX: {tx_buy}", loop)
-    else:
-        motivo = risk_manager.last_block_reason or "não informado"
-        risk_manager.record_event("buy_failed", token=target, reason=motivo)
-        risk_manager.register_trade(
-            success=False,
-            token=target,
-            direction="buy",
-            trade_size_eth=float(amt_eth),
-            entry_price=float(price)
-        )
-        safe_notify(bot, f"🚫 Compra falhou: {motivo}", loop)
-        return
-
-    # monitoramento para venda
-    highest = price
-    tp_pct = float(config.get("TAKE_PROFIT_PCT", 0.2))
-    sl_pct = float(config.get("STOP_LOSS_PCT", 0.05))
-    trail = float(config.get("TRAIL_PCT", 0.05))
-
-    entry = price
-    tp_price = entry * (1 + tp_pct)
-    hard_stop = entry * (1 - sl_pct)
-    stop_price = highest * (1 - trail)
-    sold = False
-
-    from discovery import is_discovery_running
+async def sniper_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        while is_discovery_running():
-            try:
-                price = dex_client.get_token_price(target, weth)
-            except Exception:
-                await asyncio.sleep(1)
-                continue
+        st = get_discovery_status() or {"text": "Indisponível"}
+        await update.message.reply_text(st["text"])
+    except Exception as e:
+        logging.error(f"/sniperstatus erro: {e}", exc_info=True)
+        await update.message.reply_text("⚠️ Erro no status.")
 
-            if price > highest:
-                highest = price
-                stop_price = highest * (1 - trail)
+async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"Você disse: {update.message.text}")
 
-            if price >= tp_price or price <= stop_price or price <= hard_stop:
-                balance = get_token_balance(
-                    web3, target,
-                    exchange.wallet,
-                    exchange.erc20_abi
-                )
-                if balance <= 0:
-                    break
+async def ping_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uptime = int(time.time() - context.bot_data.get("start_time", time.time()))
+    up_str = str(datetime.timedelta(seconds=uptime))
+    agora = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    await update.message.reply_text(f"pong 🏓\nUptime: {up_str}\nAgora: {agora}")
 
-                tx_sell = safe_exec.sell(
-                    token_in=target,
-                    token_out=weth,
-                    amount_eth=Decimal(str(balance)),
-                    current_price=price,
-                    last_trade_price=entry
-                )
-                if tx_sell:
-                    risk_manager.record_event(
-                        "sell_success",
-                        token=target,
-                        amount_eth=float(balance),
-                        price=float(price),
-                        tx_hash=tx_sell
-                    )
-                    risk_manager.register_trade(
-                        success=True,
-                        token=target,
-                        direction="sell",
-                        trade_size_eth=float(balance),
-                        entry_price=float(entry),
-                        exit_price=float(price),
-                        tx_hash=tx_sell
-                    )
-                    safe_notify(bot, f"💰 Venda realizada: {target}\nTX: {tx_sell}", loop)
-                    sold = True
-                else:
-                    motivo = risk_manager.last_block_reason or "não informado"
-                    risk_manager.record_event("sell_failed", token=target, reason=motivo)
-                    risk_manager.register_trade(
-                        success=False,
-                        token=target,
-                        direction="sell",
-                        trade_size_eth=float(balance),
-                        entry_price=float(entry)
-                    )
-                    safe_notify(bot, f"⚠️ Venda falhou: {motivo}", loop)
-                break
+async def test_notify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = int(TELEGRAM_CHAT_ID or 0)
+    if chat == 0:
+        await update.message.reply_text("⚠️ TELEGRAM_CHAT_ID inválido.")
+        return
+    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    uid = str(uuid.uuid4())[:8]
+    await context.bot.send_message(chat_id=chat, text=f"✅ Teste {ts} ID:{uid}")
+    await update.message.reply_text(f"Enviado ID:{uid}")
 
-            await asyncio.sleep(int(config.get("INTERVAL", 3)))
-    finally:
-        if not sold:
-            safe_notify(bot, f"⏹ Monitoramento encerrado: {target}", loop)
+async def relatorio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        verbose = bool(context.args)
+        report = risk_manager.generate_report(verbose)
+        await update.message.reply_text(report)
+    except Exception as e:
+        logging.error(f"/relatorio erro: {e}", exc_info=True)
+        await update.message.reply_text("⚠️ Erro ao gerar relatório.")
+
+# Healthcheck
+@app.route("/", methods=["GET", "HEAD"])
+def health():
+    return "ok", 200
+
+# HTTP /relatorio
+@app.route("/relatorio", methods=["GET"])
+def relatorio_http():
+    try:
+        report = risk_manager.generate_report()
+        return f"<h1>📊 Relatório</h1><pre>{report}</pre>"
+    except Exception as e:
+        logging.error(f"HTTP relatório erro: {e}", exc_info=True)
+        return "Erro", 500
+
+# Webhook
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    try:
+        if application is None:
+            return "not ready", 503
+        data = request.get_json(force=True)
+        update = Update.de_json(data, application.bot)
+        asyncio.run_coroutine_threadsafe(application.process_update(update), loop)
+        return "ok", 200
+    except Exception as e:
+        app.logger.error(f"Webhook erro: {e}", exc_info=True)
+        return "error", 500
+
+# registra webhook Telegram com retry
+def set_webhook_with_retry(attempts=5, delay=3):
+    if not TELEGRAM_TOKEN or not WEBHOOK_URL:
+        logging.error("WEBHOOK não configurado.")
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
+    for i in range(attempts):
+        try:
+            resp = requests.post(url, json={"url": WEBHOOK_URL}, timeout=10)
+            if resp.ok and resp.json().get("ok"):
+                logging.info(f"Webhook registrado: {WEBHOOK_URL}")
+                return
+        except Exception as e:
+            logging.warning(f"Webhook tentativa {i+1} falhou: {e}")
+        time.sleep(delay)
+    logging.error("Webhook todas tentativas falharam.")
+
+def start_flask():
+    port = int(os.getenv("PORT", 10000))
+    app.run(host="0.0.0.0", port=port, threaded=True)
+
+# boot
+if __name__ == "__main__":
+    if not TELEGRAM_TOKEN:
+        logging.error("Falta TELEGRAM_TOKEN.")
+        raise SystemExit(1)
+    missing = [k for k in ("RPC_URL","PRIVATE_KEY","CHAIN_ID") if not os.getenv(k)]
+    if missing:
+        logging.error(f"Faltam variáveis: {missing}")
+        raise SystemExit(1)
+
+    try:
+        addr = get_active_address()
+        logging.info(f"Carteira ativa: {addr}")
+    except Exception as e:
+        logging.error(f"Chave inválida: {e}", exc_info=True)
+        raise SystemExit(1)
+
+    asyncio.set_event_loop(loop)
+    application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
+    # registra handlers
+    application.add_handler(CommandHandler("start", start_cmd))
+    application.add_handler(CommandHandler("menu", menu_cmd))
+    application.add_handler(CommandHandler("status", status_cmd))
+    application.add_handler(CommandHandler("snipe", snipe_cmd))
+    application.add_handler(CommandHandler("stop", stop_cmd))
+    application.add_handler(CommandHandler("sniperstatus", sniper_status_cmd))
+    application.add_handler(CommandHandler("ping", ping_cmd))
+    application.add_handler(CommandHandler("testnotify", test_notify_cmd))
+    application.add_handler(CommandHandler("relatorio", relatorio_cmd))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
+
+    async def start_bot():
+        application.bot_data["start_time"] = time.time()
+        await application.initialize()
+        await application.start()
+        await application.bot.set_my_commands([
+            BotCommand("start", "Boas-vindas"),
+            BotCommand("menu", "Menu"),
+            BotCommand("status", "Saldo"),
+            BotCommand("snipe", "Iniciar sniper"),
+            BotCommand("stop", "Parar sniper"),
+            BotCommand("sniperstatus", "Status sniper"),
+            BotCommand("ping", "Pong"),
+            BotCommand("testnotify", "Teste notify"),
+            BotCommand("relatorio", "Relatório eventos")
+        ])
+
+    loop.create_task(start_bot())
+    Thread(target=start_flask, daemon=True).start()
+    Thread(target=set_webhook_with_retry, daemon=True).start()
+
+    logging.info("🚀 Bot e Flask iniciados")
+    loop.run_forever()
