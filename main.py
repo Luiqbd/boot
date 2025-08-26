@@ -1,4 +1,3 @@
-# main.py — Parte 1/2
 import os
 import asyncio
 import logging
@@ -24,9 +23,8 @@ from strategy_sniper import on_new_pair  # versão revisada
 from discovery import run_discovery, stop_discovery, get_discovery_status
 from config import config
 
-# --- Importa RiskManager ---
-from risk_manager import RiskManager
-risk_manager = RiskManager()
+# --- Importa o mesmo RiskManager que o strategy_sniper usa ---
+from risk_manager import risk_manager
 
 # --- Configuração de log ---
 logging.basicConfig(
@@ -95,7 +93,6 @@ def iniciar_sniper():
 
     def start_sniper():
         try:
-            # Corrigido: executa coroutine de forma thread-safe no loop existente
             asyncio.run_coroutine_threadsafe(
                 run_discovery(
                     lambda dex, pair, t0, t1: on_new_pair(
@@ -150,7 +147,7 @@ async def snipe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if sniper_thread and sniper_thread.is_alive():
         await update.message.reply_text("⚠️ O sniper já está rodando.")
         return
-    await update.message.reply_text("⚙️ Iniciando sniper... Monitorando novas pairs em todas as DEX.")
+    await update.message.reply_text("⚙️ Iniciando sniper... Monitorando novos pairs em todas as DEX.")
     iniciar_sniper()
 
 async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -194,10 +191,11 @@ async def test_notify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"Erro no /testnotify: {e}", exc_info=True)
         await update.message.reply_text(f"⚠️ Erro ao enviar mensagem: {e}")
 
+# corrigido: chama generate_report() e não gerar_relatorio()
 async def relatorio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        rel = risk_manager.gerar_relatorio()
-        await update.message.reply_text(f"📊 Relatório de eventos:\n{rel}")
+        report = risk_manager.generate_report()
+        await update.message.reply_text(f"📊 Relatório de eventos:\n{report}")
     except Exception as e:
         logging.error(f"Erro ao gerar relatório: {e}", exc_info=True)
         await update.message.reply_text("⚠️ Erro ao gerar relatório.")
@@ -211,25 +209,26 @@ def health():
 @app.route("/relatorio", methods=["GET"])
 def relatorio_http():
     try:
-        rel = risk_manager.gerar_relatorio()
-        return f"<h1>📊 Relatório de Eventos</h1><pre>{rel}</pre>"
+        # usa o método generate_report em vez de gerar_relatorio
+        report = risk_manager.generate_report()
+        return f"<h1>📊 Relatório de Eventos</h1><pre>{report}</pre>"
     except Exception as e:
         logging.error(f"Erro ao gerar relatório HTTP: {e}", exc_info=True)
         return "Erro ao gerar relatório", 500
 
 # --- Webhook ---
-@app.route('/webhook', methods=['POST'])
+@app.route("/webhook", methods=["POST"])
 def webhook():
     try:
         if application is None:
-            return 'not ready', 503
+            return "not ready", 503
         data = request.get_json(force=True)
         update = Update.de_json(data, application.bot)
         asyncio.run_coroutine_threadsafe(application.process_update(update), loop)
-        return 'ok', 200
+        return "ok", 200
     except Exception as e:
         app.logger.error(f"Erro no webhook: {e}", exc_info=True)
-        return 'error', 500
+        return "error", 500
 
 def set_webhook_with_retry(max_attempts=5, delay=3):
     if not TELEGRAM_TOKEN or not WEBHOOK_URL:
