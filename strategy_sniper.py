@@ -154,9 +154,13 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
     try:
         # inicialização de contexto
         web3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
-        block = web3.eth.get_block_number()                                # >>> RISK
+        block = web3.eth.get_block_number()
         weth = Web3.to_checksum_address(config["WETH"])
-        target_token = Web3.to_checksum_address(token1) if token0.lower() == weth.lower() else Web3.to_checksum_address(token0)
+        target_token = (
+            Web3.to_checksum_address(token1)
+            if token0.lower() == weth.lower()
+            else Web3.to_checksum_address(token0)
+        )
 
         amt_eth = Decimal(str(config.get("TRADE_SIZE_ETH", 0.1)))
         if amt_eth <= 0:
@@ -175,9 +179,9 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         dex_client = DexClient(web3, dex_info["router"])
 
         # métricas iniciais
-        liq = dex_client.get_liquidity(pair_addr, weth)                    # >>> RISK
-        price = dex_client.get_token_price(target_token, weth)             # >>> RISK
-        slip_limit = dex_client.calc_dynamic_slippage(pair_addr, weth, float(amt_eth))  # >>> RISK
+        liq = dex_client.get_liquidity(pair_addr, weth)
+        price = dex_client.get_token_price(target_token, weth)
+        slip_limit = dex_client.calc_dynamic_slippage(pair_addr, weth, float(amt_eth))
 
         # evento de recebimento
         risk_manager.record_event(
@@ -247,8 +251,6 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
             )
             safe_notify(bot, f"🚫 Token {target_token} com concentração alta de supply", loop)
             return
-
-        # preço e slippage já calculados acima
 
     except Exception as e:
         risk_manager.record_event(
@@ -325,13 +327,13 @@ async def executar_compra_e_monitoramento(
         # Aguarda receipt para coletar gas, bloco
         try:
             receipt = web3.eth.wait_for_transaction_receipt(tx_buy, timeout=120)
-            gas_used   = receipt.gasUsed
+            gas_used     = receipt.gasUsed
             gas_price_tx = (receipt.effectiveGasPrice or receipt.gasPrice) / 1e9
-            blk_tx     = receipt.blockNumber
+            blk_tx       = receipt.blockNumber
         except Exception:
-            gas_used    = None
-            gas_price_tx= gas_price
-            blk_tx      = block_number
+            gas_used     = None
+            gas_price_tx = gas_price
+            blk_tx       = block_number
 
         risk_manager.record_event(
             event="Compra realizada",
@@ -459,13 +461,13 @@ async def executar_compra_e_monitoramento(
                     # Aguarda receipt
                     try:
                         receipt = web3.eth.wait_for_transaction_receipt(tx_sell, timeout=120)
-                        gas_used    = receipt.gasUsed
-                        gas_price_tx= (receipt.effectiveGasPrice or receipt.gasPrice) / 1e9
-                        blk_tx      = receipt.blockNumber
+                        gas_used     = receipt.gasUsed
+                        gas_price_tx = (receipt.effectiveGasPrice or receipt.gasPrice) / 1e9
+                        blk_tx       = receipt.blockNumber
                     except Exception:
-                        gas_used    = None
-                        gas_price_tx= gas_price
-                        blk_tx      = web3.eth.get_block_number()
+                        gas_used     = None
+                        gas_price_tx = gas_price
+                        blk_tx       = web3.eth.get_block_number()
 
                     risk_manager.record_event(
                         event="Venda realizada",
