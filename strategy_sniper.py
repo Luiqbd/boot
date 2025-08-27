@@ -19,7 +19,6 @@ from utils import (
     configure_rate_limiter_from_config,
     get_token_balance
 )
-
 from risk_manager import risk_manager
 
 log = logging.getLogger("sniper")
@@ -137,14 +136,14 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
             return
 
         MAX_TAX = float(config.get("MAX_TAX_PCT", 10.0))
-        if is_token_concentrated(target, config.get("ETHERSCAN_API_KEY"), MAX_TAX):
+        if is_token_concentrated(target, MAX_TAX):
             reason = f"taxa > {MAX_TAX}%"
             risk_manager.record_event("pair_skipped", reason=reason, pair=pair_addr)
             safe_notify(bot, f"⚠️ Token ignorado: {reason}", loop)
             send_report(bot_notify, f"⚠️ Token ignorado por tax > {MAX_TAX}% — {target}")
             return
 
-        if not is_contract_verified(target, config.get("ETHERSCAN_API_KEY")) \
+        if not is_contract_verified(target) \
            and config.get("BLOCK_UNVERIFIED", False):
             reason = "contrato não verificado"
             risk_manager.record_event("pair_skipped", reason=reason, pair=pair_addr)
@@ -153,7 +152,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
             return
 
         TOP = float(config.get("TOP_HOLDER_LIMIT", 30.0))
-        if is_token_concentrated(target, config.get("ETHERSCAN_API_KEY"), TOP):
+        if is_token_concentrated(target, TOP):
             reason = "alta concentração de supply"
             risk_manager.record_event("pair_skipped", reason=reason, pair=pair_addr)
             safe_notify(bot, f"🚫 Token bloqueado: {reason}", loop)
@@ -185,18 +184,24 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
 
     # instancia executores
     try:
-        exchange = ExchangeClient(router_address=dex_info["router"])
-        trade_exec = TradeExecutor(exchange_client=exchange,
-                                   dry_run=config["DRY_RUN"])
-        safe_exec = SafeTradeExecutor(executor=trade_exec,
-                                      risk_manager=risk_manager)
+        exchange = ExchangeClient(
+            web3=web3,
+            private_key=config["PRIVATE_KEY"],
+            router_address=dex_info["router"],
+            chain_id=int(config.get("CHAIN_ID", 8453))
+        )
+        trade_exec = TradeExecutor(
+            exchange_client=exchange,
+            dry_run=config["DRY_RUN"]
+        )
+        safe_exec = SafeTradeExecutor(executor=trade_exec, risk_manager=risk_manager)
     except Exception as e:
         log.error(f"Erro ao criar executor: {e}", exc_info=True)
         risk_manager.record_event("error", reason=str(e), pair=pair_addr)
         send_report(bot_notify, f"❌ Erro ao criar executor: {e}")
         return
 
-    # executa compra
+# executa compra
     tx_buy = safe_exec.buy(
         token_in=weth,
         token_out=target,
@@ -273,18 +278,24 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
                 stop_price = highest * (1 - trail)
 
             if price >= tp_price or price <= stop_price or price <= hard_stop:
-                balance = get_token_balance(
-                    web3, target,
-                    exchange.wallet,
-                    exchange.erc20_abi
-                )
-                if balance <= 0:
+                # consulta saldo do token em wei
+                try:
+                    balance_wei = get_token_balance(web3, target, exchange.wallet)
+                except Exception as e:
+                    log.error(f"Erro ao obter saldo para {target}: {e}", exc_info=True)
                     break
+
+                if balance_wei <= 0:
+                    break
+
+                # converte wei para unidades humanas de token
+                decimals = exchange.get_token_decimals(target)
+                balance_tokens = Decimal(balance_wei) / (Decimal(10) ** decimals)
 
                 tx_sell = safe_exec.sell(
                     token_in=target,
                     token_out=weth,
-                    amount_eth=Decimal(str(balance)),
+                    amount_tokens=balance_tokens,
                     current_price=price,
                     last_trade_price=entry
                 )
@@ -293,7 +304,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
                     risk_manager.record_event(
                         "sell_success",
                         token=target,
-                        amount_eth=float(balance),
+                        amount_eth=float(balance_tokens),
                         price=float(price),
                         tx_hash=tx_sell
                     )
@@ -301,7 +312,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
                         success=True,
                         token=target,
                         direction="sell",
-                        trade_size_eth=float(balance),
+                        trade_size_eth=float(balance_tokens),
                         entry_price=float(entry),
                         exit_price=float(price),
                         tx_hash=tx_sell
@@ -311,14 +322,16 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
                     sold = True
                 else:
                     motivo = risk_manager.last_block_reason or "não informado"
-                    risk_manager.record_event("sell_failed",
-                                              token=target,
-                                              reason=motivo)
+                    risk_manager.record_event(
+                        "sell_failed",
+                        token=target,
+                        reason=motivo
+                    )
                     risk_manager.register_trade(
                         success=False,
                         token=target,
                         direction="sell",
-                        trade_size_eth=float(balance),
+                        trade_size_eth=float(balance_tokens),
                         entry_price=float(entry)
                     )
                     safe_notify(bot, f"⚠️ Venda falhou: {motivo}", loop)
