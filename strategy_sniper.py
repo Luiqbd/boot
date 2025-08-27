@@ -30,6 +30,9 @@ rate_limiter.set_notifier(lambda msg: safe_notify(bot_notify, msg))
 # cache local para evitar duplicatas rápidas (agressivo → 3s em vez de 5s)
 _PAIR_DUP_INTERVAL = 3
 
+# cache global para evitar duplicação entre callbacks de on_new_pair
+_recent_pairs: dict[tuple[str, str, str], float] = {}
+
 
 def notify(msg: str):
     coro = bot_notify.send_message(
@@ -43,8 +46,11 @@ def notify(msg: str):
         asyncio.run(coro)
 
 
-def safe_notify(alert: TelegramAlert | None, msg: str,
-                loop: asyncio.AbstractEventLoop | None = None):
+def safe_notify(
+    alert: TelegramAlert | None,
+    msg: str,
+    loop: asyncio.AbstractEventLoop | None = None
+):
     """Evita spam e envia notificação via TelegramAlert ou Bot."""
     now = time()
     key = hash(msg)
@@ -201,7 +207,6 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         f"Slippage: {slip}"
     )
 
-# instancia executores
     try:
         exchange = ExchangeClient(
             web3=web3,
