@@ -27,9 +27,8 @@ bot_notify = Bot(token=config["TELEGRAM_TOKEN"])
 configure_rate_limiter_from_config(config)
 rate_limiter.set_notifier(lambda msg: safe_notify(bot_notify, msg))
 
-# cache local para evitar duplicatas rápidas
-_recent_pairs: dict[tuple[str, str, str], float] = {}
-_PAIR_DUP_INTERVAL = 5
+# cache local para evitar duplicatas rápidas (agressivo → 3s em vez de 5s)
+_PAIR_DUP_INTERVAL = 3
 
 
 def notify(msg: str):
@@ -118,13 +117,17 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
             else Web3.to_checksum_address(token0)
         )
 
-        amt_eth = Decimal(str(config.get("TRADE_SIZE_ETH", 0.1)))
+        # 3) tamanho de trade maior (agressivo → 0.2 ETH em vez de 0.1)
+        amt_eth = Decimal(str(config.get("TRADE_SIZE_ETH", 0.2)))
         if amt_eth <= 0:
             raise ValueError("TRADE_SIZE_ETH inválido")
 
         dex_client = DexClient(web3, dex_info["router"])
-        MIN_LIQ = float(config.get("MIN_LIQ_WETH", 0.5))
+
+        # 4) limiar de liquidez abaixado (agressivo → aceita pools ≥ 0.25 WETH)
+        MIN_LIQ = float(config.get("MIN_LIQ_WETH", 0.25))
         liq_ok = dex_client.has_min_liquidity(pair_addr, weth, MIN_LIQ)
+
         price = dex_client.get_token_price(target, weth)
         slip = dex_client.calc_dynamic_slippage(pair_addr, weth, float(amt_eth))
 
@@ -135,7 +138,8 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
             send_report(bot_notify, f"⚠️ Pool ignorada: {reason} — {pair_addr}")
             return
 
-        MAX_TAX = float(config.get("MAX_TAX_PCT", 10.0))
+        # 5) permite taxa maior (agressivo → até 15%)
+        MAX_TAX = float(config.get("MAX_TAX_PCT", 15.0))
         if is_token_concentrated(target, MAX_TAX):
             reason = f"taxa > {MAX_TAX}%"
             risk_manager.record_event("pair_skipped", reason=reason, pair=pair_addr)
@@ -143,6 +147,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
             send_report(bot_notify, f"⚠️ Token ignorado por tax > {MAX_TAX}% — {target}")
             return
 
+        # 6) validação de contrato segue igual (bloqueia unverified se configurado)
         if not is_contract_verified(target) \
            and config.get("BLOCK_UNVERIFIED", False):
             reason = "contrato não verificado"
@@ -151,7 +156,8 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
             send_report(bot_notify, f"🚫 Token bloqueado: {reason} — {target}")
             return
 
-        TOP = float(config.get("TOP_HOLDER_LIMIT", 30.0))
+        # 7) aceita concentração de holder mais alta (agressivo → até 50%)
+        TOP = float(config.get("TOP_HOLDER_LIMIT", 50.0))
         if is_token_concentrated(target, TOP):
             reason = "alta concentração de supply"
             risk_manager.record_event("pair_skipped", reason=reason, pair=pair_addr)
@@ -200,7 +206,6 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         risk_manager.record_event("error", reason=str(e), pair=pair_addr)
         send_report(bot_notify, f"❌ Erro ao criar executor: {e}")
         return
-
 # executa compra
     tx_buy = safe_exec.buy(
         token_in=weth,
@@ -244,9 +249,13 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
 
     # inicia monitoramento para venda
     highest = price
-    tp_pct = float(config.get("TAKE_PROFIT_PCT", 0.2))
-    sl_pct = float(config.get("STOP_LOSS_PCT", 0.05))
-    trail = float(config.get("TRAIL_PCT", 0.05))
+
+    # 8) TAKE_PROFIT_PCT mais agressivo: 10%
+    tp_pct = float(config.get("TAKE_PROFIT_PCT", 0.1))
+    # 9) STOP_LOSS_PCT mais agressivo: 2%
+    sl_pct = float(config.get("STOP_LOSS_PCT", 0.02))
+    # 10) TRAIL_PCT mais agressivo: 2%
+    trail = float(config.get("TRAIL_PCT", 0.02))
 
     entry = price
     tp_price = entry * (1 + tp_pct)
@@ -338,7 +347,8 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
                     send_report(bot_notify, f"⚠️ Venda falhou:\nToken: {target}\nMotivo: {motivo}")
                 break
 
-            await asyncio.sleep(int(config.get("INTERVAL", 3)))
+            # 11) INTERVAL mais agressivo: 1 segundo
+            await asyncio.sleep(int(config.get("INTERVAL", 1)))
     finally:
         if not sold:
             safe_notify(bot, f"⏹ Monitoramento encerrado: {target}", loop)
