@@ -2,6 +2,7 @@ import os
 import json
 import logging
 from web3 import Web3
+from decimal import Decimal
 from config import config  # gas, deadline e slippage do ambiente
 
 logger = logging.getLogger(__name__)
@@ -34,7 +35,6 @@ V3_POOL_ABI = [
     ], "inputs": [], "stateMutability": "view", "type": "function"}
 ]
 
-# --- DexClient ---
 class DexClient:
     def __init__(self, web3, router_address):
         self.web3 = web3
@@ -122,6 +122,24 @@ class DexClient:
             logger.error(f"Erro ao calcular slippage ({version}): {e}", exc_info=True)
             return 0.005
 
+    def get_token_price(self, token_address, weth_address, amount_tokens=10**18):
+        """
+        Retorna o preço de `amount_tokens` unidades do token em WETH.
+        Usa getAmountsOut no router para converter token → WETH.
+        """
+        path = [
+            Web3.to_checksum_address(token_address),
+            Web3.to_checksum_address(weth_address)
+        ]
+        try:
+            amounts = self.router.functions.getAmountsOut(amount_tokens, path).call()
+            price = Decimal(amounts[-1]) / Decimal(10**18)
+            logger.info(f"[Price] 1 token ({token_address}) → {price:.6f} WETH")
+            return float(price)
+        except Exception as e:
+            logger.error(f"Erro ao obter preço do token {token_address}: {e}", exc_info=True)
+            return 0.0
+
 # --- Função principal de entrada ---
 def on_new_pair(pair_addr, target_token, dex_info, weth, min_liq_eth):
     if not rate_limiter.allow():
@@ -141,6 +159,9 @@ def on_new_pair(pair_addr, target_token, dex_info, weth, min_liq_eth):
         if tax > MAX_TAX_ALLOWED:
             logger.warning(f"[{pair_addr}] Taxa {tax*100:.2f}% acima do limite")
             return
+
+        price = dex_client.get_token_price(target_token, weth)
+        logger.info(f"[{pair_addr}] Preço inicial do token: {price:.6f} WETH")
 
         slip_limit = dex_client.calc_dynamic_slippage(pair_addr, weth, ENTRY_SIZE_ETH)
         logger.info(f"[{pair_addr}] Executando compra com slippage {slip_limit*100:.2f}%")
