@@ -1,4 +1,4 @@
-# strategy_sniper.py — Parte 1
+# strategy_sniper.py — Parte 1 (com send_report)
 
 import logging
 import asyncio
@@ -8,7 +8,7 @@ from web3 import Web3
 
 from config import config
 from telegram import Bot
-from telegram_alert import TelegramAlert
+from telegram_alert import TelegramAlert, send_report      # <-- import send_report
 from dex import DexClient
 from exchange_client import ExchangeClient
 from trade_executor import TradeExecutor
@@ -33,6 +33,7 @@ rate_limiter.set_notifier(lambda msg: safe_notify(bot_notify, msg))
 _recent_pairs: dict[tuple[str, str, str], float] = {}
 _PAIR_DUP_INTERVAL = 5
 
+
 def notify(msg: str):
     coro = bot_notify.send_message(
         chat_id=config["TELEGRAM_CHAT_ID"],
@@ -43,6 +44,7 @@ def notify(msg: str):
         loop.create_task(coro)
     except RuntimeError:
         asyncio.run(coro)
+
 
 def safe_notify(alert: TelegramAlert | None, msg: str, loop: asyncio.AbstractEventLoop | None = None):
     now = time()
@@ -67,11 +69,14 @@ def safe_notify(alert: TelegramAlert | None, msg: str, loop: asyncio.AbstractEve
     else:
         notify(msg)
 
+
 async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
     # 1) pausa por rate limiter
     if rate_limiter.is_paused():
-        risk_manager.record_event("pair_skipped", reason="API rate limit pause", dex=dex_info["name"], pair=pair_addr)
+        reason = "API rate limit pause"
+        risk_manager.record_event("pair_skipped", reason=reason, dex=dex_info["name"], pair=pair_addr)
         safe_notify(bot, "⏸️ Sniper pausado por limite de API. Ignorando pares.", loop)
+        send_report(bot_notify, "⏸️ Sniper pausado: limite de API. Ignorando pares.")
         return
 
     # 2) filtro de duplicata local
@@ -90,6 +95,11 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         pair=pair_addr,
         token_in=token0,
         token_out=token1
+    )
+    send_report(
+        bot_notify,
+        f"🆕 Novo par detectado em {dex_info['name']}\n"
+        f"Par: {pair_addr}\nTokens: {token0}/{token1}"
     )
 
     # prepara contexto
@@ -116,6 +126,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
             reason = f"liquidez < {MIN_LIQ} WETH"
             risk_manager.record_event("pair_skipped", reason=reason, pair=pair_addr)
             safe_notify(bot, f"⚠️ Pool ignorada: {reason}", loop)
+            send_report(bot_notify, f"⚠️ Pool ignorada: {reason} — {pair_addr}")
             return
 
         MAX_TAX = float(config.get("MAX_TAX_PCT", 10.0))
@@ -123,12 +134,14 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
             reason = f"taxa > {MAX_TAX}%"
             risk_manager.record_event("pair_skipped", reason=reason, pair=pair_addr)
             safe_notify(bot, f"⚠️ Token ignorado: {reason}", loop)
+            send_report(bot_notify, f"⚠️ Token ignorado por tax > {MAX_TAX}% — {target}")
             return
 
         if not is_contract_verified(target, config.get("ETHERSCAN_API_KEY")) and config.get("BLOCK_UNVERIFIED", False):
             reason = "contrato não verificado"
             risk_manager.record_event("pair_skipped", reason=reason, pair=pair_addr)
             safe_notify(bot, f"🚫 Token bloqueado: {reason}", loop)
+            send_report(bot_notify, f"🚫 Token bloqueado: {reason} — {target}")
             return
 
         TOP = float(config.get("TOP_HOLDER_LIMIT", 30.0))
@@ -136,11 +149,13 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
             reason = "alta concentração de supply"
             risk_manager.record_event("pair_skipped", reason=reason, pair=pair_addr)
             safe_notify(bot, f"🚫 Token bloqueado: {reason}", loop)
+            send_report(bot_notify, f"🚫 Token bloqueado: {reason} — {target}")
             return
 
     except Exception as e:
         log.error(f"Erro preparando contexto: {e}", exc_info=True)
         risk_manager.record_event("error", reason=str(e), pair=pair_addr)
+        send_report(bot_notify, f"❌ Erro preparando contexto: {e}")
         return
 
     # pronta para tentar compra
@@ -151,10 +166,16 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         price=float(price),
         slippage=float(slip)
     )
+    send_report(
+        bot_notify,
+        f"💰 Tentativa de compra iniciada:\n"
+        f"Token: {target}\n"
+        f"Valor em ETH: {amt_eth}\n"
+        f"Preço: {price}\n"
+        f"Slippage: {slip}"
+    )
 
-# strategy_sniper.py — Parte 2
-
-    # setup do executor
+# setup do executor
     try:
         exchange = ExchangeClient(router_address=dex_info["router"])
         trade_exec = TradeExecutor(exchange_client=exchange, dry_run=config["DRY_RUN"])
@@ -162,6 +183,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
     except Exception as e:
         log.error(f"Erro ao criar executor: {e}", exc_info=True)
         risk_manager.record_event("error", reason=str(e), pair=pair_addr)
+        send_report(bot_notify, f"❌ Erro ao criar executor: {e}")
         return
 
     # executa compra
@@ -192,6 +214,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
             tx_hash=tx_buy
         )
         safe_notify(bot, f"✅ Compra realizada: {target}\nTX: {tx_buy}", loop)
+        send_report(bot_notify, f"✅ Compra realizada:\nToken: {target}\nTX: {tx_buy}")
     else:
         motivo = risk_manager.last_block_reason or "não informado"
         risk_manager.record_event("buy_failed", token=target, reason=motivo)
@@ -203,9 +226,10 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
             entry_price=float(price)
         )
         safe_notify(bot, f"🚫 Compra falhou: {motivo}", loop)
+        send_report(bot_notify, f"🚫 Compra falhou:\nToken: {target}\nMotivo: {motivo}")
         return
 
-    # monitoramento para venda
+    # inicia monitoramento para venda
     highest = price
     tp_pct = float(config.get("TAKE_PROFIT_PCT", 0.2))
     sl_pct = float(config.get("STOP_LOSS_PCT", 0.05))
@@ -216,6 +240,16 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
     hard_stop = entry * (1 - sl_pct)
     stop_price = highest * (1 - trail)
     sold = False
+
+    send_report(
+        bot_notify,
+        "🚀 Iniciando monitoramento de venda:\n"
+        f"Token: {target}\n"
+        f"Entry: {entry:.6f}\n"
+        f"TP: {tp_price:.6f} ({tp_pct*100:.1f}%)\n"
+        f"SL: {hard_stop:.6f} ({sl_pct*100:.1f}%)\n"
+        f"Trail: {trail*100:.1f}%"
+    )
 
     from discovery import is_discovery_running
     try:
@@ -264,6 +298,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
                         tx_hash=tx_sell
                     )
                     safe_notify(bot, f"💰 Venda realizada: {target}\nTX: {tx_sell}", loop)
+                    send_report(bot_notify, f"💰 Venda realizada:\nToken: {target}\nTX: {tx_sell}")
                     sold = True
                 else:
                     motivo = risk_manager.last_block_reason or "não informado"
@@ -276,9 +311,11 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
                         entry_price=float(entry)
                     )
                     safe_notify(bot, f"⚠️ Venda falhou: {motivo}", loop)
+                    send_report(bot_notify, f"⚠️ Venda falhou:\nToken: {target}\nMotivo: {motivo}")
                 break
 
             await asyncio.sleep(int(config.get("INTERVAL", 3)))
     finally:
         if not sold:
             safe_notify(bot, f"⏹ Monitoramento encerrado: {target}", loop)
+            send_report(bot_notify, f"⏹ Monitoramento encerrado:\nToken: {target}")
