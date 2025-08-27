@@ -39,10 +39,19 @@ app = Flask(__name__)
 loop = asyncio.new_event_loop()
 application = None
 sniper_thread = None
+_recent_pairs = set()  # mantém pares já notificados para evitar duplicatas
+
+# callback de par com filtro de duplicatas
+def _pair_callback(dex, pair, t0, t1):
+    key = f"{dex}-{pair}"
+    if key in _recent_pairs:
+        return
+    _recent_pairs.add(key)
+    on_new_pair(dex, pair, t0, t1, bot=application.bot, loop=loop)
 
 # ambiente
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-WEBHOOK_URL    = os.getenv("WEBHOOK_URL")
+TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN")
+WEBHOOK_URL      = os.getenv("WEBHOOK_URL")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "0")
 
 # auxiliares
@@ -83,21 +92,18 @@ def env_summary_text() -> str:
 
 # sniper thread
 def iniciar_sniper():
-    global sniper_thread
+    global sniper_thread, _recent_pairs
     if sniper_thread and sniper_thread.is_alive():
         logging.info("⚠️ Sniper já rodando.")
         return
 
     logging.info("⚙️ Iniciando sniper...")
+    _recent_pairs.clear()  # resetar histórico a cada start
+
     def _run():
         try:
             asyncio.run_coroutine_threadsafe(
-                run_discovery(
-                    lambda dex, p, t0, t1: on_new_pair(
-                        dex, p, t0, t1, bot=application.bot, loop=loop
-                    ),
-                    loop
-                ),
+                run_discovery(_pair_callback, loop),
                 loop
             )
         except Exception as e:
@@ -241,7 +247,7 @@ if __name__ == "__main__":
     if not TELEGRAM_TOKEN:
         logging.error("Falta TELEGRAM_TOKEN.")
         raise SystemExit(1)
-    missing = [k for k in ("RPC_URL","PRIVATE_KEY","CHAIN_ID") if not os.getenv(k)]
+    missing = [k for k in ("RPC_URL", "PRIVATE_KEY", "CHAIN_ID") if not os.getenv(k)]
     if missing:
         logging.error(f"Faltam variáveis: {missing}")
         raise SystemExit(1)
