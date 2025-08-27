@@ -1,5 +1,3 @@
-# strategy_sniper.py — Parte 1 (com send_report)
-
 import logging
 import asyncio
 from decimal import Decimal
@@ -8,7 +6,7 @@ from web3 import Web3
 
 from config import config
 from telegram import Bot
-from telegram_alert import TelegramAlert, send_report      # <-- import send_report
+from telegram_alert import TelegramAlert, send_report
 from dex import DexClient
 from exchange_client import ExchangeClient
 from trade_executor import TradeExecutor
@@ -33,7 +31,6 @@ rate_limiter.set_notifier(lambda msg: safe_notify(bot_notify, msg))
 _recent_pairs: dict[tuple[str, str, str], float] = {}
 _PAIR_DUP_INTERVAL = 5
 
-
 def notify(msg: str):
     coro = bot_notify.send_message(
         chat_id=config["TELEGRAM_CHAT_ID"],
@@ -44,7 +41,6 @@ def notify(msg: str):
         loop.create_task(coro)
     except RuntimeError:
         asyncio.run(coro)
-
 
 def safe_notify(alert: TelegramAlert | None, msg: str, loop: asyncio.AbstractEventLoop | None = None):
     now = time()
@@ -68,7 +64,6 @@ def safe_notify(alert: TelegramAlert | None, msg: str, loop: asyncio.AbstractEve
                 asyncio.run(coro)
     else:
         notify(msg)
-
 
 async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
     # 1) pausa por rate limiter
@@ -99,7 +94,8 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
     send_report(
         bot_notify,
         f"🆕 Novo par detectado em {dex_info['name']}\n"
-        f"Par: {pair_addr}\nTokens: {token0}/{token1}"
+        f"Par: {pair_addr}\n"
+        f"Tokens: {token0}/{token1}"
     )
 
     # prepara contexto
@@ -280,6 +276,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
                     current_price=price,
                     last_trade_price=entry
                 )
+
                 if tx_sell:
                     risk_manager.record_event(
                         "sell_success",
