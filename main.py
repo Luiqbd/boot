@@ -1,4 +1,4 @@
-# main.py — Parte 1/2
+# main.py
 import os
 import asyncio
 import logging
@@ -43,9 +43,9 @@ application = None
 sniper_thread = None
 
 # --- Variáveis de ambiente ---
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "0")
+TELEGRAM_TOKEN  = os.getenv("TELEGRAM_TOKEN")
+WEBHOOK_URL     = os.getenv("WEBHOOK_URL")
+TELEGRAM_CHAT_ID= os.getenv("TELEGRAM_CHAT_ID", "0")
 
 # --- Funções auxiliares ---
 def str_to_bool(v: str) -> bool:
@@ -95,7 +95,6 @@ def iniciar_sniper():
 
     def start_sniper():
         try:
-            # Corrigido: executa coroutine de forma thread-safe no loop existente
             asyncio.run_coroutine_threadsafe(
                 run_discovery(
                     lambda dex, pair, t0, t1: on_new_pair(
@@ -126,7 +125,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🏓 /ping — Teste de vida.\n"
         "🛰️ /testnotify — Mensagem de teste.\n"
         "📜 /menu — Reexibe este menu.\n"
-        "📊 /relatorio — Gera relatório do RiskManager.\n"
+        "📊 /relatorios — Gera relatório do RiskManager.\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "🛠 **Configuração Atual**\n"
         f"{env_summary_text()}\n"
@@ -170,14 +169,14 @@ async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def ping_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uptime_seconds = int(time.time() - context.bot_data.get("start_time", time.time()))
-    uptime_str = str(datetime.timedelta(seconds=uptime_seconds))
-    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    uptime_str     = str(datetime.timedelta(seconds=uptime_seconds))
+    now_str        = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     await update.message.reply_text(f"pong 🏓\n⏱ Uptime: {uptime_str}\n🕒 Agora: {now_str}")
 
 async def test_notify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         chat_id_str = TELEGRAM_CHAT_ID or "0"
-        chat_id = int(chat_id_str) if chat_id_str.isdigit() else 0
+        chat_id     = int(chat_id_str) if chat_id_str.isdigit() else 0
         if chat_id == 0:
             await update.message.reply_text("⚠️ TELEGRAM_CHAT_ID ausente ou inválido nas variáveis de ambiente.")
             return
@@ -187,7 +186,12 @@ async def test_notify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await context.bot.send_message(
             chat_id=chat_id,
-            text=f"✅ Teste de notificação\n🕒 {timestamp}\n🆔 {unique_id}\n💬 Sniper pronto para narrar as operações!"
+            text=(
+                "✅ Teste de notificação\n"
+                f"🕒 {timestamp}\n"
+                f"🆔 {unique_id}\n"
+                "💬 Sniper pronto para narrar as operações!"
+            )
         )
         await update.message.reply_text(f"Mensagem de teste enviada (ID: {unique_id})")
     except Exception as e:
@@ -207,9 +211,9 @@ async def relatorio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def health():
     return "ok", 200
 
-# --- Rota HTTP para relatório ---
-@app.route("/relatorio", methods=["GET"])
-def relatorio_http():
+# --- Rota HTTP para relatórios (plural) ---
+@app.route("/relatorios", methods=["GET"])
+def relatorios_http():
     try:
         rel = risk_manager.gerar_relatorio()
         return f"<h1>📊 Relatório de Eventos</h1><pre>{rel}</pre>"
@@ -223,7 +227,7 @@ def webhook():
     try:
         if application is None:
             return 'not ready', 503
-        data = request.get_json(force=True)
+        data   = request.get_json(force=True)
         update = Update.de_json(data, application.bot)
         asyncio.run_coroutine_threadsafe(application.process_update(update), loop)
         return 'ok', 200
@@ -283,7 +287,7 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("sniperstatus", sniper_status_cmd))
     application.add_handler(CommandHandler("ping", ping_cmd))
     application.add_handler(CommandHandler("testnotify", test_notify_cmd))
-    application.add_handler(CommandHandler("relatorio", relatorio_cmd))
+    application.add_handler(CommandHandler("relatorios", relatorio_cmd))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
     async def start_bot():
@@ -291,15 +295,15 @@ if __name__ == "__main__":
         await application.initialize()
         await application.start()
         await application.bot.set_my_commands([
-            BotCommand("start", "Mostra boas-vindas e configuração"),
-            BotCommand("menu", "Reexibe o menu"),
-            BotCommand("status", "Mostra saldo ETH/WETH da carteira"),
-            BotCommand("snipe", "Inicia o sniper"),
-            BotCommand("stop", "Para o sniper"),
-            BotCommand("sniperstatus", "Status do sniper"),
-            BotCommand("ping", "Teste de vida (pong)"),
-            BotCommand("testnotify", "Envia uma notificação de teste"),
-            BotCommand("relatorio", "Mostra o relatório de eventos")
+            BotCommand("start",       "Mostra boas-vindas e configuração"),
+            BotCommand("menu",        "Reexibe o menu"),
+            BotCommand("status",      "Mostra saldo ETH/WETH da carteira"),
+            BotCommand("snipe",       "Inicia o sniper"),
+            BotCommand("stop",        "Para o sniper"),
+            BotCommand("sniperstatus","Status do sniper"),
+            BotCommand("ping",        "Teste de vida (pong)"),
+            BotCommand("testnotify",  "Envia uma notificação de teste"),
+            BotCommand("relatorios",  "Mostra o relatório de eventos")
         ])
 
     # Agenda o bot, inicia Flask e registra o webhook
