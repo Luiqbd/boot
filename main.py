@@ -17,57 +17,39 @@ import datetime
 import uuid
 from web3 import Web3
 
-# sniper e discovery
 from check_balance import get_wallet_status
 from strategy_sniper import on_new_pair
 from discovery import run_discovery, stop_discovery, get_discovery_status
 from config import config
-
-# importa o singleton
 from risk_manager import risk_manager
 
-# log básico
+# -------------------------------------------------------------------
+# Logging
+# -------------------------------------------------------------------
 logging.basicConfig(
     format='[%(asctime)s] %(levelname)s - %(message)s',
     level=logging.INFO
 )
 
-# Flask
+# -------------------------------------------------------------------
+# Flask app & Event Loop
+# -------------------------------------------------------------------
 app = Flask(__name__)
 
-# globals
 loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
+
 application = None
-sniper_thread = None
-_recent_pairs = set()  # mantém pares já notificados para evitar duplicatas
+discovery_future: asyncio.Future = None
+_recent_pairs = set()
 
-# callback de par com filtro de duplicatas
-def _pair_callback(dex, pair, t0, t1):
-    key = f"{dex}-{pair}"
-    if key in _recent_pairs:
-        return
-    _recent_pairs.add(key)
-
-    def _schedule_on_new_pair():
-        task = loop.create_task(
-            on_new_pair(dex, pair, t0, t1, bot=application.bot, loop=loop)
-        )
-        def _on_error(fut: asyncio.Future):
-            if fut.cancelled():
-                return
-            exc = fut.exception()
-            if exc:
-                logging.error("❌ Erro em on_new_pair", exc_info=True)
-        task.add_done_callback(_on_error)
-
-    loop.call_soon_threadsafe(_schedule_on_new_pair)
-
-# ambiente
+# -------------------------------------------------------------------
+# Environment / Helpers
+# -------------------------------------------------------------------
 TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN")
 WEBHOOK_URL      = os.getenv("WEBHOOK_URL")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "0")
 
-# auxiliares
 def str_to_bool(v: str) -> bool:
     return v.strip().lower() in {"1", "true", "t", "yes", "y"}
 
@@ -103,32 +85,69 @@ def env_summary_text() -> str:
         f"🧪 Dry Run: {os.getenv('DRY_RUN')}"
     )
 
-# sniper thread
+# -------------------------------------------------------------------
+# Callback de novo par
+# -------------------------------------------------------------------
+def _pair_callback(dex, pair, t0, t1):
+    key = f"{dex}-{pair}"
+    if key in _recent_pairs:
+        return
+    _recent_pairs.add(key)
+    logging.info(f"🔍 Par detectado: {dex}-{pair} — agendando on_new_pair")
+
+    fut = asyncio.run_coroutine_threadsafe(
+        on_new_pair(dex, pair, t0, t1, bot=application.bot, loop=loop),
+        loop
+    )
+    def _on_done(f: asyncio.Future):
+        if f.cancelled():
+            logging.warning(f"⚠️ on_new_pair cancelado para {dex}-{pair}")
+            return
+        exc = f.exception()
+        if exc:
+            logging.error("❌ Erro em on_new_pair", exc_info=True)
+        else:
+            logging.info(f"✅ on_new_pair concluído para {dex}-{pair}")
+    fut.add_done_callback(_on_done)
+
+# -------------------------------------------------------------------
+# Iniciar / Parar Sniper
+# -------------------------------------------------------------------
 def iniciar_sniper():
-    global sniper_thread, _recent_pairs
-    if sniper_thread and sniper_thread.is_alive():
+    global discovery_future, _recent_pairs
+
+    if discovery_future and not discovery_future.done():
         logging.info("⚠️ Sniper já rodando.")
         return
 
     logging.info("⚙️ Iniciando sniper...")
     _recent_pairs.clear()
 
-    def _run():
-        try:
-            asyncio.run_coroutine_threadsafe(
-                run_discovery(_pair_callback, loop),
-                loop
-            )
-        except Exception as e:
-            logging.error(f"Erro no sniper: {e}", exc_info=True)
-
-    sniper_thread = Thread(target=_run, daemon=True)
-    sniper_thread.start()
+    discovery_future = asyncio.run_coroutine_threadsafe(
+        run_discovery(_pair_callback, loop),
+        loop
+    )
+    def _on_disc_done(f: asyncio.Future):
+        if f.cancelled():
+            logging.info("🛑 run_discovery cancelado.")
+            return
+        exc = f.exception()
+        if exc:
+            logging.error("❌ Erro em run_discovery", exc_info=True)
+        else:
+            logging.info("✅ run_discovery finalizado.")
+    discovery_future.add_done_callback(_on_disc_done)
 
 def parar_sniper():
-    stop_discovery(loop)
+    logging.info("🛑 Parando sniper...")
+    try:
+        stop_discovery(loop)
+    except Exception as e:
+        logging.error("Erro ao parar discovery", exc_info=True)
 
-# handlers Telegram
+# -------------------------------------------------------------------
+# Handlers Telegram
+# -------------------------------------------------------------------
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto = (
         "🎯 *Sniper Bot*\n\n"
@@ -159,9 +178,6 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Erro ao verificar carteira.")
 
 async def snipe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if sniper_thread and sniper_thread.is_alive():
-        await update.message.reply_text("⚠️ Sniper já rodando.")
-        return
     await update.message.reply_text("⚙️ Iniciando sniper...")
     iniciar_sniper()
 
@@ -205,12 +221,13 @@ async def relatorio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"/relatorio erro: {e}", exc_info=True)
         await update.message.reply_text("⚠️ Erro ao gerar relatório.")
 
-# Healthcheck
+# -------------------------------------------------------------------
+# HTTP Endpoints
+# -------------------------------------------------------------------
 @app.route("/", methods=["GET", "HEAD"])
 def health():
     return "ok", 200
 
-# HTTP /relatorio
 @app.route("/relatorio", methods=["GET"])
 def relatorio_http():
     try:
@@ -220,7 +237,6 @@ def relatorio_http():
         logging.error(f"HTTP relatório erro: {e}", exc_info=True)
         return "Erro", 500
 
-# Webhook
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
@@ -229,7 +245,7 @@ def webhook():
         data = request.get_json(force=True)
         update = Update.de_json(data, application.bot)
         asyncio.run_coroutine_threadsafe(
-            application.process_update(update),
+            application.process_update(update), 
             loop
         )
         return "ok", 200
@@ -237,7 +253,6 @@ def webhook():
         app.logger.error(f"Webhook erro: {e}", exc_info=True)
         return "error", 500
 
-# registra webhook Telegram com retry
 def set_webhook_with_retry(attempts=5, delay=3):
     if not TELEGRAM_TOKEN or not WEBHOOK_URL:
         logging.error("WEBHOOK não configurado.")
@@ -258,14 +273,13 @@ def start_flask():
     port = int(os.getenv("PORT", 10000))
     app.run(host="0.0.0.0", port=port, threaded=True)
 
-# boot
+# -------------------------------------------------------------------
+# Boot
+# -------------------------------------------------------------------
 if __name__ == "__main__":
-    if not TELEGRAM_TOKEN:
-        logging.error("Falta TELEGRAM_TOKEN.")
-        raise SystemExit(1)
-    missing = [k for k in ("RPC_URL", "PRIVATE_KEY", "CHAIN_ID") if not os.getenv(k)]
+    missing = [k for k in ("TELEGRAM_TOKEN", "RPC_URL", "PRIVATE_KEY", "CHAIN_ID") if not os.getenv(k)]
     if missing:
-        logging.error(f"Faltam variáveis: {missing}")
+        logging.error(f"Faltam variáveis de ambiente: {missing}")
         raise SystemExit(1)
 
     try:
@@ -275,10 +289,8 @@ if __name__ == "__main__":
         logging.error(f"Chave inválida: {e}", exc_info=True)
         raise SystemExit(1)
 
-    asyncio.set_event_loop(loop)
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
-    # registra handlers
     application.add_handler(CommandHandler("start", start_cmd))
     application.add_handler(CommandHandler("menu", menu_cmd))
     application.add_handler(CommandHandler("status", status_cmd))
