@@ -109,27 +109,40 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
 
     # prepara contexto
     try:
-        web3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
-        weth = Web3.to_checksum_address(config["WETH"])
-        target = (
+        web3      = Web3(Web3.HTTPProvider(config["RPC_URL"]))
+        weth_addr = Web3.to_checksum_address(config["WETH"])
+        wallet    = Web3.to_checksum_address(config["WALLET_ADDRESS"])
+        target    = (
             Web3.to_checksum_address(token1)
-            if token0.lower() == weth.lower()
+            if token0.lower() == weth_addr.lower()
             else Web3.to_checksum_address(token0)
         )
 
-        # 3) tamanho de trade maior (agressivo → 0.2 ETH em vez de 0.1)
-        amt_eth = Decimal(str(config.get("TRADE_SIZE_ETH", 0.2)))
-        if amt_eth <= 0:
-            raise ValueError("TRADE_SIZE_ETH inválido")
+        # 3) ajuste dinâmico de tamanho de trade baseado no saldo de WETH
+        balance_wei = get_token_balance(web3, weth_addr, wallet)
+        balance_eth = Decimal(balance_wei) / Decimal(10 ** 18)
+
+        conf_size = Decimal(str(config.get("TRADE_SIZE_ETH", 0.2)))
+        # usa até 90% do saldo disponível
+        amt_eth = min(conf_size, (balance_eth * Decimal("0.9")).quantize(conf_size))
+
+        if amt_eth <= Decimal("0"):
+            reason = f"Saldo insuficiente ({balance_eth:.6f} ETH)"
+            risk_manager.record_event("pair_skipped", reason=reason, pair=pair_addr)
+            safe_notify(bot, f"⚠️ {reason}", loop)
+            send_report(bot_notify, f"⚠️ {reason} — {pair_addr}")
+            return
+
+        log.info(f"Usando {amt_eth} ETH para comprar em {pair_addr} (saldo = {balance_eth:.6f} ETH)")
 
         dex_client = DexClient(web3, dex_info["router"])
 
         # 4) limiar de liquidez abaixado (agressivo → aceita pools ≥ 0.25 WETH)
         MIN_LIQ = float(config.get("MIN_LIQ_WETH", 0.25))
-        liq_ok = dex_client.has_min_liquidity(pair_addr, weth, MIN_LIQ)
+        liq_ok = dex_client.has_min_liquidity(pair_addr, weth_addr, MIN_LIQ)
 
-        price = dex_client.get_token_price(target, weth)
-        slip = dex_client.calc_dynamic_slippage(pair_addr, weth, float(amt_eth))
+        price = dex_client.get_token_price(target, weth_addr)
+        slip  = dex_client.calc_dynamic_slippage(pair_addr, weth_addr, float(amt_eth))
 
         if not liq_ok:
             reason = f"liquidez < {MIN_LIQ} WETH"
@@ -188,7 +201,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         f"Slippage: {slip}"
     )
 
-    # instancia executores
+# instancia executores
     try:
         exchange = ExchangeClient(
             web3=web3,
@@ -206,9 +219,10 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         risk_manager.record_event("error", reason=str(e), pair=pair_addr)
         send_report(bot_notify, f"❌ Erro ao criar executor: {e}")
         return
-# executa compra
+
+    # executa compra com valor em ETH já ajustado
     tx_buy = safe_exec.buy(
-        token_in=weth,
+        token_in=weth_addr,
         token_out=target,
         amount_eth=amt_eth,
         current_price=price,
@@ -277,7 +291,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
     try:
         while is_discovery_running():
             try:
-                price = dex_client.get_token_price(target, weth)
+                price = dex_client.get_token_price(target, weth_addr)
             except Exception:
                 await asyncio.sleep(1)
                 continue
@@ -303,7 +317,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
 
                 tx_sell = safe_exec.sell(
                     token_in=target,
-                    token_out=weth,
+                    token_out=weth_addr,
                     amount_tokens=balance_tokens,
                     current_price=price,
                     last_trade_price=entry
