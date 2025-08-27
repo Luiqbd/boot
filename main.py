@@ -48,11 +48,19 @@ def _pair_callback(dex, pair, t0, t1):
         return
     _recent_pairs.add(key)
 
-    # agenda a execução da coroutine on_new_pair no event loop
-    asyncio.run_coroutine_threadsafe(
-        on_new_pair(dex, pair, t0, t1, bot=application.bot, loop=loop),
-        loop
-    )
+    def _schedule_on_new_pair():
+        task = loop.create_task(
+            on_new_pair(dex, pair, t0, t1, bot=application.bot, loop=loop)
+        )
+        def _on_error(fut: asyncio.Future):
+            if fut.cancelled():
+                return
+            exc = fut.exception()
+            if exc:
+                logging.error("❌ Erro em on_new_pair", exc_info=True)
+        task.add_done_callback(_on_error)
+
+    loop.call_soon_threadsafe(_schedule_on_new_pair)
 
 # ambiente
 TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN")
@@ -103,7 +111,7 @@ def iniciar_sniper():
         return
 
     logging.info("⚙️ Iniciando sniper...")
-    _recent_pairs.clear()  # resetar histórico a cada start
+    _recent_pairs.clear()
 
     def _run():
         try:
