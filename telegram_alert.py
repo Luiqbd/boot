@@ -1,5 +1,7 @@
 import asyncio
 import logging
+from telegram import Bot
+from config import config
 
 logger = logging.getLogger(__name__)
 
@@ -9,11 +11,12 @@ def _chunk(text: str, size: int = TELEGRAM_MAX_LEN):
     for i in range(0, len(text), size):
         yield text[i:i + size]
 
+
 class TelegramAlert:
     def __init__(
         self,
-        bot,
-        chat_id,
+        bot: Bot,
+        chat_id: int,
         loop: asyncio.AbstractEventLoop | None = None,
         *,
         parse_mode: str | None = None,
@@ -94,3 +97,32 @@ class TelegramAlert:
                     f"Retentando em {backoff:.1f}s."
                 )
                 await asyncio.sleep(backoff)
+
+
+def send_report(
+    bot: Bot,
+    message: str,
+    chat_id: int | None = None
+) -> bool:
+    """
+    Envia um relatório pelo Telegram usando TelegramAlert.
+    Se chat_id não for fornecido, usa o padrão em config["TELEGRAM_CHAT_ID"].
+    Retorna True se o envio foi agendado/executado com sucesso.
+    """
+    target_chat = chat_id or config["TELEGRAM_CHAT_ID"]
+    # Tenta usar o loop corrente, se houver
+    loop = None
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    alert = TelegramAlert(
+        bot=bot,
+        chat_id=target_chat,
+        loop=loop,
+        parse_mode=None,
+        disable_web_page_preview=True,
+        disable_notification=False
+    )
+    return alert.send(message)
