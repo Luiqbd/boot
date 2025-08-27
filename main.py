@@ -47,7 +47,12 @@ def _pair_callback(dex, pair, t0, t1):
     if key in _recent_pairs:
         return
     _recent_pairs.add(key)
-    on_new_pair(dex, pair, t0, t1, bot=application.bot, loop=loop)
+
+    # agenda a execução da coroutine on_new_pair no event loop
+    asyncio.run_coroutine_threadsafe(
+        on_new_pair(dex, pair, t0, t1, bot=application.bot, loop=loop),
+        loop
+    )
 
 # ambiente
 TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN")
@@ -215,7 +220,10 @@ def webhook():
             return "not ready", 503
         data = request.get_json(force=True)
         update = Update.de_json(data, application.bot)
-        asyncio.run_coroutine_threadsafe(application.process_update(update), loop)
+        asyncio.run_coroutine_threadsafe(
+            application.process_update(update),
+            loop
+        )
         return "ok", 200
     except Exception as e:
         app.logger.error(f"Webhook erro: {e}", exc_info=True)
