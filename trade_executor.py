@@ -1,3 +1,4 @@
+# trade_executor.py
 import time
 import logging
 from decimal import Decimal, InvalidOperation
@@ -6,7 +7,6 @@ from web3 import Web3
 
 logger = logging.getLogger(__name__)
 
-# ABI mínima para fallback de consulta de decimals
 ERC20_DECIMALS_ABI = [{
     "type": "function",
     "name": "decimals",
@@ -15,19 +15,13 @@ ERC20_DECIMALS_ABI = [{
     "outputs": [{"name": "", "type": "uint8"}],
 }]
 
-
 class TradeExecutor:
     def __init__(self, exchange_client, dry_run: bool = False, dedupe_ttl_sec: int = 5):
-        """
-        :param exchange_client: instância do ExchangeClient já configurada
-        :param dry_run: se True, não envia transações on-chain
-        :param dedupe_ttl_sec: tempo mínimo entre operações iguais (segundos)
-        """
-        self.client = exchange_client
-        self.dry_run = dry_run
-        self._lock = RLock()
-        self._recent = {}  # {(side, token_in, token_out): last_ts}
-        self._ttl = dedupe_ttl_sec
+        self.client   = exchange_client
+        self.dry_run  = dry_run
+        self._lock    = RLock()
+        self._recent  = {}
+        self._ttl     = dedupe_ttl_sec
 
     def _now(self) -> int:
         return int(time.time())
@@ -41,11 +35,9 @@ class TradeExecutor:
         return addr
 
     def _key(self, side: str, token_in: str, token_out: str) -> tuple:
-        return (
-            side,
-            self._normalize_addr(token_in),
-            self._normalize_addr(token_out),
-        )
+        return (side,
+                self._normalize_addr(token_in),
+                self._normalize_addr(token_out))
 
     def _is_duplicate(self, side, token_in, token_out) -> bool:
         with self._lock:
@@ -65,6 +57,15 @@ class TradeExecutor:
         except (InvalidOperation, ValueError) as e:
             raise ValueError(f"Quantidade ETH inválida: {amount_eth} ({e})")
 
+    def _decimals(self, token_address: str) -> int:
+        if hasattr(self.client, "get_token_decimals"):
+            return int(self.client.get_token_decimals(token_address))
+        erc20 = self.client.web3.eth.contract(
+            address=Web3.to_checksum_address(token_address),
+            abi=ERC20_DECIMALS_ABI
+        )
+        return int(erc20.functions.decimals().call())
+
     def _to_base_units(self, amount_tokens, decimals: int) -> int:
         try:
             amt = Decimal(str(amount_tokens))
@@ -75,22 +76,7 @@ class TradeExecutor:
         except (InvalidOperation, ValueError) as e:
             raise ValueError(f"Quantidade de tokens inválida: {amount_tokens} ({e})")
 
-    def _decimals(self, token_address: str) -> int:
-        # Prefere método do ExchangeClient
-        if hasattr(self.client, "get_token_decimals"):
-            return int(self.client.get_token_decimals(token_address))
-        # Fallback direto on-chain
-        erc20 = self.client.web3.eth.contract(
-            address=Web3.to_checksum_address(token_address),
-            abi=ERC20_DECIMALS_ABI
-        )
-        return int(erc20.functions.decimals().call())
-
     def buy(self, token_in: str, token_out: str, amount_eth, amount_out_min: int | None = None):
-        """
-        token_in: WETH/ETH, token_out: TOKEN
-        amount_eth: valor em ETH (humano)
-        """
         if self._is_duplicate("buy", token_in, token_out):
             logger.warning("Ordem de compra duplicada recente — ignorando")
             return None
@@ -102,7 +88,7 @@ class TradeExecutor:
             return None
 
         if self.dry_run:
-            logger.info(f"[DRY_RUN] Compra simulada {token_in}->{token_out} amount_eth={amount_eth}")
+            logger.info(f"[DRY_RUN] Compra simulada {token_in}->{token_out} eth={amount_eth}")
             return "0xDRYRUN"
 
         try:
@@ -120,10 +106,6 @@ class TradeExecutor:
             return None
 
     def sell(self, token_in: str, token_out: str, amount_tokens, amount_out_min: int | None = None):
-        """
-        token_in: TOKEN, token_out: WETH/ETH
-        amount_tokens: quantidade humana (ex.: 1.5 tokens)
-        """
         if self._is_duplicate("sell", token_in, token_out):
             logger.warning("Ordem de venda duplicada recente — ignorando")
             return None
