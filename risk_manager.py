@@ -1,3 +1,4 @@
+# risk_manager.py
 import os
 import logging
 from decimal import Decimal
@@ -7,22 +8,18 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 # Credenciais Telegram via variáveis de ambiente
-BOT_TOKEN = os.getenv("BOT_TOKEN", "SEU_BOT_TOKEN")
-CHAT_ID   = os.getenv("CHAT_ID",   "SEU_CHAT_ID")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+CHAT_ID   = os.getenv("CHAT_ID", "").strip()
 
 def send_telegram(msg: str):
-    """
-    Envia mensagem para o Telegram usando BOT_TOKEN e CHAT_ID.
-    Se faltar configuração, emite warning e não tenta enviar.
-    """
     if not BOT_TOKEN or not CHAT_ID:
         logger.warning("[TELEGRAM] credenciais não configuradas. Pulei o envio.")
         return
-
     try:
         requests.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            data={"chat_id": CHAT_ID, "text": msg}
+            data={"chat_id": CHAT_ID, "text": msg},
+            timeout=5
         )
     except Exception as e:
         logger.error(f"[TELEGRAM] Falha ao enviar: {e}")
@@ -91,27 +88,23 @@ class RiskManager:
             self.last_block_reason = None
 
         icone = {
-            "bloqueio": "🚫",
-            "liberado": "✅",
-            "erro_trade": "❌",
-            "sucesso_trade": "📈",
-            "trade_perdido": "📉"
+            "bloqueio":       "🚫",
+            "liberado":       "✅",
+            "erro_trade":     "❌",
+            "sucesso_trade":  "📈",
+            "trade_perdido":  "📉"
         }.get(tipo, "📊")
 
         msg_tg = (
             f"{icone} [{evento['timestamp']}] {tipo.upper()} {pair or ''} {direction or ''}\n"
-            f"💄 Origem: {origem}\n"
-            f"📄 Motivo: {mensagem}"
+            f"🔍 Origem: {origem}\n"
+            f"📝 Motivo: {mensagem}"
         )
         send_telegram(msg_tg)
 
     def gerar_relatorio(self) -> str:
-        """
-        Gera texto com histórico de eventos e envia via Telegram.
-        """
         if not self.eventos:
-            return "Nenhum evento registrado ainda."
-
+            return ""
         linhas = []
         for e in reversed(self.eventos):
             linhas.append(
@@ -124,9 +117,9 @@ class RiskManager:
                 f"Spread: {e.get('spread') or '-'} | "
                 f"Motivo: {e.get('mensagem')}"
             )
-        relatorio = "\n".join(linhas)
-        send_telegram(f"📊 Relatório completo:\n{relatorio}")
-        return relatorio
+        texto = "\n".join(linhas)
+        send_telegram(f"📊 Relatório completo:\n{texto}")
+        return texto
 
     def can_trade(
         self,
@@ -149,8 +142,7 @@ class RiskManager:
         # Limite diário de trades
         if self.daily_trades >= self.max_trades_per_day:
             self._registrar_evento(
-                "bloqueio",
-                "Limite diário de trades atingido",
+                "bloqueio", "Limite diário de trades atingido",
                 pair, direction, trade_size_eth,
                 current_price, last_trade_price,
                 min_liquidity_req, min_liquidity_found,
@@ -159,11 +151,10 @@ class RiskManager:
             )
             return False
 
-        # Circuit breaker de perdas consecutivas
+        # Circuit breaker de perdas
         if self.loss_streak >= self.loss_limit:
             self._registrar_evento(
-                "bloqueio",
-                "Circuit breaker: muitas perdas consecutivas",
+                "bloqueio", "Circuit breaker: muitas perdas consecutivas",
                 pair, direction, trade_size_eth,
                 current_price, last_trade_price,
                 min_liquidity_req, min_liquidity_found,
@@ -172,11 +163,10 @@ class RiskManager:
             )
             return False
 
-        # Limite de perda diária
+        # Perda diária máxima
         if self.realized_pnl_eth / self.capital <= -self.daily_loss_pct_limit:
             self._registrar_evento(
-                "bloqueio",
-                "Perda máxima diária atingida",
+                "bloqueio", "Perda máxima diária atingida",
                 pair, direction, trade_size_eth,
                 current_price, last_trade_price,
                 min_liquidity_req, min_liquidity_found,
@@ -185,7 +175,7 @@ class RiskManager:
             )
             return False
 
-        # Exposição máxima por trade
+        # Exposição máxima
         if trade_size_eth is not None:
             ts_eth = Decimal(str(trade_size_eth))
             if ts_eth > self.capital * self.max_exposure_pct:
@@ -200,12 +190,11 @@ class RiskManager:
                 )
                 return False
 
-        # Proteção contra pump >10%
+        # Proteção pump >10%
         if direction == "buy" and last_trade_price:
             if current_price > last_trade_price * Decimal("1.10"):
                 self._registrar_evento(
-                    "bloqueio",
-                    "Preço subiu >10% desde última compra",
+                    "bloqueio", "Preço subiu >10% desde última compra",
                     pair, direction, trade_size_eth,
                     current_price, last_trade_price,
                     min_liquidity_req, min_liquidity_found,
@@ -214,11 +203,10 @@ class RiskManager:
                 )
                 return False
 
-        # Checagem de liquidez
+        # Liquidez
         if not min_liquidity_ok:
             self._registrar_evento(
-                "bloqueio",
-                "Liquidez insuficiente",
+                "bloqueio", "Liquidez insuficiente",
                 pair, direction, trade_size_eth,
                 current_price, last_trade_price,
                 min_liquidity_req, min_liquidity_found,
@@ -227,11 +215,10 @@ class RiskManager:
             )
             return False
 
-        # Checagem de honeypot
+        # Honeypot
         if not not_honeypot:
             self._registrar_evento(
-                "bloqueio",
-                "Possível honeypot",
+                "bloqueio", "Possível honeypot",
                 pair, direction, trade_size_eth,
                 current_price, last_trade_price,
                 min_liquidity_req, min_liquidity_found,
@@ -240,14 +227,13 @@ class RiskManager:
             )
             return False
 
-        # Cooldown por par/direção
+        # Cooldown por par
         if pair and now_ts is not None:
             key = (pair[0], pair[1], direction)
             last_ts = self.last_trade_time_by_pair.get(key)
             if last_ts and (now_ts - last_ts) < self.cooldown_sec:
                 self._registrar_evento(
-                    "bloqueio",
-                    f"Cooldown ativo ({self.cooldown_sec}s)",
+                    "bloqueio", f"Cooldown ativo ({self.cooldown_sec}s)",
                     pair, direction, trade_size_eth,
                     current_price, last_trade_price,
                     min_liquidity_req, min_liquidity_found,
@@ -256,10 +242,9 @@ class RiskManager:
                 )
                 return False
 
-        # Tudo ok—autoriza o trade
+        # Tudo ok
         self._registrar_evento(
-            "liberado",
-            "Trade liberada",
+            "liberado", "Trade liberada",
             pair, direction, trade_size_eth,
             current_price, last_trade_price,
             min_liquidity_req, min_liquidity_found,
@@ -276,13 +261,9 @@ class RiskManager:
         direction=None,
         now_ts=None
     ):
-        """
-        Registra o resultado de um trade, atualiza PnL, streak de perdas e cooldown.
-        """
         origem = "register_trade"
         self.daily_trades += 1
 
-        # Atualiza timestamp para cooldown
         if pair and direction and now_ts is not None:
             key = (pair[0], pair[1], direction)
             self.last_trade_time_by_pair[key] = now_ts
@@ -299,23 +280,14 @@ class RiskManager:
             tipo = "trade_perdido"
             msg   = f"Trade com prejuízo de {abs(pnl)} ETH"
 
-        self._registrar_evento(
-            tipo,
-            msg,
-            pair, direction,
-            None, None, None, None, None, None, None, None,
-            origem
-        )
+        self._registrar_evento(tipo, msg, pair, direction, None, None, None,
+                               None, None, None, None, origem)
 
     def get_telato(self, url: str) -> dict:
-        """
-        Faz GET em uma API externa e retorna JSON.
-        Trate timeouts e erros HTTP.
-        """
         try:
-            response = requests.get(url, timeout=10)
-            response.raise_for_status()
-            return response.json()
-        except requests.RequestException as e:
-            logger.error(f"[RiskManager.get_telato] falha ao buscar {url}: {e}")
+            resp = requests.get(url, timeout=10)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.error(f"[RiskManager.get_telato] Falha ao buscar {url}: {e}")
             return {}
