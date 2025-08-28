@@ -6,11 +6,15 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-# Vamos buscar as credenciais de Telegram no ambiente
+# Credenciais Telegram via variáveis de ambiente
 BOT_TOKEN = os.getenv("BOT_TOKEN", "SEU_BOT_TOKEN")
 CHAT_ID   = os.getenv("CHAT_ID",   "SEU_CHAT_ID")
 
 def send_telegram(msg: str):
+    """
+    Envia mensagem para o Telegram usando BOT_TOKEN e CHAT_ID.
+    Se faltar configuração, emite warning e não tenta enviar.
+    """
     if not BOT_TOKEN or not CHAT_ID:
         logger.warning("[TELEGRAM] credenciais não configuradas. Pulei o envio.")
         return
@@ -40,12 +44,12 @@ class RiskManager:
         self.daily_loss_pct_limit  = Decimal(str(daily_loss_pct_limit))
         self.cooldown_sec          = cooldown_sec
 
-        self.daily_trades             = 0
-        self.loss_streak              = 0
-        self.realized_pnl_eth         = Decimal("0")
-        self.last_trade_time_by_pair  = {}
-        self.eventos                  = []
-        self.last_block_reason        = None
+        self.daily_trades            = 0
+        self.loss_streak             = 0
+        self.realized_pnl_eth        = Decimal("0")
+        self.last_trade_time_by_pair = {}
+        self.eventos                 = []
+        self.last_block_reason       = None
 
     def _registrar_evento(
         self,
@@ -86,7 +90,6 @@ class RiskManager:
         elif tipo == "liberado":
             self.last_block_reason = None
 
-        # Escolha do ícone por tipo
         icone = {
             "bloqueio": "🚫",
             "liberado": "✅",
@@ -95,7 +98,6 @@ class RiskManager:
             "trade_perdido": "📉"
         }.get(tipo, "📊")
 
-        # Mensagem resumida para o Telegram
         msg_tg = (
             f"{icone} [{evento['timestamp']}] {tipo.upper()} {pair or ''} {direction or ''}\n"
             f"💄 Origem: {origem}\n"
@@ -104,6 +106,9 @@ class RiskManager:
         send_telegram(msg_tg)
 
     def gerar_relatorio(self) -> str:
+        """
+        Gera texto com histórico de eventos e envia via Telegram.
+        """
         if not self.eventos:
             return "Nenhum evento registrado ainda."
 
@@ -141,7 +146,7 @@ class RiskManager:
     ) -> bool:
         origem = "can_trade"
 
-        # Limite diário
+        # Limite diário de trades
         if self.daily_trades >= self.max_trades_per_day:
             self._registrar_evento(
                 "bloqueio",
@@ -154,7 +159,7 @@ class RiskManager:
             )
             return False
 
-        # Circuit breaker por streak de perdas
+        # Circuit breaker de perdas consecutivas
         if self.loss_streak >= self.loss_limit:
             self._registrar_evento(
                 "bloqueio",
@@ -209,7 +214,7 @@ class RiskManager:
                 )
                 return False
 
-        # Liquidez
+        # Checagem de liquidez
         if not min_liquidity_ok:
             self._registrar_evento(
                 "bloqueio",
@@ -222,7 +227,7 @@ class RiskManager:
             )
             return False
 
-        # Honeypot
+        # Checagem de honeypot
         if not not_honeypot:
             self._registrar_evento(
                 "bloqueio",
@@ -251,7 +256,7 @@ class RiskManager:
                 )
                 return False
 
-        # Se passou por todas as checagens...
+        # Tudo ok—autoriza o trade
         self._registrar_evento(
             "liberado",
             "Trade liberada",
@@ -271,10 +276,13 @@ class RiskManager:
         direction=None,
         now_ts=None
     ):
+        """
+        Registra o resultado de um trade, atualiza PnL, streak de perdas e cooldown.
+        """
         origem = "register_trade"
         self.daily_trades += 1
 
-        # Atualiza cooldown
+        # Atualiza timestamp para cooldown
         if pair and direction and now_ts is not None:
             key = (pair[0], pair[1], direction)
             self.last_trade_time_by_pair[key] = now_ts
@@ -298,3 +306,16 @@ class RiskManager:
             None, None, None, None, None, None, None, None,
             origem
         )
+
+    def get_telato(self, url: str) -> dict:
+        """
+        Faz GET em uma API externa e retorna JSON.
+        Trate timeouts e erros HTTP.
+        """
+        try:
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as e:
+            logger.error(f"[RiskManager.get_telato] falha ao buscar {url}: {e}")
+            return {}
