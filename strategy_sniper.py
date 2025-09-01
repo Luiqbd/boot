@@ -2,10 +2,11 @@ import logging
 import asyncio
 from decimal import Decimal
 from time import time
+
 from web3 import Web3
+from telegram import Bot, TelegramAlert
 
 from config import config
-from telegram import Bot
 from telegram_alert import TelegramAlert
 from dex import DexClient
 from exchange_client import ExchangeClient
@@ -17,8 +18,10 @@ from utils import (
     is_token_concentrated,
     rate_limiter,
     configure_rate_limiter_from_config,
-    to_float
+    to_float,
+    get_token_balance
 )
+
 from risk_manager import risk_manager
 
 log               = logging.getLogger("sniper")
@@ -26,8 +29,8 @@ bot_notify        = Bot(token=config.get("TELEGRAM_TOKEN"))
 configure_rate_limiter_from_config(config)
 rate_limiter.set_notifier(lambda msg: safe_notify(bot_notify, msg))
 
-_recent_pairs         = {}
-_PAIR_DUP_INTERVAL    = to_float(config.get("PAIR_DUP_INTERVAL"), 5)
+_recent_pairs      = {}
+_PAIR_DUP_INTERVAL = to_float(config.get("PAIR_DUP_INTERVAL"), 5)
 
 def notify(msg: str):
     coro = bot_notify.send_message(
@@ -40,7 +43,11 @@ def notify(msg: str):
     except RuntimeError:
         asyncio.run(coro)
 
-def safe_notify(alert: TelegramAlert | None, msg: str, loop: asyncio.AbstractEventLoop | None = None):
+def safe_notify(
+    alert: TelegramAlert | None,
+    msg: str,
+    loop: asyncio.AbstractEventLoop | None = None
+):
     now = time()
     key = hash(msg)
     last = getattr(safe_notify, "_last_msgs", {}).get(key, 0)
@@ -135,10 +142,14 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         return
 
     # 5) Tentativa de compra
-    risk_manager.record_event("buy_attempt", token=target, amount_eth=float(amt_eth), price=float(price), slippage=float(slip))
-    exchange     = ExchangeClient(router_address=dex_info["router"])
-    trade_exec   = TradeExecutor(exchange, dry_run=config.get("DRY_RUN", False))
-    safe_exec    = SafeTradeExecutor(executor=trade_exec, risk_manager=risk_manager)
+    risk_manager.record_event(
+        "buy_attempt",
+        token=target, amount_eth=float(amt_eth),
+        price=float(price), slippage=float(slip)
+    )
+    exchange   = ExchangeClient(router_address=dex_info["router"])
+    trade_exec = TradeExecutor(exchange, dry_run=config.get("DRY_RUN", False))
+    safe_exec  = SafeTradeExecutor(executor=trade_exec, risk_manager=risk_manager)
 
     tx_buy = safe_exec.buy(
         token_in=weth,
@@ -156,23 +167,28 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
         return
 
     # 6) Sucesso de compra
-    risk_manager.record_event("buy_success", token=target, amount_eth=float(amt_eth), price=float(price), tx_hash=tx_buy)
+    risk_manager.record_event(
+        "buy_success",
+        token=target, amount_eth=float(amt_eth),
+        price=float(price), tx_hash=tx_buy
+    )
     risk_manager.register_trade(True, pnl_eth=0.0, direction="buy")
     safe_notify(bot, f"✅ Compra realizada: {target}\nTX: {tx_buy}", loop)
 
     # 7) Monitoramento para venda
-    highest    = price
-    entry      = price
-    tp_pct     = to_float(config.get("TAKE_PROFIT_PCT"), 0.2)
-    sl_pct     = to_float(config.get("STOP_LOSS_PCT"), 0.05)
-    trail_pct  = to_float(config.get("TRAIL_PCT"), 0.05)
+    highest   = price
+    entry     = price
+    tp_pct    = to_float(config.get("TAKE_PROFIT_PCT"), 0.2)
+    sl_pct    = to_float(config.get("STOP_LOSS_PCT"), 0.05)
+    trail_pct = to_float(config.get("TRAIL_PCT"), 0.05)
 
-    tp_price   = entry * (1 + tp_pct)
-    hard_stop  = entry * (1 - sl_pct)
+    tp_price  = entry * (1 + tp_pct)
+    hard_stop = entry * (1 - sl_pct)
     stop_price = highest * (1 - trail_pct)
-    sold       = False
+    sold      = False
 
     from discovery import is_discovery_running
+
     try:
         while is_discovery_running():
             await asyncio.sleep(int(to_float(config.get("INTERVAL"), 3)))
@@ -198,7 +214,11 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
                     last_trade_price=entry
                 )
                 if tx_sell:
-                    risk_manager.record_event("sell_success", token=target, amount_eth=float(balance), price=price, tx_hash=tx_sell)
+                    risk_manager.record_event(
+                        "sell_success",
+                        token=target, amount_eth=float(balance),
+                        price=price, tx_hash=tx_sell
+                    )
                     risk_manager.register_trade(True, pnl_eth=0.0, direction="sell")
                     safe_notify(bot, f"💰 Venda realizada: {target}\nTX: {tx_sell}", loop)
                     sold = True
