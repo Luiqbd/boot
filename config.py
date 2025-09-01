@@ -1,148 +1,131 @@
 import os
+import logging
+from dataclasses import dataclass
+from decimal import Decimal
+from typing import List, Dict, Any
+
 from web3 import Web3
 
-# ---------------------------------------------------
-# Funções auxiliares
-# ---------------------------------------------------
+logger = logging.getLogger(__name__)
+
+
 def str_to_bool(v: str) -> bool:
+    """
+    Converte string para boolean, aceitando valores como
+    '1', 'true', 'yes', 'y' (case-insensitive).
+    """
     return str(v).strip().lower() in {"1", "true", "t", "yes", "y"}
 
+
+def get_env(key: str, default: Any = None, required: bool = False) -> str:
+    """
+    Lê VAR de ambiente, usando default se fornecido. Se required=True
+    e não existir, dispara RuntimeError.
+    """
+    val = os.getenv(key, default)
+    if required and (val is None or str(val).strip() == ""):
+        raise RuntimeError(f"Variável obrigatória '{key}' não informada")
+    return str(val).strip()
+
+
 def normalize_private_key(pk: str) -> str:
+    """Valida e remove prefixo '0x' de uma chave privada."""
     if not pk:
-        raise ValueError("Chave privada não informada no ambiente.")
-    pk = pk.strip()
-    if pk.startswith("0x"):
-        pk = pk[2:]
-    if len(pk) != 64 or not all(c in "0123456789abcdefABCDEF" for c in pk):
-        raise ValueError(f"Chave privada inválida ({pk[:4]}...): formato ou tamanho incorreto")
+        raise ValueError("PRIVATE_KEY vazia")
+    pk = pk.lower().removeprefix("0x")
+    if len(pk) != 64 or any(c not in "0123456789abcdef" for c in pk):
+        raise ValueError("PRIVATE_KEY inválida: formato ou tamanho incorreto")
     return pk
 
-def checksum_addr(addr_env: str, default: str = None) -> str:
-    if not addr_env and default:
-        addr_env = default
-    return Web3.to_checksum_address(addr_env)
+
+def checksum_addr(env_key: str, default: str, name: str) -> str:
+    """
+    Lê endereço via env_key ou usa default. Retorna EIP-55 checksum,
+    ou dispara ValueError se inválido.
+    """
+    raw = get_env(env_key, default, required=default is None)
+    if not Web3.is_address(raw):
+        raise ValueError(f"Endereço '{name}' inválido ({raw})")
+    return Web3.to_checksum_address(raw)
+
+
+@dataclass(frozen=True)
+class DexConfig:
+    name: str
+    factory: str
+    router: str
+    type: str  # 'v2' ou 'v3'
+
+
+def load_dexes() -> List[DexConfig]:
+    """
+    Retorna a lista de DEXes configuradas, validando
+    cada par de factory/router.
+    """
+    definitions = [
+        ("Aerodrome V2", "AERO_V2_FACTORY", "AERO_V2_ROUTER", "v2"),
+        ("Aerodrome V3", "AERO_V3_FACTORY", "AERO_V3_ROUTER", "v3"),
+        ("Uniswap V2",    "UNI_V2_FACTORY",  "UNI_V2_ROUTER",  "v2"),
+        ("Uniswap V3",    "UNI_V3_FACTORY",  "UNI_V3_ROUTER",  "v3"),
+        ("BaseSwap V2",   "BASE_V2_FACTORY", "BASE_V2_ROUTER", "v2"),
+        ("BaseSwap V3",   "BASE_V3_FACTORY", "BASE_V3_ROUTER", "v3"),
+        ("SushiSwap",     "SUSHI_FACTORY",   "SUSHI_ROUTER",   "v2"),
+    ]
+    dexes: List[DexConfig] = []
+    for name, f_key, r_key, dtype in definitions:
+        factory = checksum_addr(f_key, None, f"{name} factory")
+        router  = checksum_addr(r_key, None, f"{name} router")
+        dexes.append(DexConfig(name=name, factory=factory, router=router, type=dtype))
+    return dexes
+
 
 # ---------------------------------------------------
-# Carrega e valida chave privada
+# Carregamento principal
 # ---------------------------------------------------
-raw_private_key = os.getenv("PRIVATE_KEY")
-try:
-    PRIVATE_KEY = normalize_private_key(raw_private_key)
-except ValueError as e:
-    raise RuntimeError(f"Erro ao processar PRIVATE_KEY: {e}")
 
-# ---------------------------------------------------
-# Tokens oficiais na Base Mainnet
-# ---------------------------------------------------
-WETH = checksum_addr(os.getenv("WETH"), "0x4200000000000000000000000000000000000006")
-USDC = checksum_addr(os.getenv("USDC"), "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913")
+# 1. Chave privada
+PRIVATE_KEY = normalize_private_key(get_env("PRIVATE_KEY", required=True))
 
-# ---------------------------------------------------
-# Lista de DEX monitoradas — endereços oficiais Base
-# ---------------------------------------------------
-DEXES = [
-    {
-        "name": "Aerodrome V2",
-        "factory": checksum_addr(os.getenv("AERO_V2_FACTORY"), "0x327Df1E6de05895d2ab08513aaDD9313Fe505d86"),
-        "router": checksum_addr(os.getenv("AERO_V2_ROUTER"), "0xcF083Be4164828f00cAE704EC15a36D711491284"),
-        "type": "v2"
-    },
-    {
-        "name": "Aerodrome V3",
-        "factory": checksum_addr(os.getenv("AERO_V3_FACTORY"), "0x420dd381b31aef6683db6b90208442878ebf0f8d"),
-        "router": checksum_addr(os.getenv("AERO_V3_ROUTER"), "0x14eBb7fc750F1107E6d36fB31A0c6B0f7F73B09F"),
-        "type": "v3"
-    },
-    {
-        "name": "Uniswap V2",
-        "factory": checksum_addr(os.getenv("UNI_V2_FACTORY"), "0x9C454510848906FDDc846607E4baa27Ca999FBB6"),
-        "router": checksum_addr(os.getenv("UNI_V2_ROUTER"), "0x2626664c2603336E57B271c5C0b26F421741e481"),
-        "type": "v2"
-    },
-    {
-        "name": "Uniswap V3",
-        "factory": checksum_addr(os.getenv("UNI_V3_FACTORY"), "0x33128a8fC17869897Dce68Ed026d694621f6FDfD"),
-        "router": checksum_addr(os.getenv("UNI_V3_ROUTER"), "0x2626664c2603336E57B271c5C0b26F421741e481"),
-        "type": "v3"
-    },
-    {
-        "name": "BaseSwap V2",
-        "factory": checksum_addr(os.getenv("BASE_V2_FACTORY"), "0x06e0feb0d74106c7ada8497754074d222ec6e8ef"),
-        "router": checksum_addr(os.getenv("BASE_V2_ROUTER"), "0x327Df1E6de05895d2ab08513aaDD9313Fe505d86"),
-        "type": "v2"
-    },
-    {
-        "name": "BaseSwap V3",
-        "factory": checksum_addr(os.getenv("BASE_V3_FACTORY"), "0x47989441fD3A19774f8aF9F21614c83Bfb4b0775"),
-        "router": checksum_addr(os.getenv("BASE_V3_ROUTER"), "0x327Df1E6de05895d2ab08513aaDD9313Fe505d86"),
-        "type": "v3"
-    },
-    {
-        "name": "SushiSwap",
-        "factory": checksum_addr(os.getenv("SUSHI_FACTORY"), "0x71524b4f93c58fcb2e0f0c5e2ada8f350b9a0212"),
-        "router": checksum_addr(os.getenv("SUSHI_ROUTER"), "0x044b75f554b886A065b9567891e45c79542d7357"),
-        "type": "v2"
-    }
-]
+# 2. Tokens oficiais
+WETH = checksum_addr("WETH", "0x4200000000000000000000000000000000000006", "WETH")
+USDC = checksum_addr("USDC", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", "USDC")
 
-# ---------------------------------------------------
-# Config final
-# ---------------------------------------------------
-config = {
-    "PYTHON_VERSION": os.getenv("PYTHON_VERSION", "3.10.12"),
+# 3. DEXes
+DEXES = load_dexes()
 
-    # Blockchain
-    "RPC_URL": os.getenv("RPC_URL", "https://mainnet.base.org"),
-    "PRIVATE_KEY": PRIVATE_KEY,
-    "CHAIN_ID": int(os.getenv("CHAIN_ID", "8453")),
-
-    # Tokens base
-    "WETH": WETH,
-    "USDC": USDC,
-
-    # Execução
-    "DEFAULT_SLIPPAGE_BPS": int(os.getenv("SLIPPAGE_BPS", "50")),
-    "TX_DEADLINE_SEC": int(os.getenv("TX_DEADLINE_SEC", "45")),
-    "INTERVAL": int(os.getenv("INTERVAL", "3")),
-    "DRY_RUN": str_to_bool(os.getenv("DRY_RUN", "true")),
-
-    # Telegram
-    "TELEGRAM_TOKEN": os.getenv("TELEGRAM_TOKEN"),
-    "TELEGRAM_CHAT_ID": int(os.getenv("TELEGRAM_CHAT_ID", "0")),
-
-    # Etherscan
-    "ETHERSCAN_API_KEY": os.getenv("ETHERSCAN_API_KEY"),
-
-    # DEX
-    "DEXES": DEXES
+# 4. Config geral
+config: Dict[str, Any] = {
+    "RPC_URL":           get_env("RPC_URL", "https://mainnet.base.org"),
+    "CHAIN_ID":          int(get_env("CHAIN_ID", "8453")),
+    "PRIVATE_KEY":       PRIVATE_KEY,
+    "WETH":              WETH,
+    "USDC":              USDC,
+    "DEFAULT_SLIPPAGE_BPS": int(get_env("SLIPPAGE_BPS", "50")),
+    "TX_DEADLINE_SEC":      int(get_env("TX_DEADLINE_SEC", "45")),
+    "INTERVAL":             int(get_env("INTERVAL", "3")),
+    "DRY_RUN":              str_to_bool(get_env("DRY_RUN", "true")),
+    "TELEGRAM_TOKEN":       get_env("TELEGRAM_TOKEN", None, required=True),
+    "TELEGRAM_CHAT_ID":     int(get_env("TELEGRAM_CHAT_ID", "0")),
+    "ETHERSCAN_API_KEY":    get_env("ETHERSCAN_API_KEY", ""),
+    "DEXES":                DEXES,
 }
 
-# ---------------------------------------------------
-# Validações
-# ---------------------------------------------------
-def _require(name: str, cond: bool):
-    if not cond:
-        raise ValueError(f"Config inválida: {name} — valor atual: {config.get(name)}")
 
-_require("RPC_URL", bool(config["RPC_URL"]))
-_require("PRIVATE_KEY", bool(config["PRIVATE_KEY"]))
-_require("WETH", isinstance(config["WETH"], str) and len(config["WETH"]) == 42)
-_require("USDC", isinstance(config["USDC"], str) and len(config["USDC"]) == 42)
-_require("CHAIN_ID", config["CHAIN_ID"] == 8453)
-
-for dex in config["DEXES"]:
-    if not (isinstance(dex["factory"], str) and len(dex["factory"]) == 42):
-        raise ValueError(f"Factory inválida em {dex['name']}")
-    if not (isinstance(dex["router"], str) and len(dex["router"]) == 42):
-        raise ValueError(f"Router inválido em {dex['name']}")
-
-# ---------------------------------------------------
-# Debug opcional
-# ---------------------------------------------------
-if str_to_bool(os.getenv("DEBUG_CONFIG", "false")):
-    signer_addr = Web3().eth.account.from_key(PRIVATE_KEY).address
-    print(f"Signer Address: {signer_addr}")
-    print(f"WETH: {WETH}")
-    print(f"USDC: {USDC}")
+def validate_config() -> None:
+    """
+    Executa validações de sanidade do config; dispara ValueError se algo não bater.
+    """
+    assert config["RPC_URL"].startswith("http"), "RPC_URL deve ser uma URL válida"
+    assert isinstance(config["CHAIN_ID"], int) and config["CHAIN_ID"] > 0
+    assert Web3.is_address(config["WETH"])
+    assert Web3.is_address(config["USDC"])
     for dex in config["DEXES"]:
-        print(f"{dex['name']} → Factory: {dex['factory']} | Router: {dex['router']}")
+        if not Web3.is_address(dex.factory) or not Web3.is_address(dex.router):
+            raise ValueError(f"Endereço inválido em DEX {dex.name}")
+
+
+validate_config()
+
+# Debug opcional
+if str_to_bool(get_env("DEBUG_CONFIG", "false")):
+    logger.debug("Config carregada: %s", config)
