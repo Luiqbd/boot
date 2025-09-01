@@ -1,4 +1,6 @@
+# main.py
 import os
+import sys
 import time
 import uuid
 import logging
@@ -20,7 +22,6 @@ from web3 import Web3
 
 from check_balance import get_wallet_status
 from strategy_sniper import on_new_pair
-from discovery import run_discovery, stop_discovery, get_discovery_status
 from risk_manager import RiskManager
 
 # --- Configuração de Logging ---
@@ -29,35 +30,53 @@ logging.basicConfig(
     level=logging.INFO
 )
 
+# Debug prints para capturar variáveis de ambiente
+print("🔥 main.py iniciado", file=sys.stderr)
+for var in ("TELEGRAM_TOKEN", "RPC_URL", "PRIVATE_KEY", "CHAIN_ID", "WEBHOOK_URL"):
+    print(f"{var} =", bool(os.getenv(var)), file=sys.stderr)
+
+# --- Validação de variáveis de ambiente ---
+
 def validate_env():
-    """
-    Garante que todas as variáveis obrigatórias estejam definidas.
-    Se faltar alguma, faz log e encerra o processo.
-    """
     required = ["TELEGRAM_TOKEN", "RPC_URL", "PRIVATE_KEY", "CHAIN_ID"]
-    missing = [key for key in required if not os.getenv(key)]
+    missing = [k for k in required if not os.getenv(k)]
     if missing:
         logging.error(f"Variáveis de ambiente faltando: {', '.join(missing)}")
         raise SystemExit(1)
 
-# Valida ambiente antes de prosseguir
 validate_env()
 
-# --- Variáveis de ambiente principais ---
 TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN")
 WEBHOOK_URL      = os.getenv("WEBHOOK_URL", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "0")
 
+# --- Import dinâmico de discovery wrappers ---
+
+import discovery as _discovery
+
+try:
+    run_discovery         = _discovery.run_discovery
+    stop_discovery        = _discovery.stop_discovery
+    get_discovery_status  = _discovery.get_discovery_status
+except AttributeError:
+    available = [n for n in dir(_discovery) if not n.startswith("_")]
+    logging.error(
+        "Módulo discovery.py não exporta run_discovery/stop_discovery/get_discovery_status. "
+        "Funções disponíveis: %s", available
+    )
+    raise SystemExit(1)
+
 # --- Utilitários e validações ---
+
 def str_to_bool(v: str) -> bool:
-    return v.strip().lower() in {"1", "true", "t", "yes", "y"}
+    return v.strip().lower() in {"1","true","t","yes","y"}
 
 def normalize_private_key(pk: str) -> str:
     pk = pk.strip()
     if pk.startswith("0x"):
         pk = pk[2:]
     if len(pk) != 64 or not all(c in "0123456789abcdefABCDEF" for c in pk):
-        raise ValueError("PRIVATE_KEY inválida.")
+        raise ValueError("PRIVATE_KEY inválida")
     return pk
 
 def get_active_address() -> str:
@@ -81,11 +100,12 @@ def env_summary_text() -> str:
         f"🧪 Dry Run: {os.getenv('DRY_RUN')}"
     )
 
-# --- Sniper Control ---
-risk_manager = RiskManager()
-loop = asyncio.new_event_loop()
-application = None
-sniper_thread = None
+# --- Estado e controle do Sniper ---
+
+risk_manager   = RiskManager()
+loop           = asyncio.new_event_loop()
+application    = None
+sniper_thread  = None
 
 def iniciar_sniper():
     global sniper_thread
@@ -111,6 +131,7 @@ def parar_sniper():
     logging.info("🛑 Sniper parado.")
 
 # --- Handlers Telegram ---
+
 async def start_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     menu = (
         "🎯 Sniper Bot por Luis Fernando\n\n"
@@ -150,8 +171,8 @@ async def sniper_status_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(status["text"])
 
 async def ping_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    start = ctx.bot_data.get("start_time", time.time())
-    uptime = str(datetime.timedelta(seconds=int(time.time() - start)))
+    start_ts = ctx.bot_data.get("start_time", time.time())
+    uptime = str(datetime.timedelta(seconds=int(time.time() - start_ts)))
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     await update.message.reply_text(f"🏓 pong\n⏱ Uptime: {uptime}\n🕒 Agora: {now}")
 
@@ -159,7 +180,7 @@ async def test_notify_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cid = int(TELEGRAM_CHAT_ID) if TELEGRAM_CHAT_ID.isdigit() else 0
     if cid == 0:
         return await update.message.reply_text("⚠️ TELEGRAM_CHAT_ID inválido.")
-    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ts  = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     uid = uuid.uuid4().hex[:8]
     text = f"✅ Teste\n🕒 {ts}\n🆔 {uid}"
     await ctx.bot.send_message(chat_id=cid, text=text)
@@ -173,6 +194,7 @@ async def echo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Você disse: {update.message.text}")
 
 # --- Flask Endpoints ---
+
 flask_app = Flask(__name__)
 
 @flask_app.route("/", methods=["GET", "HEAD"])
@@ -198,6 +220,7 @@ def webhook():
     return "ok", 200
 
 # --- Webhook Setup ---
+
 def set_webhook_with_retry(url: str, token: str, tries=5, delay=3):
     api = f"https://api.telegram.org/bot{token}/setWebhook"
     payload = {"url": url}
@@ -214,6 +237,7 @@ def set_webhook_with_retry(url: str, token: str, tries=5, delay=3):
     logging.error("❌ Falha ao registrar webhook.")
 
 # --- Bootstrapping ---
+
 def main():
     global application
 
@@ -222,7 +246,7 @@ def main():
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
     # Registra comandos e handlers
-    cmds = [
+    commands = [
         ("start", start_cmd),
         ("menu", start_cmd),
         ("status", status_cmd),
@@ -233,11 +257,11 @@ def main():
         ("testnotify", test_notify_cmd),
         ("relatorio", relatorio_cmd),
     ]
-    for cmd, handler in cmds:
+    for cmd, handler in commands:
         application.add_handler(CommandHandler(cmd, handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
-    # Inicializa bot de forma assíncrona
+    # Inicialização assíncrona do bot
     async def boot_bot():
         application.bot_data["start_time"] = time.time()
         await application.initialize()
@@ -261,7 +285,8 @@ def main():
     # Sobe servidor Flask em thread
     Thread(
         target=lambda: flask_app.run(
-            host="0.0.0.0", port=int(os.getenv("PORT", "10000"))
+            host="0.0.0.0",
+            port=int(os.getenv("PORT", "10000"))
         ),
         daemon=True
     ).start()
@@ -277,6 +302,7 @@ def main():
 
     logging.info("🚀 Bot e Flask rodando.")
     loop.run_forever()
+
 
 if __name__ == "__main__":
     try:
