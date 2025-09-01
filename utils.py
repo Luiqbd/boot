@@ -1,13 +1,31 @@
-# utils.py
 import os
 import requests
 import logging
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
+from web3 import Web3
 
 load_dotenv()
 log = logging.getLogger(__name__)
+
+# ABI mínimo com apenas balanceOf e decimals
+MINIMAL_ERC20_ABI = [
+    {
+        "constant": True,
+        "inputs": [{"name": "_owner", "type": "address"}],
+        "name": "balanceOf",
+        "outputs": [{"name": "balance", "type": "uint256"}],
+        "type": "function",
+    },
+    {
+        "constant": True,
+        "inputs": [],
+        "name": "decimals",
+        "outputs": [{"name": "", "type": "uint8"}],
+        "type": "function",
+    },
+]
 
 # ---- Safe converters ----
 def to_int(v, default=0):
@@ -35,7 +53,6 @@ if not ETHERSCAN_API_KEY or len(ETHERSCAN_API_KEY) < 10:
     log.warning("⚠️ ETHERSCAN_API_KEY não configurada ou inválida.")
 else:
     log.info(f"[INFO] ETHERSCAN_API_KEY carregada: {ETHERSCAN_API_KEY[:6]}...")
-
 
 # ================
 # Rate Limiter
@@ -137,7 +154,6 @@ class ApiRateLimiter:
                 )
             raise RuntimeError("API rate-limited: daily threshold reached")
 
-
 rate_limiter = ApiRateLimiter(
     qps_limit=5,
     daily_limit=100_000,
@@ -148,7 +164,6 @@ rate_limiter = ApiRateLimiter(
     pause_enabled=True
 )
 
-
 def configure_rate_limiter_from_config(cfg: dict):
     rate_limiter.qps_limit       = to_int(cfg.get("RATE_QPS_LIMIT"),    rate_limiter.qps_limit)
     rate_limiter.daily_limit     = to_int(cfg.get("RATE_DAILY_LIMIT"),  rate_limiter.daily_limit)
@@ -157,7 +172,6 @@ def configure_rate_limiter_from_config(cfg: dict):
     rate_limiter.qps_cd          = to_int(cfg.get("RATE_QPS_COOLDOWN_SEC"), rate_limiter.qps_cd)
     rate_limiter.daily_cd        = to_int(cfg.get("RATE_DAILY_COOLDOWN_SEC"), rate_limiter.daily_cd)
     rate_limiter.pause_enabled   = str(cfg.get("PAUSE_SNIPER_ON_RATE_LIMIT", rate_limiter.pause_enabled)).lower() in {"1","true","yes"}
-
 
 # ================
 # Etherscan Helpers
@@ -189,7 +203,6 @@ def is_contract_verified(token_address: str, api_key: str = ETHERSCAN_API_KEY) -
     except Exception as e:
         log.error(f"Erro ao verificar contrato {token_address}: {e}", exc_info=True)
         return False
-
 
 def is_token_concentrated(token_address: str, api_key: str = ETHERSCAN_API_KEY, top_limit_pct: float = 50.0) -> bool:
     rate_limiter.before_api_call()
@@ -226,7 +239,6 @@ def is_token_concentrated(token_address: str, api_key: str = ETHERSCAN_API_KEY, 
         log.error(f"Erro ao verificar concentração de holders: {e}", exc_info=True)
         return True
 
-
 def testar_etherscan_v2(api_key: str = ETHERSCAN_API_KEY,
                         address: str = "0x4200000000000000000000000000000000000006") -> bool:
     import time
@@ -254,3 +266,30 @@ def testar_etherscan_v2(api_key: str = ETHERSCAN_API_KEY,
         except Exception:
             pass
     return False
+
+def get_token_balance(
+    web3: Web3,
+    token_address: str,
+    wallet_address: str,
+    abi: list = MINIMAL_ERC20_ABI
+) -> float:
+    """
+    Retorna o saldo (float) de um token ERC-20 na carteira especificada.
+    """
+    try:
+        token_addr  = Web3.to_checksum_address(token_address)
+        wallet_addr = Web3.to_checksum_address(wallet_address)
+        contract    = web3.eth.contract(address=token_addr, abi=abi)
+
+        raw_balance = contract.functions.balanceOf(wallet_addr).call()
+        decimals    = contract.functions.decimals().call()
+
+        return raw_balance / (10 ** decimals)
+
+    except Exception as e:
+        log.error(
+            f"[get_token_balance] Falha ao consultar saldo do token {token_address} "
+            f"na carteira {wallet_address}: {e}",
+            exc_info=True
+        )
+        return 0.0
