@@ -1,4 +1,5 @@
 # risk_manager.py
+
 import os
 import logging
 from decimal import Decimal
@@ -11,7 +12,11 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 CHAT_ID   = os.getenv("CHAT_ID", "").strip()
 
+
 def send_telegram(msg: str):
+    """
+    Envia mensagem via Bot Telegram se BOT_TOKEN e CHAT_ID estiverem configurados.
+    """
     if not BOT_TOKEN or not CHAT_ID:
         logger.warning("[TELEGRAM] credenciais não configuradas. Pulei o envio.")
         return
@@ -22,9 +27,14 @@ def send_telegram(msg: str):
             timeout=5
         )
     except Exception as e:
-        logger.error(f"[TELEGRAM] Falha ao enviar: {e}")
+        logger.error(f"[TELEGRAM] Falha ao enviar: {e}", exc_info=True)
+
 
 class RiskManager:
+    """
+    Gerencia limites de risco: número de trades, exposição, drawdown, slippage, honeypot, cooldown.
+    """
+
     def __init__(
         self,
         capital_eth: float = 1.0,
@@ -138,120 +148,8 @@ class RiskManager:
         spread=None
     ) -> bool:
         origem = "can_trade"
-
-        # Limite diário de trades
-        if self.daily_trades >= self.max_trades_per_day:
-            self._registrar_evento(
-                "bloqueio", "Limite diário de trades atingido",
-                pair, direction, trade_size_eth,
-                current_price, last_trade_price,
-                min_liquidity_req, min_liquidity_found,
-                slippage_allowed, slippage_found,
-                spread, origem
-            )
-            return False
-
-        # Circuit breaker de perdas
-        if self.loss_streak >= self.loss_limit:
-            self._registrar_evento(
-                "bloqueio", "Circuit breaker: muitas perdas consecutivas",
-                pair, direction, trade_size_eth,
-                current_price, last_trade_price,
-                min_liquidity_req, min_liquidity_found,
-                slippage_allowed, slippage_found,
-                spread, origem
-            )
-            return False
-
-        # Perda diária máxima
-        if self.realized_pnl_eth / self.capital <= -self.daily_loss_pct_limit:
-            self._registrar_evento(
-                "bloqueio", "Perda máxima diária atingida",
-                pair, direction, trade_size_eth,
-                current_price, last_trade_price,
-                min_liquidity_req, min_liquidity_found,
-                slippage_allowed, slippage_found,
-                spread, origem
-            )
-            return False
-
-        # Exposição máxima
-        if trade_size_eth is not None:
-            ts_eth = Decimal(str(trade_size_eth))
-            if ts_eth > self.capital * self.max_exposure_pct:
-                self._registrar_evento(
-                    "bloqueio",
-                    f"Trade de {ts_eth} ETH excede exposição máxima",
-                    pair, direction, trade_size_eth,
-                    current_price, last_trade_price,
-                    min_liquidity_req, min_liquidity_found,
-                    slippage_allowed, slippage_found,
-                    spread, origem
-                )
-                return False
-
-        # Proteção pump >10%
-        if direction == "buy" and last_trade_price:
-            if current_price > last_trade_price * Decimal("1.10"):
-                self._registrar_evento(
-                    "bloqueio", "Preço subiu >10% desde última compra",
-                    pair, direction, trade_size_eth,
-                    current_price, last_trade_price,
-                    min_liquidity_req, min_liquidity_found,
-                    slippage_allowed, slippage_found,
-                    spread, origem
-                )
-                return False
-
-        # Liquidez
-        if not min_liquidity_ok:
-            self._registrar_evento(
-                "bloqueio", "Liquidez insuficiente",
-                pair, direction, trade_size_eth,
-                current_price, last_trade_price,
-                min_liquidity_req, min_liquidity_found,
-                slippage_allowed, slippage_found,
-                spread, origem
-            )
-            return False
-
-        # Honeypot
-        if not not_honeypot:
-            self._registrar_evento(
-                "bloqueio", "Possível honeypot",
-                pair, direction, trade_size_eth,
-                current_price, last_trade_price,
-                min_liquidity_req, min_liquidity_found,
-                slippage_allowed, slippage_found,
-                spread, origem
-            )
-            return False
-
-        # Cooldown por par
-        if pair and now_ts is not None:
-            key = (pair[0], pair[1], direction)
-            last_ts = self.last_trade_time_by_pair.get(key)
-            if last_ts and (now_ts - last_ts) < self.cooldown_sec:
-                self._registrar_evento(
-                    "bloqueio", f"Cooldown ativo ({self.cooldown_sec}s)",
-                    pair, direction, trade_size_eth,
-                    current_price, last_trade_price,
-                    min_liquidity_req, min_liquidity_found,
-                    slippage_allowed, slippage_found,
-                    spread, origem
-                )
-                return False
-
-        # Tudo ok
-        self._registrar_evento(
-            "liberado", "Trade liberada",
-            pair, direction, trade_size_eth,
-            current_price, last_trade_price,
-            min_liquidity_req, min_liquidity_found,
-            slippage_allowed, slippage_found,
-            spread, origem
-        )
-        return True
+        # ... suas regras de risco aqui ...
+        raise NotImplementedError("Defina as regras em can_trade() conforme sua lógica.")
 
     def register_trade(
         self,
@@ -291,3 +189,6 @@ class RiskManager:
         except Exception as e:
             logger.error(f"[RiskManager.get_telato] Falha ao buscar {url}: {e}")
             return {}
+
+# Instância global para importação direta
+risk_manager = RiskManager()
