@@ -25,20 +25,23 @@ from utils import (
 
 from risk_manager import risk_manager
 
-log               = logging.getLogger("sniper")
-bot_notify        = Bot(token=config.get("TELEGRAM_TOKEN"))
+log        = logging.getLogger("sniper")
+bot_notify = Bot(token=config.get("TELEGRAM_TOKEN"))
 
 # Aplica configurações do rate limiter
 configure_rate_limiter_from_config(config)
 rate_limiter.set_notifier(lambda msg: safe_notify(bot_notify, msg))
 
-# Cache local para evitar duplicatas
+
+# Cache local para evitar duplicatas rápidas
 _recent_pairs      = {}
 _PAIR_DUP_INTERVAL = to_float(config.get("PAIR_DUP_INTERVAL"), 5)
 
 
 def notify(msg: str):
-    """Envia mensagem simples via Bot."""
+    """
+    Envia mensagem simples via Bot Telegram.
+    """
     coro = bot_notify.send_message(
         chat_id=config.get("TELEGRAM_CHAT_ID"),
         text=msg
@@ -56,13 +59,14 @@ def safe_notify(
     loop: asyncio.AbstractEventLoop | None = None
 ):
     """
-    Envia mensagem via TelegramAlert (se disponível) com dedupe por intervalo.
+    Envia mensagem com dedupe por intervalo utilizando TelegramAlert (se disponível).
     """
     now = time()
     key = hash(msg)
     last = getattr(safe_notify, "_last_msgs", {}).get(key, 0)
     if last + _PAIR_DUP_INTERVAL > now:
         return
+
     safe_notify._last_msgs = getattr(safe_notify, "_last_msgs", {})
     safe_notify._last_msgs[key] = now
 
@@ -91,12 +95,12 @@ async def on_new_pair(
     loop=None
 ):
     """
-    Fluxo principal disparado a cada novo par detectado:
-    1) Rate limiter
-    2) Filtro de duplicatas rápidas
-    3) Checks on-chain (liquidez, tax, verificação, concentração)
-    4) Compra via SafeTradeExecutor
-    5) Monitoramento de TP/SL/trail e venda
+    Fluxo principal disparado para cada novo par detectado:
+     1) Rate limiter
+     2) Filtro de duplicatas locais
+     3) Checks on-chain (liquidez, tax, verificação, concentração)
+     4) Compra via SafeTradeExecutor
+     5) Monitoramento de TP/SL/trail e venda
     """
     # 1) Rate limiter
     if rate_limiter.is_paused():
@@ -119,17 +123,13 @@ async def on_new_pair(
 
     # 3) Novo par detectado
     log.info(f"[Novo par] {dex_info['name']} {pair_addr} {token0}/{token1}")
-    risk_manager.record_event(
-        "pair_detected",
-        dex=dex_info["name"],
-        pair=pair_addr
-    )
+    risk_manager.record_event("pair_detected", dex=dex_info["name"], pair=pair_addr)
 
     try:
         # 4) Contexto on-chain
-        web3    = Web3(Web3.HTTPProvider(config["RPC_URL"]))
-        weth    = Web3.to_checksum_address(config["WETH"])
-        target  = (
+        web3   = Web3(Web3.HTTPProvider(config["RPC_URL"]))
+        weth   = Web3.to_checksum_address(config["WETH"])
+        target = (
             Web3.to_checksum_address(token1)
             if token0.lower() == weth.lower()
             else Web3.to_checksum_address(token0)
@@ -203,7 +203,7 @@ async def on_new_pair(
         safe_notify(bot, f"🚫 Compra falhou: {motivo}", loop)
         return
 
-    # 6) Sucesso de compra
+    # 6) Compra realizada
     risk_manager.record_event(
         "buy_success",
         token=target,
@@ -240,8 +240,14 @@ async def on_new_pair(
                 highest    = price
                 stop_price = highest * (1 - trail_pct)
 
+            # Verifica níveis de saída
             if price >= tp_price or price <= stop_price or price <= hard_stop:
-                balance = get_token_balance(web3, target, exchange.wallet, exchange.erc20_abi)
+                balance = get_token_balance(
+                    web3,
+                    token_address=target,
+                    wallet_address=exchange.wallet,
+                    abi=exchange.erc20_abi
+                )
                 if balance <= 0:
                     break
 
