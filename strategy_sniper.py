@@ -4,10 +4,10 @@ from decimal import Decimal
 from time import time
 
 from web3 import Web3
-from telegram import Bot, TelegramAlert
+from telegram import Bot
+from telegram_alert import TelegramAlert
 
 from config import config
-from telegram_alert import TelegramAlert
 from dex import DexClient
 from exchange_client import ExchangeClient
 from trade_executor import TradeExecutor
@@ -19,20 +19,26 @@ from utils import (
     rate_limiter,
     configure_rate_limiter_from_config,
     to_float,
-    get_token_balance
+    get_token_balance,
+    has_high_tax
 )
 
 from risk_manager import risk_manager
 
 log               = logging.getLogger("sniper")
 bot_notify        = Bot(token=config.get("TELEGRAM_TOKEN"))
+
+# Aplica configurações do rate limiter
 configure_rate_limiter_from_config(config)
 rate_limiter.set_notifier(lambda msg: safe_notify(bot_notify, msg))
 
+# Cache local para evitar duplicatas
 _recent_pairs      = {}
 _PAIR_DUP_INTERVAL = to_float(config.get("PAIR_DUP_INTERVAL"), 5)
 
+
 def notify(msg: str):
+    """Envia mensagem simples via Bot."""
     coro = bot_notify.send_message(
         chat_id=config.get("TELEGRAM_CHAT_ID"),
         text=msg
@@ -43,11 +49,15 @@ def notify(msg: str):
     except RuntimeError:
         asyncio.run(coro)
 
+
 def safe_notify(
     alert: TelegramAlert | None,
     msg: str,
     loop: asyncio.AbstractEventLoop | None = None
 ):
+    """
+    Envia mensagem via TelegramAlert (se disponível) com dedupe por intervalo.
+    """
     now = time()
     key = hash(msg)
     last = getattr(safe_notify, "_last_msgs", {}).get(key, 0)
@@ -71,10 +81,31 @@ def safe_notify(
     else:
         notify(msg)
 
-async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
+
+async def on_new_pair(
+    dex_info,
+    pair_addr: str,
+    token0: str,
+    token1: str,
+    bot=None,
+    loop=None
+):
+    """
+    Fluxo principal disparado a cada novo par detectado:
+    1) Rate limiter
+    2) Filtro de duplicatas rápidas
+    3) Checks on-chain (liquidez, tax, verificação, concentração)
+    4) Compra via SafeTradeExecutor
+    5) Monitoramento de TP/SL/trail e venda
+    """
     # 1) Rate limiter
     if rate_limiter.is_paused():
-        risk_manager.record_event("pair_skipped", reason="API rate limit pause", dex=dex_info["name"], pair=pair_addr)
+        risk_manager.record_event(
+            "pair_skipped",
+            reason="API rate limit pause",
+            dex=dex_info["name"],
+            pair=pair_addr
+        )
         safe_notify(bot, "⏸️ Sniper pausado por limite de API. Ignorando pares.", loop)
         return
 
@@ -88,10 +119,14 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
 
     # 3) Novo par detectado
     log.info(f"[Novo par] {dex_info['name']} {pair_addr} {token0}/{token1}")
-    risk_manager.record_event("pair_detected", dex=dex_info["name"], pair=pair_addr)
+    risk_manager.record_event(
+        "pair_detected",
+        dex=dex_info["name"],
+        pair=pair_addr
+    )
 
     try:
-        # 4) Contexto on‐chain
+        # 4) Contexto on-chain
         web3    = Web3(Web3.HTTPProvider(config["RPC_URL"]))
         weth    = Web3.to_checksum_address(config["WETH"])
         target  = (
@@ -105,10 +140,10 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
             raise ValueError("TRADE_SIZE_ETH inválido")
 
         dex_client = DexClient(web3, dex_info["router"])
-        MIN_LIQ = to_float(config.get("MIN_LIQ_WETH"), 0.5)
-        liq_ok  = dex_client.has_min_liquidity(pair_addr, weth, MIN_LIQ)
-        price   = dex_client.get_token_price(target, weth)
-        slip    = dex_client.calc_dynamic_slippage(pair_addr, weth, float(amt_eth))
+        MIN_LIQ    = to_float(config.get("MIN_LIQ_WETH"), 0.5)
+        liq_ok     = dex_client.has_min_liquidity(pair_addr, weth, MIN_LIQ)
+        price      = dex_client.get_token_price(target, weth)
+        slip       = dex_client.calc_dynamic_slippage(pair_addr, weth, float(amt_eth))
 
         if not liq_ok:
             reason = f"liquidez < {MIN_LIQ} WETH"
@@ -144,8 +179,10 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
     # 5) Tentativa de compra
     risk_manager.record_event(
         "buy_attempt",
-        token=target, amount_eth=float(amt_eth),
-        price=float(price), slippage=float(slip)
+        token=target,
+        amount_eth=float(amt_eth),
+        price=float(price),
+        slippage=float(slip)
     )
     exchange   = ExchangeClient(router_address=dex_info["router"])
     trade_exec = TradeExecutor(exchange, dry_run=config.get("DRY_RUN", False))
@@ -169,23 +206,25 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
     # 6) Sucesso de compra
     risk_manager.record_event(
         "buy_success",
-        token=target, amount_eth=float(amt_eth),
-        price=float(price), tx_hash=tx_buy
+        token=target,
+        amount_eth=float(amt_eth),
+        price=float(price),
+        tx_hash=tx_buy
     )
     risk_manager.register_trade(True, pnl_eth=0.0, direction="buy")
     safe_notify(bot, f"✅ Compra realizada: {target}\nTX: {tx_buy}", loop)
 
     # 7) Monitoramento para venda
-    highest   = price
-    entry     = price
-    tp_pct    = to_float(config.get("TAKE_PROFIT_PCT"), 0.2)
-    sl_pct    = to_float(config.get("STOP_LOSS_PCT"), 0.05)
-    trail_pct = to_float(config.get("TRAIL_PCT"), 0.05)
+    highest    = price
+    entry      = price
+    tp_pct     = to_float(config.get("TAKE_PROFIT_PCT"), 0.2)
+    sl_pct     = to_float(config.get("STOP_LOSS_PCT"), 0.05)
+    trail_pct  = to_float(config.get("TRAIL_PCT"), 0.05)
 
-    tp_price  = entry * (1 + tp_pct)
-    hard_stop = entry * (1 - sl_pct)
+    tp_price   = entry * (1 + tp_pct)
+    hard_stop  = entry * (1 - sl_pct)
     stop_price = highest * (1 - trail_pct)
-    sold      = False
+    sold       = False
 
     from discovery import is_discovery_running
 
@@ -216,8 +255,10 @@ async def on_new_pair(dex_info, pair_addr, token0, token1, bot=None, loop=None):
                 if tx_sell:
                     risk_manager.record_event(
                         "sell_success",
-                        token=target, amount_eth=float(balance),
-                        price=price, tx_hash=tx_sell
+                        token=target,
+                        amount_eth=float(balance),
+                        price=price,
+                        tx_hash=tx_sell
                     )
                     risk_manager.register_trade(True, pnl_eth=0.0, direction="sell")
                     safe_notify(bot, f"💰 Venda realizada: {target}\nTX: {tx_sell}", loop)
