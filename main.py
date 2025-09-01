@@ -24,26 +24,31 @@ from discovery import run_discovery, stop_discovery, get_discovery_status
 from risk_manager import RiskManager
 
 # --- Configuração de Logging ---
-
 logging.basicConfig(
     format='[%(asctime)s] %(levelname)s - %(message)s',
     level=logging.INFO
 )
 
-# --- Variáveis de ambiente obrigatórias ---
+def validate_env():
+    """
+    Garante que todas as variáveis obrigatórias estejam definidas.
+    Se faltar alguma, faz log e encerra o processo.
+    """
+    required = ["TELEGRAM_TOKEN", "RPC_URL", "PRIVATE_KEY", "CHAIN_ID"]
+    missing = [key for key in required if not os.getenv(key)]
+    if missing:
+        logging.error(f"Variáveis de ambiente faltando: {', '.join(missing)}")
+        raise SystemExit(1)
 
-REQUIRED_ENV = ["TELEGRAM_TOKEN", "RPC_URL", "PRIVATE_KEY", "CHAIN_ID"]
-missing = [k for k in REQUIRED_ENV if not os.getenv(k)]
-if missing:
-    logging.error(f"Variáveis de ambiente faltando: {', '.join(missing)}")
-    raise SystemExit(1)
+# Valida ambiente antes de prosseguir
+validate_env()
 
+# --- Variáveis de ambiente principais ---
 TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN")
 WEBHOOK_URL      = os.getenv("WEBHOOK_URL", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "0")
 
-# --- Validações e Utilitários ---
-
+# --- Utilitários e validações ---
 def str_to_bool(v: str) -> bool:
     return v.strip().lower() in {"1", "true", "t", "yes", "y"}
 
@@ -77,7 +82,6 @@ def env_summary_text() -> str:
     )
 
 # --- Sniper Control ---
-
 risk_manager = RiskManager()
 loop = asyncio.new_event_loop()
 application = None
@@ -107,7 +111,6 @@ def parar_sniper():
     logging.info("🛑 Sniper parado.")
 
 # --- Handlers Telegram ---
-
 async def start_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     menu = (
         "🎯 Sniper Bot por Luis Fernando\n\n"
@@ -170,7 +173,6 @@ async def echo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Você disse: {update.message.text}")
 
 # --- Flask Endpoints ---
-
 flask_app = Flask(__name__)
 
 @flask_app.route("/", methods=["GET", "HEAD"])
@@ -196,7 +198,6 @@ def webhook():
     return "ok", 200
 
 # --- Webhook Setup ---
-
 def set_webhook_with_retry(url: str, token: str, tries=5, delay=3):
     api = f"https://api.telegram.org/bot{token}/setWebhook"
     payload = {"url": url}
@@ -204,7 +205,7 @@ def set_webhook_with_retry(url: str, token: str, tries=5, delay=3):
         try:
             resp = requests.post(api, json=payload, timeout=10)
             if resp.ok and resp.json().get("ok"):
-                logging.info(f"Webhook registrado: {url}")
+                logging.info(f"✅ Webhook registrado: {url}")
                 return
             logging.warning(f"Tentativa {i+1} falhou: {resp.text}")
         except Exception as e:
@@ -213,15 +214,14 @@ def set_webhook_with_retry(url: str, token: str, tries=5, delay=3):
     logging.error("❌ Falha ao registrar webhook.")
 
 # --- Bootstrapping ---
-
 def main():
     global application
 
-    # Cria Telegram Application
+    # Seta o loop e cria a aplicação Telegram
     asyncio.set_event_loop(loop)
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
-    # Registra Handlers
+    # Registra comandos e handlers
     cmds = [
         ("start", start_cmd),
         ("menu", start_cmd),
@@ -235,10 +235,9 @@ def main():
     ]
     for cmd, handler in cmds:
         application.add_handler(CommandHandler(cmd, handler))
-
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
-    # Inicialização assíncrona do bot
+    # Inicializa bot de forma assíncrona
     async def boot_bot():
         application.bot_data["start_time"] = time.time()
         await application.initialize()
@@ -259,11 +258,20 @@ def main():
 
     loop.create_task(boot_bot())
 
-    # Inicia Flask e Webhook
-    Thread(target=lambda: flask_app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000"))), daemon=True).start()
+    # Sobe servidor Flask em thread
+    Thread(
+        target=lambda: flask_app.run(
+            host="0.0.0.0", port=int(os.getenv("PORT", "10000"))
+        ),
+        daemon=True
+    ).start()
 
+    # Registra webhook se configurado
     if WEBHOOK_URL:
-        Thread(target=lambda: set_webhook_with_retry(WEBHOOK_URL, TELEGRAM_TOKEN), daemon=True).start()
+        Thread(
+            target=lambda: set_webhook_with_retry(WEBHOOK_URL, TELEGRAM_TOKEN),
+            daemon=True
+        ).start()
     else:
         logging.warning("WEBHOOK_URL não definido; webhook não será registrado.")
 
@@ -271,4 +279,8 @@ def main():
     loop.run_forever()
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        logging.exception("🚨 Erro não tratado na inicialização do bot:")
+        raise
