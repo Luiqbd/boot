@@ -266,16 +266,31 @@ def relatorio_http():
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    try:
-        if application is None:
-            return "not ready", 503
-        data = request.get_json(force=True)
-        update = Update.de_json(data, application.bot)
-        asyncio.run_coroutine_threadsafe(application.process_update(update), loop)
-        return "ok", 200
-    except Exception as e:
-        app.logger.error(f"Erro no webhook: {e}", exc_info=True)
-        return "error", 500
+    # Se o bot não estiver pronto, rejeita
+    if application is None:
+        return "not ready", 503
+
+    # Tenta obter JSON sem levantar exceção
+    data = request.get_json(silent=True)
+    if not data:
+        app.logger.warning("Webhook: payload vazio ou não-JSON")
+        return "no data", 400
+
+    # Processa apenas payloads que contenham 'message'
+    if "message" in data:
+        try:
+            update = Update.de_json(data, application.bot)
+            asyncio.run_coroutine_threadsafe(
+                application.process_update(update),
+                loop
+            )
+            return "ok", 200
+        except Exception as e:
+            app.logger.error(f"Erro ao processar webhook: {e}", exc_info=True)
+            return "error", 500
+
+    # Se não tiver mensagem, ignora graciosamente
+    return "ignored", 200
 
 
 def set_webhook_with_retry(max_attempts=5, delay=3):
