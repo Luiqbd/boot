@@ -55,13 +55,10 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 risk_manager = RiskManager()
 
 # --- Monta lista de DEXes e tokens-base a partir do config ---
-# Espera-se que config["DEXES"] seja algo como:
-#   [{"name":"UniswapV2","factory":"0x...", "type":"v2"}, ...]
 dexes = [
-    DexInfo(name=d["name"], factory=d["factory"], type=d["type"])
+    DexInfo(name=d.name, factory=d.factory, type=d.type)
     for d in config.get("DEXES", [])
 ]
-# Base tokens (WETH por padrão)
 base_tokens = config.get("BASE_TOKENS", [config.get("WETH")])
 
 # Parâmetros de discovery
@@ -110,9 +107,6 @@ def env_summary_text() -> str:
 
 
 def iniciar_sniper():
-    """
-    Cria thread para disparar o discovery em background.
-    """
     global sniper_thread
     if sniper_thread and sniper_thread.is_alive():
         logging.info("⚠️ O sniper já está rodando.")
@@ -122,7 +116,6 @@ def iniciar_sniper():
 
     def start_sniper():
         try:
-            # Agenda run_discovery no event loop principal
             loop.call_soon_threadsafe(
                 run_discovery,
                 Web3(Web3.HTTPProvider(config["RPC_URL"])),
@@ -131,7 +124,6 @@ def iniciar_sniper():
                 MIN_LIQ_WETH,
                 INTERVAL_SEC,
                 application.bot,
-                # callback que empacota PairInfo para on_new_pair
                 lambda pair: on_new_pair(
                     pair.dex,
                     pair.address,
@@ -149,9 +141,6 @@ def iniciar_sniper():
 
 
 def parar_sniper():
-    """
-    Solicita parada do discovery.
-    """
     stop_discovery()
 
 
