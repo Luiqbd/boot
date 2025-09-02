@@ -30,6 +30,7 @@ if not ETHERSCAN_API_KEY or len(ETHERSCAN_API_KEY) < 10:
 else:
     log.info(f"[INFO] ETHERSCAN_API_KEY carregada: {ETHERSCAN_API_KEY[:6]}...")
 
+
 def is_v2_key(api_key: str) -> bool:
     """
     Retorna True se a chave fornecida for válida para o Etherscan V2.
@@ -125,32 +126,26 @@ class ApiRateLimiter:
 
         now = datetime.now(timezone.utc)
         one_sec_ago = now - timedelta(seconds=1)
-        # Remove timestamps antigos de uma janela de 1 segundo
         while self.calls_window and self.calls_window[0] < one_sec_ago:
             self.calls_window.popleft()
 
-        # Aviso próximo ao limite de QPS
         if not self._warned_qps and len(self.calls_window) >= int(self.qps_limit * self.warn_pct):
             self._warned_qps = True
             self._notify(f"⚠️ Aproximando do limite de QPS ({len(self.calls_window)}/{self.qps_limit}/s).")
 
-        # Excedeu QPS
         if len(self.calls_window) >= self.qps_limit:
             if self.pause_enabled:
                 self.paused_until = now + timedelta(seconds=self.qps_cd)
                 self._notify(f"⏸️ Pausa automática {self.qps_cd}s: QPS atingido ({self.qps_limit}/s).")
             raise RuntimeError("API rate-limited: QPS exceeded")
 
-        # Registra nova chamada e incrementa contagem diária
         self.calls_window.append(now)
         self.daily_count += 1
 
-        # Aviso próximo ao limite diário
         if not self._warned_daily and self.daily_count >= int(self.daily_limit * self.warn_pct):
             self._warned_daily = True
             self._notify(f"⚠️ Aproximando do limite diário ({self.daily_count}/{self.daily_limit}).")
 
-        # Excedeu limite diário
         if self.daily_count >= int(self.daily_limit * self.pause_daily_pct):
             if self.pause_enabled:
                 until = min(
@@ -213,7 +208,6 @@ def is_contract_verified(token_address: str, api_key: str = ETHERSCAN_API_KEY) -
         resp.raise_for_status()
         data = resp.json()
 
-        # status="1" e result ser lista não vazia indicam contrato verificado
         if data.get("status") != "1" or not isinstance(data.get("result"), list) or not data["result"]:
             log.warning(f"[Verificação] Contrato {token_address} NÃO verificado.")
             return False
@@ -258,7 +252,7 @@ def is_token_concentrated(token_address: str, top_limit_pct: float, api_key: str
 
         if not isinstance(holders, list):
             log.error(f"Resposta inesperada ao listar holders: {holders}")
-            return True  # Conservador: assume concentração
+            return True
 
         for h in holders:
             pct_str = str(h.get("Percentage", "0")).replace("%", "").strip()
@@ -273,7 +267,7 @@ def is_token_concentrated(token_address: str, top_limit_pct: float, api_key: str
 
     except Exception as e:
         log.error(f"Erro ao verificar concentração de holders: {e}", exc_info=True)
-        return True  # Conservador: bloqueia em caso de erro
+        return True
 
 
 def testar_etherscan_v2(
@@ -332,13 +326,7 @@ def has_high_tax(
     """
     Verifica se o token aplica taxa de transferência (tax) maior que max_tax_bps.
 
-    Estratégia stub:
-      1. Consulta getAmountsOut para sample_amount_wei via client.
-      2. (Opcional) executa lógica de comparação real on-chain.
-      3. Atualmente sempre retorna False. Substitua pela detecção desejada:
-         - Teste em testnet
-         - Monitor de eventos Transfer
-         - Leitura de variáveis on-chain específicas
+    Stub atual; sempre retorna False.
     """
     log.debug(
         "has_high_tax stub: token=%s sample_amount=%d",
@@ -346,3 +334,20 @@ def has_high_tax(
     )
     # TODO: implementar lógica real de detecção de tax on-transfer
     return False
+
+
+def get_token_balance(
+    client: ExchangeClient,
+    token_address: str
+) -> int:
+    """
+    Retorna o saldo bruto (raw, em unidades base) do token na carteira do client.
+    """
+    token_address = Web3.to_checksum_address(token_address)
+    contract = client.web3.eth.contract(
+        address=token_address,
+        abi=client.erc20_abi
+    )
+    balance_raw = contract.functions.balanceOf(client.wallet).call()
+    log.debug("Saldo raw de %s: %d", token_address, balance_raw)
+    return int(balance_raw)
