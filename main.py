@@ -1,8 +1,14 @@
-# main.py — Parte 1/2
+# main.py
+
 import os
 import asyncio
 import logging
 import requests
+import time
+import datetime
+import uuid
+from threading import Thread
+
 from flask import Flask, request
 from telegram import Update, BotCommand
 from telegram.ext import (
@@ -12,44 +18,40 @@ from telegram.ext import (
     ContextTypes,
     filters
 )
-from threading import Thread
-import time
-import datetime
-import uuid
 from web3 import Web3
 
-# --- Importações sniper ---
 from check_balance import get_wallet_status
-from strategy_sniper import on_new_pair  # versão revisada
+from strategy_sniper import on_new_pair
 from discovery import run_discovery, stop_discovery, get_discovery_status
+from risk_manager import RiskManager
 from config import config
 
-# --- Importa RiskManager ---
-from risk_manager import RiskManager
-risk_manager = RiskManager()
-
-# --- Configuração de log ---
+# Configuração de logging
 logging.basicConfig(
     format='[%(asctime)s] %(levelname)s - %(message)s',
     level=logging.INFO
 )
 
-# --- Flask app ---
+# Flask app
 app = Flask(__name__)
 
-# --- Variáveis globais ---
+# Loop e estado global
 loop = asyncio.new_event_loop()
 application = None
 sniper_thread = None
 
-# --- Variáveis de ambiente ---
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+# Variáveis de ambiente
+TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN")
+WEBHOOK_URL      = os.getenv("WEBHOOK_URL")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "0")
 
-# --- Funções auxiliares ---
+# Gerenciador de risco
+risk_manager = RiskManager()
+
+
 def str_to_bool(v: str) -> bool:
     return str(v).strip().lower() in {"1", "true", "t", "yes", "y"}
+
 
 def normalize_private_key(pk: str) -> str:
     if not pk:
@@ -61,10 +63,12 @@ def normalize_private_key(pk: str) -> str:
         raise ValueError("PRIVATE_KEY inválida: formato incorreto.")
     return pk
 
+
 def get_active_address() -> str:
     pk_raw = os.getenv("PRIVATE_KEY")
     pk = normalize_private_key(pk_raw)
     return Web3().eth.account.from_key(pk).address
+
 
 def env_summary_text() -> str:
     try:
@@ -84,22 +88,23 @@ def env_summary_text() -> str:
         f"🧪 Dry Run: {os.getenv('DRY_RUN')}"
     )
 
-# --- Funções sniper ---
+
 def iniciar_sniper():
     global sniper_thread
     if sniper_thread and sniper_thread.is_alive():
         logging.info("⚠️ O sniper já está rodando.")
         return
 
-    logging.info("⚙️ Iniciando sniper... Monitorando novos pares com liquidez nas DEX configuradas.")
+    logging.info("⚙️ Iniciando sniper...")
 
     def start_sniper():
         try:
-            # Corrigido: executa coroutine de forma thread-safe no loop existente
             asyncio.run_coroutine_threadsafe(
                 run_discovery(
                     lambda dex, pair, t0, t1: on_new_pair(
-                        dex, pair, t0, t1, bot=application.bot, loop=loop
+                        dex, pair, t0, t1,
+                        bot=application.bot,
+                        loop=loop
                     ),
                     loop
                 ),
@@ -111,10 +116,13 @@ def iniciar_sniper():
     sniper_thread = Thread(target=start_sniper, daemon=True)
     sniper_thread.start()
 
+
 def parar_sniper():
     stop_discovery(loop)
 
-# --- Handlers principais ---
+
+# --- Handlers Telegram ---
+
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mensagem = (
         "🎯 **Bem-vindo ao Sniper Bot Criado por Luis Fernando**\n\n"
@@ -134,8 +142,10 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(mensagem, parse_mode="Markdown")
 
+
 async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start_cmd(update, context)
+
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -146,16 +156,19 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"Erro no /status: {e}", exc_info=True)
         await update.message.reply_text("⚠️ Erro ao verificar o status da carteira.")
 
+
 async def snipe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if sniper_thread and sniper_thread.is_alive():
         await update.message.reply_text("⚠️ O sniper já está rodando.")
         return
-    await update.message.reply_text("⚙️ Iniciando sniper... Monitorando novas pairs em todas as DEX.")
+    await update.message.reply_text("⚙️ Iniciando sniper...")
     iniciar_sniper()
+
 
 async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parar_sniper()
     await update.message.reply_text("🛑 Sniper interrompido.")
+
 
 async def sniper_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -165,34 +178,41 @@ async def sniper_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"Erro no /sniperstatus: {e}", exc_info=True)
         await update.message.reply_text("⚠️ Erro ao verificar o status do sniper.")
 
+
 async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Você disse: {update.message.text}")
 
+
 async def ping_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uptime_seconds = int(time.time() - context.bot_data.get("start_time", time.time()))
-    uptime_str = str(datetime.timedelta(seconds=uptime_seconds))
+    uptime = int(time.time() - context.bot_data.get("start_time", time.time()))
+    uptime_str = str(datetime.timedelta(seconds=uptime))
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     await update.message.reply_text(f"pong 🏓\n⏱ Uptime: {uptime_str}\n🕒 Agora: {now_str}")
 
+
 async def test_notify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        chat_id_str = TELEGRAM_CHAT_ID or "0"
-        chat_id = int(chat_id_str) if chat_id_str.isdigit() else 0
+        chat_id = int(TELEGRAM_CHAT_ID) if TELEGRAM_CHAT_ID.isdigit() else 0
         if chat_id == 0:
-            await update.message.reply_text("⚠️ TELEGRAM_CHAT_ID ausente ou inválido nas variáveis de ambiente.")
+            await update.message.reply_text("⚠️ TELEGRAM_CHAT_ID inválido.")
             return
 
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        unique_id = str(uuid.uuid4())[:8]
-
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        uid = str(uuid.uuid4())[:8]
         await context.bot.send_message(
             chat_id=chat_id,
-            text=f"✅ Teste de notificação\n🕒 {timestamp}\n🆔 {unique_id}\n💬 Sniper pronto para narrar as operações!"
+            text=(
+                f"✅ Teste de notificação\n"
+                f"🕒 {ts}\n"
+                f"🆔 {uid}\n"
+                "💬 Sniper pronto para operar!"
+            )
         )
-        await update.message.reply_text(f"Mensagem de teste enviada (ID: {unique_id})")
+        await update.message.reply_text(f"Mensagem enviada (ID: {uid})")
     except Exception as e:
         logging.error(f"Erro no /testnotify: {e}", exc_info=True)
         await update.message.reply_text(f"⚠️ Erro ao enviar mensagem: {e}")
+
 
 async def relatorio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -202,67 +222,72 @@ async def relatorio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"Erro ao gerar relatório: {e}", exc_info=True)
         await update.message.reply_text("⚠️ Erro ao gerar relatório.")
 
-# --- Healthcheck ---
+
+# --- Rotas HTTP ---
+
 @app.route("/", methods=["GET", "HEAD"])
 def health():
     return "ok", 200
 
-# --- Rota HTTP para relatório ---
+
 @app.route("/relatorio", methods=["GET"])
 def relatorio_http():
     try:
         rel = risk_manager.gerar_relatorio()
         return f"<h1>📊 Relatório de Eventos</h1><pre>{rel}</pre>"
     except Exception as e:
-        logging.error(f"Erro ao gerar relatório HTTP: {e}", exc_info=True)
+        logging.error(f"Erro no relatório HTTP: {e}", exc_info=True)
         return "Erro ao gerar relatório", 500
 
-# --- Webhook ---
-@app.route('/webhook', methods=['POST'])
+
+@app.route("/webhook", methods=["POST"])
 def webhook():
     try:
         if application is None:
-            return 'not ready', 503
+            return "not ready", 503
         data = request.get_json(force=True)
         update = Update.de_json(data, application.bot)
         asyncio.run_coroutine_threadsafe(application.process_update(update), loop)
-        return 'ok', 200
+        return "ok", 200
     except Exception as e:
         app.logger.error(f"Erro no webhook: {e}", exc_info=True)
-        return 'error', 500
+        return "error", 500
+
 
 def set_webhook_with_retry(max_attempts=5, delay=3):
     if not TELEGRAM_TOKEN or not WEBHOOK_URL:
-        logging.error("WEBHOOK não configurado: faltam TELEGRAM_TOKEN ou WEBHOOK_URL.")
+        logging.error("Faltam TELEGRAM_TOKEN ou WEBHOOK_URL.")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
     for attempt in range(1, max_attempts + 1):
         try:
             resp = requests.post(url, json={"url": WEBHOOK_URL}, timeout=10)
             if resp.status_code == 200 and resp.json().get("ok"):
-                logging.info(f"✅ Webhook registrado com sucesso: {WEBHOOK_URL}")
+                logging.info(f"✅ Webhook registrado: {WEBHOOK_URL}")
                 return
             logging.warning(f"Tentativa {attempt} falhou: {resp.text}")
         except Exception as e:
-            logging.warning(f"Tentativa {attempt} lançou exceção: {e}")
+            logging.warning(f"Tentativa {attempt} levantou exceção: {e}")
         time.sleep(delay)
-    logging.error("❌ Todas as tentativas de registrar o webhook falharam.")
+    logging.error("❌ Falha ao registrar webhook após várias tentativas.")
+
 
 def start_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port, threaded=True)
 
-# --- Inicialização ---
+
 if __name__ == "__main__":
     if not TELEGRAM_TOKEN:
         logging.error("Falta TELEGRAM_TOKEN no ambiente. Encerrando.")
         raise SystemExit(1)
-    if not WEBHOOK_URL:
-        logging.warning("WEBHOOK_URL não definido. O webhook não será registrado automaticamente.")
 
-    missing = [k for k in ["RPC_URL", "PRIVATE_KEY", "CHAIN_ID"] if not os.getenv(k)]
+    if not WEBHOOK_URL:
+        logging.warning("WEBHOOK_URL não definido; webhook não será registrado automaticamente.")
+
+    missing = [k for k in ("RPC_URL", "PRIVATE_KEY", "CHAIN_ID") if not os.getenv(k)]
     if missing:
-        logging.error(f"Faltam variáveis de ambiente obrigatórias: {', '.join(missing)}. Encerrando.")
+        logging.error(f"Faltam variáveis obrigatórias: {', '.join(missing)}. Encerrando.")
         raise SystemExit(1)
 
     try:
@@ -293,16 +318,15 @@ if __name__ == "__main__":
         await application.bot.set_my_commands([
             BotCommand("start", "Mostra boas-vindas e configuração"),
             BotCommand("menu", "Reexibe o menu"),
-            BotCommand("status", "Mostra saldo ETH/WETH da carteira"),
+            BotCommand("status", "Mostra saldo ETH/WETH"),
             BotCommand("snipe", "Inicia o sniper"),
             BotCommand("stop", "Para o sniper"),
             BotCommand("sniperstatus", "Status do sniper"),
             BotCommand("ping", "Teste de vida (pong)"),
-            BotCommand("testnotify", "Envia uma notificação de teste"),
-            BotCommand("relatorio", "Mostra o relatório de eventos")
+            BotCommand("testnotify", "Envia notificação de teste"),
+            BotCommand("relatorio", "Mostra relatório de eventos")
         ])
 
-    # Agenda o bot, inicia Flask e registra o webhook
     loop.create_task(start_bot())
     Thread(target=start_flask, daemon=True).start()
     Thread(target=set_webhook_with_retry, daemon=True).start()
