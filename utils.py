@@ -4,7 +4,12 @@ import requests
 import logging
 from collections import deque
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+
+from web3 import Web3
 from dotenv import load_dotenv
+
+from exchange_client import ExchangeClient
 
 # Carrega variáveis de ambiente de um arquivo .env, se existir
 load_dotenv()
@@ -30,6 +35,7 @@ def is_v2_key(api_key: str) -> bool:
     Retorna True se a chave fornecida for válida para o Etherscan V2.
     """
     return bool(api_key)
+
 
 # ===========================
 # Rate Limiter
@@ -313,4 +319,30 @@ def testar_etherscan_v2(
             log.error(f"❌ Erro na tentativa {tentativa}: {e}", exc_info=True)
 
     log.error("❌ Todas as tentativas de teste falharam.")
+    return False
+
+
+def has_high_tax(
+    client: ExchangeClient,
+    token_address: str,
+    token_in_weth: str,
+    sample_amount_wei: int = Web3.to_wei(Decimal("0.01"), "ether"),
+    max_tax_bps: int = 500
+) -> bool:
+    """
+    Verifica se o token aplica taxa de transferência (tax) maior que max_tax_bps.
+
+    Estratégia stub:
+      1. Consulta getAmountsOut para sample_amount_wei via client.
+      2. (Opcional) executa lógica de comparação real on-chain.
+      3. Atualmente sempre retorna False. Substitua pela detecção desejada:
+         - Teste em testnet
+         - Monitor de eventos Transfer
+         - Leitura de variáveis on-chain específicas
+    """
+    log.debug(
+        "has_high_tax stub: token=%s sample_amount=%d",
+        token_address, sample_amount_wei
+    )
+    # TODO: implementar lógica real de detecção de tax on-transfer
     return False
