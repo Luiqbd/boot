@@ -60,7 +60,7 @@ class SniperDiscovery:
         self.pnl_total = Decimal("0")
         self.last_pair: Optional[PairInfo] = None
 
-        # Assinaturas de evento para filtros
+        # Sinais para logs de evento
         self.SIG_V2 = Web3.to_hex(Web3.keccak(text="PairCreated(address,address,address,uint256)"))
         self.SIG_V3 = Web3.to_hex(Web3.keccak(text="PoolCreated(address,address,uint24,int24,address)"))
 
@@ -73,6 +73,9 @@ class SniperDiscovery:
             self._last_block[dex.name] = current
 
     def start(self) -> None:
+        """
+        Inicia o loop de discovery em background.
+        """
         if self._start_time:
             logger.warning("SniperDiscovery já está rodando")
             return
@@ -86,13 +89,22 @@ class SniperDiscovery:
         logger.info("🔍 SniperDiscovery iniciado")
 
     def stop(self) -> None:
+        """
+        Para o loop de discovery.
+        """
         self._stop_event.set()
-        logger.info("🛑 SniperDiscovery interrompido manualmente")
+        logger.info("🛑 SniperDiscovery interrompido")
 
     def is_running(self) -> bool:
+        """
+        Retorna True se o discovery estiver ativo.
+        """
         return not self._stop_event.is_set()
 
     def status(self) -> Dict[str, Any]:
+        """
+        Retorna dicionário com status atual: ativo, tempo, contagem e último par.
+        """
         if not self.is_running():
             return {"active": False, "text": "🔴 Sniper parado.", "button": None}
 
@@ -126,8 +138,8 @@ class SniperDiscovery:
                     })
                     self._last_block[dex.name] = latest
 
-                    for log in logs:
-                        pair = self._parse_log(dex, log)
+                    for log_entry in logs:
+                        pair = self._parse_log(dex, log_entry)
                         if not pair:
                             continue
 
@@ -203,8 +215,7 @@ class SniperDiscovery:
                 return reserve_weth >= self.min_liq_wei
             except Exception:
                 return False
-        # para v3 ou outras, considera como ok por enquanto
-        return True
+        return True  # v3 ou outros tipos, assume ok
 
     async def _notify_new_pair(self, pair: PairInfo) -> None:
         text = (
@@ -215,3 +226,36 @@ class SniperDiscovery:
 
     async def _notify(self, msg: str) -> None:
         send_report(bot=self.bot, message=msg)
+
+
+# ===========================
+# Funções de controle externo
+# ===========================
+
+_discovery_instance: Optional[SniperDiscovery] = None
+
+
+def run_discovery(*args, **kwargs) -> None:
+    """
+    Inicializa e inicia o discovery. Se já estiver rodando, não recria.
+    Args e kwargs são passados para o construtor de SniperDiscovery.
+    """
+    global _discovery_instance
+    if _discovery_instance is None:
+        _discovery_instance = SniperDiscovery(*args, **kwargs)
+    _discovery_instance.start()
+
+
+def stop_discovery() -> None:
+    """
+    Solicita parada do discovery em background.
+    """
+    if _discovery_instance:
+        _discovery_instance.stop()
+
+
+def get_discovery_status() -> bool:
+    """
+    Retorna True se o discovery estiver ativo.
+    """
+    return _discovery_instance.is_running() if _discovery_instance else False
