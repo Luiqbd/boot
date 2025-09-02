@@ -8,9 +8,10 @@ import time
 import datetime
 import uuid
 from threading import Thread
+from decimal import Decimal
 
 from flask import Flask, request
-from telegram import Update, BotCommand
+from telegram import Update, BotCommand, Bot
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -22,7 +23,12 @@ from web3 import Web3
 
 from check_balance import get_wallet_status
 from strategy_sniper import on_new_pair
-from discovery import run_discovery, stop_discovery, get_discovery_status
+from discovery import (
+    run_discovery,
+    stop_discovery,
+    get_discovery_status,
+    DexInfo
+)
 from risk_manager import RiskManager
 from config import config
 
@@ -41,12 +47,26 @@ application = None
 sniper_thread = None
 
 # Variáveis de ambiente
-TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN")
-WEBHOOK_URL      = os.getenv("WEBHOOK_URL")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "0")
+TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN", "").strip()
+WEBHOOK_URL      = os.getenv("WEBHOOK_URL", "").strip()
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
-# Gerenciador de risco
+# Gerenciador de risco para comandos HTTP/Telegram
 risk_manager = RiskManager()
+
+# --- Monta lista de DEXes e tokens-base a partir do config ---
+# Espera-se que config["DEXES"] seja algo como:
+#   [{"name":"UniswapV2","factory":"0x...", "type":"v2"}, ...]
+dexes = [
+    DexInfo(name=d["name"], factory=d["factory"], type=d["type"])
+    for d in config.get("DEXES", [])
+]
+# Base tokens (WETH por padrão)
+base_tokens = config.get("BASE_TOKENS", [config.get("WETH")])
+
+# Parâmetros de discovery
+MIN_LIQ_WETH = Decimal(str(config.get("MIN_LIQ_WETH", "0.5")))
+INTERVAL_SEC = int(config.get("INTERVAL", 3))
 
 
 def str_to_bool(v: str) -> bool:
@@ -65,7 +85,7 @@ def normalize_private_key(pk: str) -> str:
 
 
 def get_active_address() -> str:
-    pk_raw = os.getenv("PRIVATE_KEY")
+    pk_raw = os.getenv("PRIVATE_KEY", "")
     pk = normalize_private_key(pk_raw)
     return Web3().eth.account.from_key(pk).address
 
@@ -90,6 +110,9 @@ def env_summary_text() -> str:
 
 
 def iniciar_sniper():
+    """
+    Cria thread para disparar o discovery em background.
+    """
     global sniper_thread
     if sniper_thread and sniper_thread.is_alive():
         logging.info("⚠️ O sniper já está rodando.")
@@ -99,26 +122,37 @@ def iniciar_sniper():
 
     def start_sniper():
         try:
-            asyncio.run_coroutine_threadsafe(
-                run_discovery(
-                    lambda dex, pair, t0, t1: on_new_pair(
-                        dex, pair, t0, t1,
-                        bot=application.bot,
-                        loop=loop
-                    ),
-                    loop
-                ),
-                loop
+            # Agenda run_discovery no event loop principal
+            loop.call_soon_threadsafe(
+                run_discovery,
+                Web3(Web3.HTTPProvider(config["RPC_URL"])),
+                dexes,
+                base_tokens,
+                MIN_LIQ_WETH,
+                INTERVAL_SEC,
+                application.bot,
+                # callback que empacota PairInfo para on_new_pair
+                lambda pair: on_new_pair(
+                    pair.dex,
+                    pair.address,
+                    pair.token0,
+                    pair.token1,
+                    bot=application.bot,
+                    loop=loop
+                )
             )
         except Exception as e:
-            logging.error(f"Erro no sniper: {e}", exc_info=True)
+            logging.error(f"Erro ao iniciar discovery: {e}", exc_info=True)
 
     sniper_thread = Thread(target=start_sniper, daemon=True)
     sniper_thread.start()
 
 
 def parar_sniper():
-    stop_discovery(loop)
+    """
+    Solicita parada do discovery.
+    """
+    stop_discovery()
 
 
 # --- Handlers Telegram ---
@@ -134,7 +168,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🏓 /ping — Teste de vida.\n"
         "🛰️ /testnotify — Mensagem de teste.\n"
         "📜 /menu — Reexibe este menu.\n"
-        "📊 /relatorio — Gera relatório do RiskManager.\n"
+        "📊 /relatorio — Gera relatório de eventos.\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "🛠 **Configuração Atual**\n"
         f"{env_summary_text()}\n"
@@ -172,8 +206,9 @@ async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def sniper_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        status = get_discovery_status() or {"text": "Status indisponível."}
-        await update.message.reply_text(status["text"])
+        ativo = get_discovery_status()
+        text = "🟢 Sniper ativo" if ativo else "🔴 Sniper parado"
+        await update.message.reply_text(text)
     except Exception as e:
         logging.error(f"Erro no /sniperstatus: {e}", exc_info=True)
         await update.message.reply_text("⚠️ Erro ao verificar o status do sniper.")
