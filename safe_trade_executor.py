@@ -44,12 +44,23 @@ class SafeTradeExecutor:
             return False
 
     def _register_trade(self, success: bool):
+        """
+        Registra o resultado do trade no RiskManager, capturando possíveis erros.
+        """
         try:
             self.risk.register_trade(success=success)
         except Exception as e:
             logger.error(f"Erro ao registrar trade no RiskManager: {e}", exc_info=True)
 
-    def buy(self, token_in, token_out, amount_eth, current_price, last_trade_price, amount_out_min=None):
+    def buy(
+        self,
+        token_in,
+        token_out,
+        amount_eth,
+        current_price,
+        last_trade_price,
+        amount_out_min=None
+    ):
         """
         Tenta executar uma compra. Retorna tx_hash em caso de sucesso, ou None se bloqueado/falha.
         """
@@ -58,16 +69,29 @@ class SafeTradeExecutor:
             return None
 
         try:
-            tx = self.executor.buy(token_in, token_out, amount_eth, amount_out_min=amount_out_min)
+            tx = self.executor.buy(
+                token_in,
+                token_out,
+                amount_eth,
+                amount_out_min=amount_out_min
+            )
         except Exception as e:
             logger.error(f"Erro inesperado no executor.buy: {e}", exc_info=True)
             self._register_trade(success=False)
             return None
 
-        self._register_trade(success=tx is not None)
+        self._register_trade(success=(tx is not None))
         return tx
 
-    def sell(self, token_in, token_out, amount_eth, current_price, last_trade_price, amount_out_min=None):
+    def sell(
+        self,
+        token_in,
+        token_out,
+        amount_eth,
+        current_price,
+        last_trade_price,
+        amount_out_min=None
+    ):
         """
         Tenta executar uma venda. Retorna tx_hash em caso de sucesso, ou None se bloqueado/falha.
         """
@@ -76,13 +100,18 @@ class SafeTradeExecutor:
             return None
 
         try:
-            tx = self.executor.sell(token_in, token_out, amount_eth, amount_out_min=amount_out_min)
+            tx = self.executor.sell(
+                token_in,
+                token_out,
+                amount_eth,
+                amount_out_min=amount_out_min
+            )
         except Exception as e:
             logger.error(f"Erro inesperado no executor.sell: {e}", exc_info=True)
             self._register_trade(success=False)
             return None
 
-        self._register_trade(success=tx is not None)
+        self._register_trade(success=(tx is not None))
         return tx
 
     def record_outcome(self, loss_eth: float = 0.0):
@@ -92,6 +121,7 @@ class SafeTradeExecutor:
         """
         if loss_eth <= 0:
             return
+
         try:
             if hasattr(self.risk, "register_loss"):
                 self.risk.register_loss(loss_eth)
