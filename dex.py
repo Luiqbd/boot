@@ -1,29 +1,26 @@
+import json
 import logging
 from enum import Enum
 from functools import lru_cache
 from decimal import Decimal
+from pathlib import Path
 from typing import Dict, List, Tuple, Union
 
 from web3 import Web3
 from web3.contract import Contract
 from web3.exceptions import BadFunctionCallOutput, ABIFunctionNotFound
 
-# Carrega os ABIs de arquivos JSON na pasta abis/
-import json
-from pathlib import Path
-
+# CONFIGURAÇÃO DE PATHS PARA OS ABIs
 BASE_DIR = Path(__file__).parent
 ABIS_DIR = BASE_DIR / "abis"
 
-# Router ABI (getAmountsOut, swapExactETHForTokens, etc.)
+# Carrega os ABIs de arquivos JSON na pasta abis/
 with open(ABIS_DIR / "uniswap_router.json", encoding="utf-8") as f:
     ROUTER_ABI = json.load(f)
 
-# ABI mínimo de um par Uniswap V2 (getReserves, token0, token1)
 with open(ABIS_DIR / "uniswap_v2_pair.json", encoding="utf-8") as f:
     V2_PAIR_ABI = json.load(f)
 
-# ABI mínimo de um pool Uniswap V3 (liquidity, slot0, fee, etc.)
 with open(ABIS_DIR / "uniswap_v3_pool.json", encoding="utf-8") as f:
     V3_POOL_ABI = json.load(f)
 
@@ -44,44 +41,57 @@ class DexClient:
     """
 
     def __init__(self, web3: Web3, router_address: str):
-        self.web3      = web3
-        self.router    = self._contract(router_address, ROUTER_ABI)
-        # cache para instâncias de Contract por endereço + ABI
+        # Web3 provider
+        self.web3 = web3
+
+        # Inicializa o cache de contratos antes de usar _contract()
         self._contract_cache: Dict[Tuple[str, Tuple[str, ...]], Contract] = {}
+
+        # Contrato do router Uniswap (getAmountsOut, swapExactETHForTokens etc.)
+        self.router = self._contract(router_address, ROUTER_ABI)
+
 
     def _contract(self, address: str, abi: List[dict]) -> Contract:
         """
         Retorna um objeto Contract para o endereço+ABI, armazenando em cache
-        para evitar recriações.
+        para evitar recriações desnecessárias.
         """
         checksum = Web3.to_checksum_address(address)
+        # chave baseada em endereço e nos nomes de funções do ABI
         key = (checksum, tuple(sorted(item.get("name", "") for item in abi)))
+
         if key not in self._contract_cache:
-            self._contract_cache[key] = self.web3.eth.contract(address=checksum, abi=abi)
+            logger.debug(f"Caching new contract {checksum} key={key}")
+            self._contract_cache[key] = self.web3.eth.contract(
+                address=checksum,
+                abi=abi
+            )
+
         return self._contract_cache[key]
+
 
     @lru_cache(maxsize=128)
     def detect_version(self, pair_address: str) -> DexVersion:
         """
-        Detecta se um par é V2 (UniswapV2 style) ou V3 (concentrated liquidity).
+        Detecta se um par é Uniswap V2 ou V3.
         Retorna DexVersion.UNKNOWN se não for reconhecido.
         """
         addr = Web3.to_checksum_address(pair_address)
 
-        # tenta V2
+        # Verifica V2
         try:
-            contract = self._contract(addr, V2_PAIR_ABI)
-            contract.functions.getReserves().call()
+            c = self._contract(addr, V2_PAIR_ABI)
+            c.functions.getReserves().call()
             return DexVersion.V2
         except (BadFunctionCallOutput, ABIFunctionNotFound):
             pass
         except Exception as e:
             logger.debug(f"detect_version V2 check falhou: {e}")
 
-        # tenta V3
+        # Verifica V3
         try:
-            contract = self._contract(addr, V3_POOL_ABI)
-            contract.functions.liquidity().call()
+            c = self._contract(addr, V3_POOL_ABI)
+            c.functions.liquidity().call()
             return DexVersion.V3
         except (BadFunctionCallOutput, ABIFunctionNotFound):
             pass
@@ -90,24 +100,24 @@ class DexClient:
 
         return DexVersion.UNKNOWN
 
-    def _get_reserves(
-        self,
-        pair_address: str
-    ) -> Tuple[Decimal, Decimal]:
+
+    def _get_reserves(self, pair_address: str) -> Tuple[Decimal, Decimal]:
         """
-        Retorna as duas reservas do par V2, em unidades de WETH (divididas por 1e18).
+        Retorna as reservas de um par V2 (unidades de WETH).
         """
         contract = self._contract(pair_address, V2_PAIR_ABI)
         r0, r1, _ = contract.functions.getReserves().call()
-        return (Decimal(r0) / Decimal(1e18), Decimal(r1) / Decimal(1e18))
+        return Decimal(r0) / Decimal(1e18), Decimal(r1) / Decimal(1e18)
+
 
     def _get_liquidity_v3(self, pool_address: str) -> Decimal:
         """
-        Retorna o valor de 'liquidity' de um pool V3, convertido para WETH units (1e18).
+        Retorna o campo `liquidity` de um pool V3 (unidades de WETH).
         """
         contract = self._contract(pool_address, V3_POOL_ABI)
         liq = contract.functions.liquidity().call()
         return Decimal(liq) / Decimal(1e18)
+
 
     def has_min_liquidity(
         self,
@@ -115,10 +125,10 @@ class DexClient:
         min_liq_weth: Union[float, Decimal] = Decimal("0.5")
     ) -> bool:
         """
-        Verifica se o par/pool tem liquidez mínima de WETH.
-        Retorna False em versão desconhecida ou erro.
+        Verifica se o par/pool tem liquidez mínima em WETH.
         """
         version = self.detect_version(pair_address)
+
         try:
             if version == DexVersion.V2:
                 r0, r1 = self._get_reserves(pair_address)
@@ -138,16 +148,14 @@ class DexClient:
             logger.error(f"Erro ao verificar liquidez ({version}): {e}", exc_info=True)
             return False
 
+
     def calc_dynamic_slippage(
         self,
         pair_address: str,
         amount_in_eth: Union[float, Decimal]
     ) -> Decimal:
         """
-        Calcula slippage dinâmica com base no impacto de swap:
-          - V2: slippage = clamp(impact * 1.5, 0.2%, 2%)
-          - V3: slippage = clamp(impact * 2,   0.25%, 2.5%)
-        Se versão unknown ou erro, retorna 0.5% (0.005).
+        Calcula slippage dinâmica segundo a versão do DEX.
         """
         version = self.detect_version(pair_address)
         amt_in = Decimal(str(amount_in_eth))
@@ -171,6 +179,7 @@ class DexClient:
 
         return Decimal("0.005")
 
+
     def get_token_price(
         self,
         token_address: str,
@@ -178,7 +187,7 @@ class DexClient:
         amount_tokens: int = 10**18
     ) -> Decimal:
         """
-        Retorna o preço de `amount_tokens` do token em WETH.
+        Retorna o preço de `amount_tokens` do token em WETH usando o router.
         """
         try:
             path = [
