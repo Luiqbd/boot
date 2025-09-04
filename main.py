@@ -11,7 +11,7 @@ from threading import Thread
 from decimal import Decimal
 
 from flask import Flask, request
-from telegram import Update, BotCommand, Bot
+from telegram import Update, BotCommand
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -56,7 +56,12 @@ risk_manager = RiskManager()
 
 # --- Monta lista de DEXes e tokens-base a partir do config ---
 dexes = [
-    DexInfo(name=d.name, factory=d.factory, type=d.type)
+    DexInfo(
+        name=d.name,
+        factory=d.factory,
+        router=d.router,
+        type=d.type
+    )
     for d in config.get("DEXES", [])
 ]
 base_tokens = config.get("BASE_TOKENS", [config.get("WETH")])
@@ -124,13 +129,15 @@ def iniciar_sniper():
                 MIN_LIQ_WETH,
                 INTERVAL_SEC,
                 application.bot,
+                # callback que integra on_new_pair + risk_manager
                 lambda pair: on_new_pair(
                     pair.dex,
                     pair.address,
                     pair.token0,
                     pair.token1,
                     bot=application.bot,
-                    loop=loop
+                    loop=loop,
+                    risk_manager=risk_manager  # passe a instância para registro
                 )
             )
         except Exception as e:
@@ -241,7 +248,10 @@ async def test_notify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def relatorio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         rel = risk_manager.gerar_relatorio()
-        await update.message.reply_text(f"📊 Relatório de eventos:\n{rel}")
+        if not rel.strip():
+            await update.message.reply_text("📊 Nenhum evento registrado até agora.")
+        else:
+            await update.message.reply_text(f"📊 Relatório de eventos:\n{rel}")
     except Exception as e:
         logging.error(f"Erro ao gerar relatório: {e}", exc_info=True)
         await update.message.reply_text("⚠️ Erro ao gerar relatório.")
@@ -258,6 +268,8 @@ def health():
 def relatorio_http():
     try:
         rel = risk_manager.gerar_relatorio()
+        if not rel.strip():
+            rel = "Nenhum evento registrado até agora."
         return f"<h1>📊 Relatório de Eventos</h1><pre>{rel}</pre>"
     except Exception as e:
         logging.error(f"Erro no relatório HTTP: {e}", exc_info=True)
@@ -266,17 +278,14 @@ def relatorio_http():
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    # Se o bot não estiver pronto, rejeita
     if application is None:
         return "not ready", 503
 
-    # Tenta obter JSON sem levantar exceção
     data = request.get_json(silent=True)
     if not data:
         app.logger.warning("Webhook: payload vazio ou não-JSON")
         return "no data", 400
 
-    # Processa apenas payloads que contenham 'message'
     if "message" in data:
         try:
             update = Update.de_json(data, application.bot)
@@ -289,7 +298,6 @@ def webhook():
             app.logger.error(f"Erro ao processar webhook: {e}", exc_info=True)
             return "error", 500
 
-    # Se não tiver mensagem, ignora graciosamente
     return "ignored", 200
 
 
@@ -300,7 +308,9 @@ def set_webhook_with_retry(max_attempts=5, delay=3):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
     for attempt in range(1, max_attempts + 1):
         try:
-            resp = requests.post(url, json={"url": WEBHOOK_URL}, timeout=10)
+            resp = requests.post(
+                url, json={"url": WEBHOOK_URL}, timeout=10
+            )
             if resp.status_code == 200 and resp.json().get("ok"):
                 logging.info(f"✅ Webhook registrado: {WEBHOOK_URL}")
                 return
@@ -322,18 +332,26 @@ if __name__ == "__main__":
         raise SystemExit(1)
 
     if not WEBHOOK_URL:
-        logging.warning("WEBHOOK_URL não definido; webhook não será registrado automaticamente.")
+        logging.warning(
+            "WEBHOOK_URL não definido; webhook não será registrado automaticamente."
+        )
 
-    missing = [k for k in ("RPC_URL", "PRIVATE_KEY", "CHAIN_ID") if not os.getenv(k)]
+    missing = [
+        k for k in ("RPC_URL", "PRIVATE_KEY", "CHAIN_ID") if not os.getenv(k)
+    ]
     if missing:
-        logging.error(f"Faltam variáveis obrigatórias: {', '.join(missing)}. Encerrando.")
+        logging.error(
+            f"Faltam variáveis obrigatórias: {', '.join(missing)}. Encerrando."
+        )
         raise SystemExit(1)
 
     try:
         addr = get_active_address()
         logging.info(f"🔑 Carteira ativa: {addr}")
     except Exception as e:
-        logging.error(f"Falha ao validar PRIVATE_KEY: {e}", exc_info=True)
+        logging.error(
+            f"Falha ao validar PRIVATE_KEY: {e}", exc_info=True
+        )
         raise SystemExit(1)
 
     asyncio.set_event_loop(loop)
@@ -348,7 +366,9 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("ping", ping_cmd))
     application.add_handler(CommandHandler("testnotify", test_notify_cmd))
     application.add_handler(CommandHandler("relatorio", relatorio_cmd))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, echo)
+    )
 
     async def start_bot():
         application.bot_data["start_time"] = time.time()
