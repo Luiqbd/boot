@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
-# Carrega variáveis de ambiente do .env (por ex. TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
+# Carrega variáveis de ambiente do .env
 load_dotenv()
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -21,9 +21,6 @@ if not BOT_TOKEN or not CHAT_ID:
 
 
 def send_telegram(msg: str):
-    """
-    Envia mensagem para o Telegram via Bot API.
-    """
     if not BOT_TOKEN or not CHAT_ID:
         logger.debug("Telegram não configurado, pulando envio.")
         return
@@ -38,11 +35,6 @@ def send_telegram(msg: str):
 
 
 class RiskManager:
-    """
-    Gerencia limites de trades, exposições e gera relatório de eventos,
-    notificando via Telegram.
-    """
-
     def __init__(
         self,
         capital_eth: float = 1.0,
@@ -65,6 +57,54 @@ class RiskManager:
         self.last_trade_time_by_pair = {}
         self.eventos = []
         self.last_block_reason = None
+
+    def record(
+        self,
+        tipo: str,
+        mensagem: str,
+        pair: str = None,
+        token: str = None,
+        origem: str = None,
+        tx_hash: str = None,
+        dry_run: bool = False
+    ):
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        evento = {
+            "timestamp": timestamp,
+            "tipo": tipo,
+            "mensagem": mensagem,
+            "pair": pair,
+            "token": token,
+            "origem": origem,
+            "tx_hash": tx_hash,
+            "dry_run": dry_run
+        }
+        self.eventos.append(evento)
+
+        if tipo == "bloqueio":
+            icone = "🚫"
+            self.last_block_reason = mensagem
+        elif tipo == "liberado":
+            icone = "✅"
+            self.last_block_reason = None
+        elif tipo.startswith("error") or tipo.endswith("failed"):
+            icone = "❌"
+        elif tipo.endswith("success"):
+            icone = "💰"
+        else:
+            icone = "📊"
+
+        tx_info = f"\n🔗 TX: {tx_hash}" if tx_hash else ""
+        dry_info = " (dry-run)" if dry_run else ""
+
+        msg_tg = (
+            f"{icone} [{timestamp}] {tipo.upper()}{dry_info}\n"
+            f"🎯 Token: {token or '-'}\n"
+            f"🔁 Par: {pair or '-'}\n"
+            f"🛠 Origem: {origem or '-'}\n"
+            f"📄 Motivo: {mensagem}{tx_info}"
+        )
+        send_telegram(msg_tg)
 
     def _registrar_evento(
         self,
@@ -124,10 +164,6 @@ class RiskManager:
         send_telegram(msg_tg)
 
     def gerar_relatorio(self) -> str:
-        """
-        Retorna string com histórico de eventos invertido (mais recente primeiro)
-        e envia relatório completo via Telegram.
-        """
         if not self.eventos:
             return "Nenhum evento registrado ainda."
 
@@ -146,56 +182,7 @@ class RiskManager:
         send_telegram(f"📊 Relatório completo:\n{relatorio}")
         return relatorio
 
-    def can_trade(
-        self,
-        current_price: Decimal,
-        last_trade_price: Decimal,
-        direction: str,
-        trade_size_eth: float = None,
-        min_liquidity_ok: bool = True,
-        not_honeypot: bool = True,
-        pair: str = None,
-        now_ts: int = None,
-        min_liquidity_req: float = None,
-        min_liquidity_found: float = None,
-        slippage_allowed: int = None,
-        slippage_found: int = None,
-        spread: float = None
-    ) -> bool:
-        origem = "can_trade"
-
-        # 1) Limite diário de trades
-        if self.daily_trades >= self.max_trades_per_day:
-            self._registrar_evento(
-                "bloqueio", "Limite diário de trades atingido",
-                pair, direction, trade_size_eth, current_price, last_trade_price,
-                min_liquidity_req, min_liquidity_found, slippage_allowed, slippage_found, spread, origem
-            )
-            return False
-
-        # 2) Circuit breaker de perdas consecutivas
-        if self.loss_streak >= self.loss_limit:
-            self._registrar_evento(
-                "bloqueio", "Circuit breaker (perdas consecutivas)",
-                pair, direction, trade_size_eth, current_price, last_trade_price,
-                min_liquidity_req, min_liquidity_found, slippage_allowed, slippage_found, spread, origem
-            )
-            return False
-
-        # 3) Limite de perda diária
-        if self.realized_pnl_eth / self.capital <= -self.daily_loss_pct_limit:
-            self._registrar_evento(
-                "bloqueio", "Perda máxima diária atingida",
-                pair, direction, trade_size_eth, current_price, last_trade_price,
-                min_liquidity_req, min_liquidity_found, slippage_allowed, slippage_found, spread, origem
-            )
-            return False
-
-        # 4) Exposição máxima por trade
-        if trade_size_eth is not None:
-            ts_eth = Decimal(str(trade_size_eth))
-            if ts_eth > self.capital * self.max_exposure_pct:
-                pct = float(self.max_exposure_pct * 100)
+pct = float(self.max_exposure_pct * 100)
                 self._registrar_evento(
                     "bloqueio",
                     f"Trade {ts_eth} ETH excede exposição máxima ({pct}%)",
@@ -204,7 +191,6 @@ class RiskManager:
                 )
                 return False
 
-        # 5) Proteção contra pump antes de buy
         if direction == "buy" and last_trade_price:
             if current_price > last_trade_price * Decimal("1.10"):
                 self._registrar_evento(
@@ -214,7 +200,6 @@ class RiskManager:
                 )
                 return False
 
-        # 6) Liquidez mínima
         if not min_liquidity_ok:
             self._registrar_evento(
                 "bloqueio", "Liquidez insuficiente",
@@ -223,7 +208,6 @@ class RiskManager:
             )
             return False
 
-        # 7) Honeypot check
         if not not_honeypot:
             self._registrar_evento(
                 "bloqueio", "Possível honeypot detectado",
@@ -232,7 +216,6 @@ class RiskManager:
             )
             return False
 
-        # 8) Cooldown por par e direção
         if pair and now_ts:
             last_ts = self.last_trade_time_by_pair.get((pair, direction))
             if last_ts and (now_ts - last_ts) < self.cooldown_sec:
@@ -243,7 +226,6 @@ class RiskManager:
                 )
                 return False
 
-        # passou em todos os filtros → libera trade
         self._registrar_evento(
             "liberado", "Trade liberada",
             pair, direction, trade_size_eth, current_price, last_trade_price,
@@ -258,9 +240,6 @@ class RiskManager:
         direction: str = None,
         now_ts: int = None
     ):
-        """
-        Atualiza contadores após tentativa de trade e registra timestamp para cooldown.
-        """
         origem = "register_trade"
         self.daily_trades += 1
 
