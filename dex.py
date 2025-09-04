@@ -15,13 +15,16 @@ from pathlib import Path
 BASE_DIR = Path(__file__).parent
 ABIS_DIR = BASE_DIR / "abis"
 
+# Router ABI (getAmountsOut, swapExactETHForTokens, etc.)
 with open(ABIS_DIR / "uniswap_router.json", encoding="utf-8") as f:
     ROUTER_ABI = json.load(f)
 
-with open(ABIS_DIR / "erc20.json", encoding="utf-8") as f:
+# ABI mínimo de um par Uniswap V2 (getReserves, token0, token1)
+with open(ABIS_DIR / "uniswap_v2_pair.json", encoding="utf-8") as f:
     V2_PAIR_ABI = json.load(f)
 
-with open(ABIS_DIR / "uniswap_v3_router_abi.json", encoding="utf-8") as f:
+# ABI mínimo de um pool Uniswap V3 (liquidity, slot0, fee, etc.)
+with open(ABIS_DIR / "uniswap_v3_pool.json", encoding="utf-8") as f:
     V3_POOL_ABI = json.load(f)
 
 
@@ -44,7 +47,7 @@ class DexClient:
         self.web3      = web3
         self.router    = self._contract(router_address, ROUTER_ABI)
         # cache para instâncias de Contract por endereço + ABI
-        self._contract_cache: Dict[Tuple[str, Tuple[int, ...]], Contract] = {}
+        self._contract_cache: Dict[Tuple[str, Tuple[str, ...]], Contract] = {}
 
     def _contract(self, address: str, abi: List[dict]) -> Contract:
         """
@@ -52,7 +55,7 @@ class DexClient:
         para evitar recriações.
         """
         checksum = Web3.to_checksum_address(address)
-        key = (checksum, tuple(sorted(item.get("name","") for item in abi)))
+        key = (checksum, tuple(sorted(item.get("name", "") for item in abi)))
         if key not in self._contract_cache:
             self._contract_cache[key] = self.web3.eth.contract(address=checksum, abi=abi)
         return self._contract_cache[key]
@@ -64,10 +67,10 @@ class DexClient:
         Retorna DexVersion.UNKNOWN se não for reconhecido.
         """
         addr = Web3.to_checksum_address(pair_address)
+
         # tenta V2
         try:
             contract = self._contract(addr, V2_PAIR_ABI)
-            # getReserves existe apenas em V2
             contract.functions.getReserves().call()
             return DexVersion.V2
         except (BadFunctionCallOutput, ABIFunctionNotFound):
@@ -78,7 +81,6 @@ class DexClient:
         # tenta V3
         try:
             contract = self._contract(addr, V3_POOL_ABI)
-            # liquidity existe em V3 pools
             contract.functions.liquidity().call()
             return DexVersion.V3
         except (BadFunctionCallOutput, ABIFunctionNotFound):
@@ -94,7 +96,6 @@ class DexClient:
     ) -> Tuple[Decimal, Decimal]:
         """
         Retorna as duas reservas do par V2, em unidades de WETH (divididas por 1e18).
-        Lança se não for V2 ou em caso de falha.
         """
         contract = self._contract(pair_address, V2_PAIR_ABI)
         r0, r1, _ = contract.functions.getReserves().call()
@@ -156,21 +157,18 @@ class DexClient:
                 r0, r1 = self._get_reserves(pair_address)
                 reserve = max(r0, r1)
                 impact = amt_in / reserve
-                sl = impact * Decimal("1.5")
-                sl = sl.quantize(Decimal("0.00000001"))
+                sl = (impact * Decimal("1.5")).quantize(Decimal("0.00000001"))
                 return min(max(sl, Decimal("0.002")), Decimal("0.02"))
 
             if version == DexVersion.V3:
                 reserve = self._get_liquidity_v3(pair_address)
                 impact = amt_in / reserve
-                sl = impact * Decimal("2")
-                sl = sl.quantize(Decimal("0.00000001"))
+                sl = (impact * Decimal("2")).quantize(Decimal("0.00000001"))
                 return min(max(sl, Decimal("0.0025")), Decimal("0.025"))
 
         except Exception as e:
             logger.error(f"Erro ao calcular slippage ({version}): {e}", exc_info=True)
 
-        # fallback
         return Decimal("0.005")
 
     def get_token_price(
@@ -180,8 +178,7 @@ class DexClient:
         amount_tokens: int = 10**18
     ) -> Decimal:
         """
-        Retorna o preço de `amount_tokens` do token em WETH (ex.: para 1 token = 1e18 base units).
-        Se falhar, retorna 0.
+        Retorna o preço de `amount_tokens` do token em WETH.
         """
         try:
             path = [
