@@ -2,7 +2,6 @@ import os
 import time
 import requests
 import logging
-from collections import deque
 from decimal import Decimal
 from datetime import datetime
 
@@ -12,7 +11,6 @@ logger = logging.getLogger(__name__)
 
 # Carrega variáveis de ambiente do .env
 load_dotenv()
-
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
@@ -163,6 +161,139 @@ class RiskManager:
         )
         send_telegram(msg_tg)
 
+    def can_trade(
+        self,
+        ts_eth: Decimal,
+        pair: str,
+        direction: str,
+        trade_size_eth: Decimal,
+        current_price: Decimal,
+        last_trade_price: Decimal,
+        min_liquidity_req: Decimal,
+        min_liquidity_found: Decimal,
+        slippage_allowed: Decimal,
+        slippage_found: Decimal,
+        spread: Decimal,
+        not_honeypot: bool,
+        now_ts: int = None
+    ) -> bool:
+        # Bloqueia se tamanho excede exposição máxima
+        if ts_eth > self.capital * self.max_exposure_pct:
+            pct = float(self.max_exposure_pct * 100)
+            self._registrar_evento(
+                tipo="bloqueio",
+                mensagem=f"Trade {ts_eth} ETH excede exposição máxima ({pct}%)",
+                pair=pair,
+                direction=direction,
+                trade_size_eth=trade_size_eth,
+                current_price=current_price,
+                last_trade_price=last_trade_price,
+                min_liquidity_req=min_liquidity_req,
+                min_liquidity_found=min_liquidity_found,
+                slippage_allowed=slippage_allowed,
+                slippage_found=slippage_found,
+                spread=spread,
+                origem="can_trade"
+            )
+            return False
+
+        # Bloqueia se preço subiu >10% desde última compra
+        if direction == "buy" and last_trade_price:
+            if current_price > last_trade_price * Decimal("1.10"):
+                self._registrar_evento(
+                    tipo="bloqueio",
+                    mensagem="Preço subiu >10% desde última compra",
+                    pair=pair,
+                    direction=direction,
+                    trade_size_eth=trade_size_eth,
+                    current_price=current_price,
+                    last_trade_price=last_trade_price,
+                    min_liquidity_req=min_liquidity_req,
+                    min_liquidity_found=min_liquidity_found,
+                    slippage_allowed=slippage_allowed,
+                    slippage_found=slippage_found,
+                    spread=spread,
+                    origem="can_trade"
+                )
+                return False
+
+        # Bloqueia se liquidez insuficiente
+        if min_liquidity_found < min_liquidity_req:
+            self._registrar_evento(
+                tipo="bloqueio",
+                mensagem="Liquidez insuficiente",
+                pair=pair,
+                direction=direction,
+                trade_size_eth=trade_size_eth,
+                current_price=current_price,
+                last_trade_price=last_trade_price,
+                min_liquidity_req=min_liquidity_req,
+                min_liquidity_found=min_liquidity_found,
+                slippage_allowed=slippage_allowed,
+                slippage_found=slippage_found,
+                spread=spread,
+                origem="can_trade"
+            )
+            return False
+
+        # Bloqueia honeypot
+        if not not_honeypot:
+            self._registrar_evento(
+                tipo="bloqueio",
+                mensagem="Possível honeypot detectado",
+                pair=pair,
+                direction=direction,
+                trade_size_eth=trade_size_eth,
+                current_price=current_price,
+                last_trade_price=last_trade_price,
+                min_liquidity_req=min_liquidity_req,
+                min_liquidity_found=min_liquidity_found,
+                slippage_allowed=slippage_allowed,
+                slippage_found=slippage_found,
+                spread=spread,
+                origem="can_trade"
+            )
+            return False
+
+        # Bloqueia se dentro do cooldown
+        if pair and now_ts is not None:
+            last_ts = self.last_trade_time_by_pair.get((pair, direction))
+            if last_ts and (now_ts - last_ts) < self.cooldown_sec:
+                self._registrar_evento(
+                    tipo="bloqueio",
+                    mensagem=f"Cooldown ativo ({self.cooldown_sec}s)",
+                    pair=pair,
+                    direction=direction,
+                    trade_size_eth=trade_size_eth,
+                    current_price=current_price,
+                    last_trade_price=last_trade_price,
+                    min_liquidity_req=min_liquidity_req,
+                    min_liquidity_found=min_liquidity_found,
+                    slippage_allowed=slippage_allowed,
+                    slippage_found=slippage_found,
+                    spread=spread,
+                    origem="can_trade"
+                )
+                return False
+
+        # Se passou por todos, libera trade
+        self._registrar_evento(
+            tipo="liberado",
+            mensagem="Trade liberada",
+            pair=pair,
+            direction=direction,
+            trade_size_eth=trade_size_eth,
+            current_price=current_price,
+            last_trade_price=last_trade_price,
+            min_liquidity_req=min_liquidity_req,
+            min_liquidity_found=min_liquidity_found,
+            slippage_allowed=slippage_allowed,
+            slippage_found=slippage_found,
+            spread=spread,
+            origem="can_trade"
+        )
+        return True
+
     def gerar_relatorio(self) -> str:
         if not self.eventos:
             return "Nenhum evento registrado ainda."
@@ -181,57 +312,6 @@ class RiskManager:
         relatorio = "\n".join(linhas)
         send_telegram(f"📊 Relatório completo:\n{relatorio}")
         return relatorio
-
-pct = float(self.max_exposure_pct * 100)
-                self._registrar_evento(
-                    "bloqueio",
-                    f"Trade {ts_eth} ETH excede exposição máxima ({pct}%)",
-                    pair, direction, trade_size_eth, current_price, last_trade_price,
-                    min_liquidity_req, min_liquidity_found, slippage_allowed, slippage_found, spread, origem
-                )
-                return False
-
-        if direction == "buy" and last_trade_price:
-            if current_price > last_trade_price * Decimal("1.10"):
-                self._registrar_evento(
-                    "bloqueio", "Preço subiu >10% desde última compra",
-                    pair, direction, trade_size_eth, current_price, last_trade_price,
-                    min_liquidity_req, min_liquidity_found, slippage_allowed, slippage_found, spread, origem
-                )
-                return False
-
-        if not min_liquidity_ok:
-            self._registrar_evento(
-                "bloqueio", "Liquidez insuficiente",
-                pair, direction, trade_size_eth, current_price, last_trade_price,
-                min_liquidity_req, min_liquidity_found, slippage_allowed, slippage_found, spread, origem
-            )
-            return False
-
-        if not not_honeypot:
-            self._registrar_evento(
-                "bloqueio", "Possível honeypot detectado",
-                pair, direction, trade_size_eth, current_price, last_trade_price,
-                min_liquidity_req, min_liquidity_found, slippage_allowed, slippage_found, spread, origem
-            )
-            return False
-
-        if pair and now_ts:
-            last_ts = self.last_trade_time_by_pair.get((pair, direction))
-            if last_ts and (now_ts - last_ts) < self.cooldown_sec:
-                self._registrar_evento(
-                    "bloqueio", f"Cooldown ativo ({self.cooldown_sec}s)",
-                    pair, direction, trade_size_eth, current_price, last_trade_price,
-                    min_liquidity_req, min_liquidity_found, slippage_allowed, slippage_found, spread, origem
-                )
-                return False
-
-        self._registrar_evento(
-            "liberado", "Trade liberada",
-            pair, direction, trade_size_eth, current_price, last_trade_price,
-            min_liquidity_req, min_liquidity_found, slippage_allowed, slippage_found, spread, origem
-        )
-        return True
 
     def register_trade(
         self,
