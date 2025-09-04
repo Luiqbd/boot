@@ -1,5 +1,3 @@
-# strategy_sniper.py
-
 import logging
 import asyncio
 from decimal import Decimal
@@ -26,25 +24,14 @@ from risk_manager import risk_manager
 
 log = logging.getLogger("sniper")
 
-# Bot para notificações diretas (assíncrono, pgram v20)
 bot_notify = Bot(token=config["TELEGRAM_TOKEN"])
-
-# configura rate limiter e notificação
 configure_rate_limiter_from_config(config)
 rate_limiter.set_notifier(lambda msg: safe_notify(bot_notify, msg))
 
-# expõe record_event em risk_manager (alias para _registrar_evento)
-risk_manager.record_event = risk_manager._registrar_evento
-
-# Cache local para deduplicar pares em curto intervalo
 _PAIR_DUP_INTERVAL = 5
 _recent_pairs: dict[tuple[str, str, str], float] = {}
 
-
 def notify(msg: str):
-    """
-    Dispara uma mensagem síncrona ou assíncrona pelo Bot.
-    """
     coro = bot_notify.send_message(
         chat_id=config["TELEGRAM_CHAT_ID"],
         text=msg
@@ -55,12 +42,8 @@ def notify(msg: str):
     except RuntimeError:
         asyncio.run(coro)
 
-
 def safe_notify(alert: TelegramAlert | Bot | None, msg: str,
                 loop: asyncio.AbstractEventLoop | None = None):
-    """
-    Deduplica mensagens idênticas em janela curta para evitar spam.
-    """
     now = time()
     key = hash(msg)
     if getattr(safe_notify, "_last_msgs", {}).get(key, 0) + _PAIR_DUP_INTERVAL > now:
@@ -83,28 +66,21 @@ def safe_notify(alert: TelegramAlert | Bot | None, msg: str,
     else:
         notify(msg)
 
-
 async def on_new_pair(dex_info, pair_addr, token0, token1,
                       bot=None, loop=None):
-    """
-    1) pausa por rate limiter
-    2) dedupe local
-    3) log e record_event(pair_detected)
-    4) filtros: liquidez, taxa, verificação, concentração
-    5) buy + monitor sell
-    """
-    # 1) API rate-limit pause?
     if rate_limiter.is_paused():
-        risk_manager.record_event(
-            "pair_skipped",
+        risk_manager.record(
+            tipo="pair_skipped",
             mensagem="API rate limit pause",
             pair=pair_addr,
-            origem=getattr(dex_info, "name", "DEX")
+            token=None,
+            origem=getattr(dex_info, "name", "DEX"),
+            tx_hash=None,
+            dry_run=config["DRY_RUN"]
         )
         safe_notify(bot, "⏸️ Sniper pausado por limite de API.", loop)
         return
 
-    # 2) dedupe local
     now_ts = time()
     key = (pair_addr.lower(), token0.lower(), token1.lower())
     if key in _recent_pairs and (now_ts - _recent_pairs[key]) < _PAIR_DUP_INTERVAL:
@@ -112,17 +88,18 @@ async def on_new_pair(dex_info, pair_addr, token0, token1,
         return
     _recent_pairs[key] = now_ts
 
-    # 3) registro de novo par
     dex_name = getattr(dex_info, "name", "DEX")
     log.info(f"[Novo par] {dex_name} {pair_addr} {token0}/{token1}")
-    risk_manager.record_event(
-        "pair_detected",
+    risk_manager.record(
+        tipo="pair_detected",
         mensagem="Novo par detectado",
         pair=pair_addr,
-        origem=dex_name
+        token=None,
+        origem=dex_name,
+        tx_hash=None,
+        dry_run=config["DRY_RUN"]
     )
 
-    # 4) contexto e filtros
     try:
         web3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
         weth = Web3.to_checksum_address(config["WETH"])
@@ -132,17 +109,11 @@ async def on_new_pair(dex_info, pair_addr, token0, token1,
             else Web3.to_checksum_address(token0)
         )
 
-        # quantidade em ETH para trade
         amt_eth = Decimal(str(config.get("TRADE_SIZE_ETH", 0.1)))
         if amt_eth <= 0:
             raise ValueError("TRADE_SIZE_ETH inválido")
 
-        # inicializa DexClient usando atributo router do DexInfo
-        dex_client = DexClient(
-            web3,
-            getattr(dex_info, "router")
-        )
-
+        dex_client = DexClient(web3, getattr(dex_info, "router"))
         MIN_LIQ = float(config.get("MIN_LIQ_WETH", 0.5))
         liq_ok = dex_client.has_min_liquidity(pair_addr, weth, MIN_LIQ)
 
@@ -161,21 +132,19 @@ async def on_new_pair(dex_info, pair_addr, token0, token1,
         )
 
         if not liq_ok:
-            risk_manager.record_event(
-                "pair_skipped",
+            risk_manager.record(
+                tipo="pair_skipped",
                 mensagem=f"liquidez < {MIN_LIQ} WETH",
                 pair=pair_addr,
-                origem="liq_check"
+                token=target,
+                origem="liq_check",
+                tx_hash=None,
+                dry_run=config["DRY_RUN"]
             )
             safe_notify(bot, "⚠️ Pool ignorada por baixa liquidez.", loop)
             return
 
-        # 4.1) inicializa ExchangeClient para checks on-chain
-        exchange_for_tax = ExchangeClient(
-            router_address=getattr(dex_info, "router")
-        )
-
-        # 4.2) filtro de tax on-transfer
+        exchange_for_tax = ExchangeClient(router_address=getattr(dex_info, "router"))
         MAX_TAX = float(config.get("MAX_TAX_PCT", 10.0))
         if has_high_tax(
             exchange_for_tax,
@@ -184,80 +153,86 @@ async def on_new_pair(dex_info, pair_addr, token0, token1,
             sample_amount_wei=Web3.to_wei(amt_eth, "ether"),
             max_tax_bps=int(MAX_TAX * 100)
         ):
-            risk_manager.record_event(
-                "pair_skipped",
+            risk_manager.record(
+                tipo="pair_skipped",
                 mensagem=f"taxa > {MAX_TAX}%",
                 pair=pair_addr,
-                origem="tax_check"
+                token=target,
+                origem="tax_check",
+                tx_hash=None,
+                dry_run=config["DRY_RUN"]
             )
             safe_notify(bot, f"⚠️ Token ignorado: tax > {MAX_TAX}%", loop)
             return
 
-        # 4.3) contrato verificado?
         if config.get("BLOCK_UNVERIFIED", False) and not is_contract_verified(
             target, config.get("ETHERSCAN_API_KEY")
         ):
-            risk_manager.record_event(
-                "pair_skipped",
+            risk_manager.record(
+                tipo="pair_skipped",
                 mensagem="contrato não verificado",
                 pair=pair_addr,
-                origem="verify_check"
+                token=target,
+                origem="verify_check",
+                tx_hash=None,
+                dry_run=config["DRY_RUN"]
             )
             safe_notify(bot, "🚫 Token bloqueado: contrato não verificado", loop)
             return
 
-        # 4.4) concentração de holders
         TOP_LIMIT = float(config.get("TOP_HOLDER_LIMIT", 30.0))
-        if is_token_concentrated(
-            target, TOP_LIMIT, config.get("ETHERSCAN_API_KEY")
-        ):
-            risk_manager.record_event(
-                "pair_skipped",
+        if is_token_concentrated(target, TOP_LIMIT, config.get("ETHERSCAN_API_KEY")):
+            risk_manager.record(
+                tipo="pair_skipped",
                 mensagem=f"concentração > {TOP_LIMIT}%",
                 pair=pair_addr,
-                origem="concentration_check"
+                token=target,
+                origem="concentration_check",
+                tx_hash=None,
+                dry_run=config["DRY_RUN"]
             )
             safe_notify(bot, f"🚫 Bloqueado: concentração > {TOP_LIMIT}%", loop)
             return
 
     except Exception as e:
         log.error(f"Erro nos filtros iniciais: {e}", exc_info=True)
-        risk_manager.record_event(
-            "error",
+        risk_manager.record(
+            tipo="error",
             mensagem=str(e),
             pair=pair_addr,
-            origem="filter_setup"
+            token=target,
+            origem="filter_setup",
+            tx_hash=None,
+            dry_run=config["DRY_RUN"]
         )
         return
 
-    # 5) tentativa de compra
-    risk_manager.record_event(
-        "buy_attempt",
+# 5) tentativa de compra
+    risk_manager.record(
+        tipo="buy_attempt",
         mensagem="tentativa de compra",
         pair=pair_addr,
-        origem="buy_phase"
+        token=target,
+        origem="buy_phase",
+        tx_hash=None,
+        dry_run=config["DRY_RUN"]
     )
 
     # 6) setup e execução da compra
     try:
-        exchange = ExchangeClient(
-            router_address=getattr(dex_info, "router")
-        )
-        trade_exec = TradeExecutor(
-            exchange_client=exchange,
-            dry_run=config["DRY_RUN"]
-        )
-        safe_exec = SafeTradeExecutor(
-            executor=trade_exec,
-            risk_manager=risk_manager
-        )
+        exchange = ExchangeClient(router_address=getattr(dex_info, "router"))
+        trade_exec = TradeExecutor(exchange_client=exchange, dry_run=config["DRY_RUN"])
+        safe_exec = SafeTradeExecutor(executor=trade_exec, risk_manager=risk_manager)
     except Exception as e:
         log.error(f"Erro ao criar executor: {e}", exc_info=True)
-        risk_manager.record_event(
-            "error",
+        risk_manager.record(
+            tipo="error",
             mensagem=str(e),
             pair=pair_addr,
-            origem="exec_setup"
+            token=target,
+            origem="exec_setup",
+            tx_hash=None,
+            dry_run=config["DRY_RUN"]
         )
         return
 
@@ -272,11 +247,14 @@ async def on_new_pair(dex_info, pair_addr, token0, token1,
     )
 
     if tx_buy:
-        risk_manager.record_event(
-            "buy_success",
+        risk_manager.record(
+            tipo="buy_success",
             mensagem="compra realizada",
             pair=pair_addr,
-            origem="buy_phase"
+            token=target,
+            origem="buy_phase",
+            tx_hash=tx_buy,
+            dry_run=config["DRY_RUN"]
         )
         risk_manager.register_trade(
             success=True,
@@ -284,18 +262,17 @@ async def on_new_pair(dex_info, pair_addr, token0, token1,
             direction="buy",
             now_ts=int(time()),
         )
-        safe_notify(
-            bot,
-            f"✅ Compra feita: {target}\nTX: {tx_buy}",
-            loop
-        )
+        safe_notify(bot, f"✅ Compra feita: {target}\nTX: {tx_buy}", loop)
     else:
         motivo = risk_manager.last_block_reason or "não informado"
-        risk_manager.record_event(
-            "buy_failed",
+        risk_manager.record(
+            tipo="buy_failed",
             mensagem=motivo,
             pair=pair_addr,
-            origem="buy_phase"
+            token=target,
+            origem="buy_phase",
+            tx_hash=None,
+            dry_run=config["DRY_RUN"]
         )
         risk_manager.register_trade(
             success=False,
@@ -303,11 +280,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1,
             direction="buy",
             now_ts=int(time()),
         )
-        safe_notify(
-            bot,
-            f"🚫 Compra falhou: {motivo}",
-            loop
-        )
+        safe_notify(bot, f"🚫 Compra falhou: {motivo}", loop)
         return
 
     # 7) monitoramento para venda
@@ -347,11 +320,14 @@ async def on_new_pair(dex_info, pair_addr, token0, token1,
                 last_trade_price=entry
             )
             if tx_sell:
-                risk_manager.record_event(
-                    "sell_success",
+                risk_manager.record(
+                    tipo="sell_success",
                     mensagem="venda realizada",
                     pair=pair_addr,
-                    origem="sell_phase"
+                    token=target,
+                    origem="sell_phase",
+                    tx_hash=tx_sell,
+                    dry_run=config["DRY_RUN"]
                 )
                 risk_manager.register_trade(
                     success=True,
@@ -359,19 +335,18 @@ async def on_new_pair(dex_info, pair_addr, token0, token1,
                     direction="sell",
                     now_ts=int(time()),
                 )
-                safe_notify(
-                    bot,
-                    f"💰 Venda feita: {target}\nTX: {tx_sell}",
-                    loop
-                )
+                safe_notify(bot, f"💰 Venda feita: {target}\nTX: {tx_sell}", loop)
                 sold = True
             else:
                 motivo = risk_manager.last_block_reason or "não informado"
-                risk_manager.record_event(
-                    "sell_failed",
+                risk_manager.record(
+                    tipo="sell_failed",
                     mensagem=motivo,
                     pair=pair_addr,
-                    origem="sell_phase"
+                    token=target,
+                    origem="sell_phase",
+                    tx_hash=None,
+                    dry_run=config["DRY_RUN"]
                 )
                 risk_manager.register_trade(
                     success=False,
@@ -379,19 +354,10 @@ async def on_new_pair(dex_info, pair_addr, token0, token1,
                     direction="sell",
                     now_ts=int(time()),
                 )
-                safe_notify(
-                    bot,
-                    f"⚠️ Venda falhou: {motivo}",
-                    loop
-                )
-
+                safe_notify(bot, f"⚠️ Venda falhou: {motivo}", loop)
             break
 
         await asyncio.sleep(int(config.get("INTERVAL", 3)))
 
     if not sold:
-        safe_notify(
-            bot,
-            f"⏹ Monitoramento encerrado: {target}",
-            loop
-        )
+        safe_notify(bot, f"⏹ Monitoramento encerrado: {target}", loop)
