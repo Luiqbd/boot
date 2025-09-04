@@ -20,7 +20,6 @@ from utils import (
     rate_limiter,
     configure_rate_limiter_from_config
 )
-from risk_manager import risk_manager
 
 log = logging.getLogger("sniper")
 
@@ -68,6 +67,9 @@ def safe_notify(alert: TelegramAlert | Bot | None, msg: str,
 
 async def on_new_pair(dex_info, pair_addr, token0, token1,
                       bot=None, loop=None):
+    # importa a instância global de risk_manager
+    from risk_manager import risk_manager
+
     if rate_limiter.is_paused():
         risk_manager.record(
             tipo="pair_skipped",
@@ -207,7 +209,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1,
         )
         return
 
-# 5) tentativa de compra
+    # 5) tentativa de compra
     risk_manager.record(
         tipo="buy_attempt",
         mensagem="tentativa de compra",
@@ -218,7 +220,7 @@ async def on_new_pair(dex_info, pair_addr, token0, token1,
         dry_run=config["DRY_RUN"]
     )
 
-    # 6) setup e execução da compra
+       # 6) setup e execução da compra
     try:
         exchange = ExchangeClient(router_address=getattr(dex_info, "router"))
         trade_exec = TradeExecutor(exchange_client=exchange, dry_run=config["DRY_RUN"])
@@ -360,4 +362,4 @@ async def on_new_pair(dex_info, pair_addr, token0, token1,
         await asyncio.sleep(int(config.get("INTERVAL", 3)))
 
     if not sold:
-        safe_notify(bot, f"⏹ Monitoramento encerrado: {target}", loop)
+        safe_notify(bot, f"⏹ Monitoramento encerrado: {target}", loop)                   
