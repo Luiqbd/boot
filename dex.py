@@ -8,10 +8,22 @@ from web3 import Web3
 from web3.contract import Contract
 from web3.exceptions import BadFunctionCallOutput, ABIFunctionNotFound
 
-# Mantenha seus ABIs carregados aqui (substitua ... pelos seus conteúdos)
-ROUTER_ABI   : List[dict] = [...]
-V2_PAIR_ABI  : List[dict] = [...]
-V3_POOL_ABI  : List[dict] = [...]
+# Carrega os ABIs de arquivos JSON na pasta abis/
+import json
+from pathlib import Path
+
+BASE_DIR = Path(__file__).parent
+ABIS_DIR = BASE_DIR / "abis"
+
+with open(ABIS_DIR / "uniswap_router.json", encoding="utf-8") as f:
+    ROUTER_ABI = json.load(f)
+
+with open(ABIS_DIR / "erc20.json", encoding="utf-8") as f:
+    V2_PAIR_ABI = json.load(f)
+
+with open(ABIS_DIR / "uniswap_v3_router_abi.json", encoding="utf-8") as f:
+    V3_POOL_ABI = json.load(f)
+
 
 logger = logging.getLogger(__name__)
 
@@ -132,8 +144,8 @@ class DexClient:
     ) -> Decimal:
         """
         Calcula slippage dinâmica com base no impacto de swap:
-          - V2: slippage = clamp(impact * 1.5, 0.2%, 2%)  
-          - V3: slippage = clamp(impact * 2,   0.25%, 2.5%)  
+          - V2: slippage = clamp(impact * 1.5, 0.2%, 2%)
+          - V3: slippage = clamp(impact * 2,   0.25%, 2.5%)
         Se versão unknown ou erro, retorna 0.5% (0.005).
         """
         version = self.detect_version(pair_address)
