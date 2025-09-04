@@ -1,3 +1,4 @@
+# discovery.py
 import asyncio
 import logging
 import time
@@ -18,6 +19,7 @@ logger = logging.getLogger("discovery")
 class DexInfo:
     name: str
     factory: str
+    router: str
     type: str    # "v2" ou "v3"
 
 
