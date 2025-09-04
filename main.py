@@ -1,4 +1,4 @@
-# main.py
+# main.py — PARTE 1
 
 import os
 import asyncio
@@ -129,15 +129,14 @@ def iniciar_sniper():
                 MIN_LIQ_WETH,
                 INTERVAL_SEC,
                 application.bot,
-                # callback que integra on_new_pair + risk_manager
+                # callback ajustado: delega on_new_pair sem passar risk_manager
                 lambda pair: on_new_pair(
                     pair.dex,
                     pair.address,
                     pair.token0,
                     pair.token1,
                     bot=application.bot,
-                    loop=loop,
-                    risk_manager=risk_manager  # passe a instância para registro
+                    loop=loop
                 )
             )
         except Exception as e:
@@ -244,37 +243,7 @@ async def test_notify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"Erro no /testnotify: {e}", exc_info=True)
         await update.message.reply_text(f"⚠️ Erro ao enviar mensagem: {e}")
 
-
-async def relatorio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        rel = risk_manager.gerar_relatorio()
-        if not rel.strip():
-            await update.message.reply_text("📊 Nenhum evento registrado até agora.")
-        else:
-            await update.message.reply_text(f"📊 Relatório de eventos:\n{rel}")
-    except Exception as e:
-        logging.error(f"Erro ao gerar relatório: {e}", exc_info=True)
-        await update.message.reply_text("⚠️ Erro ao gerar relatório.")
-
-
-# --- Rotas HTTP ---
-
-@app.route("/", methods=["GET", "HEAD"])
-def health():
-    return "ok", 200
-
-
-@app.route("/relatorio", methods=["GET"])
-def relatorio_http():
-    try:
-        rel = risk_manager.gerar_relatorio()
-        if not rel.strip():
-            rel = "Nenhum evento registrado até agora."
-        return f"<h1>📊 Relatório de Eventos</h1><pre>{rel}</pre>"
-    except Exception as e:
-        logging.error(f"Erro no relatório HTTP: {e}", exc_info=True)
-        return "Erro ao gerar relatório", 500
-
+# main.py — PARTE 2
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -305,12 +274,11 @@ def set_webhook_with_retry(max_attempts=5, delay=3):
     if not TELEGRAM_TOKEN or not WEBHOOK_URL:
         logging.error("Faltam TELEGRAM_TOKEN ou WEBHOOK_URL.")
         return
+
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
     for attempt in range(1, max_attempts + 1):
         try:
-            resp = requests.post(
-                url, json={"url": WEBHOOK_URL}, timeout=10
-            )
+            resp = requests.post(url, json={"url": WEBHOOK_URL}, timeout=10)
             if resp.status_code == 200 and resp.json().get("ok"):
                 logging.info(f"✅ Webhook registrado: {WEBHOOK_URL}")
                 return
@@ -318,6 +286,7 @@ def set_webhook_with_retry(max_attempts=5, delay=3):
         except Exception as e:
             logging.warning(f"Tentativa {attempt} levantou exceção: {e}")
         time.sleep(delay)
+
     logging.error("❌ Falha ao registrar webhook após várias tentativas.")
 
 
@@ -336,9 +305,7 @@ if __name__ == "__main__":
             "WEBHOOK_URL não definido; webhook não será registrado automaticamente."
         )
 
-    missing = [
-        k for k in ("RPC_URL", "PRIVATE_KEY", "CHAIN_ID") if not os.getenv(k)
-    ]
+    missing = [k for k in ("RPC_URL", "PRIVATE_KEY", "CHAIN_ID") if not os.getenv(k)]
     if missing:
         logging.error(
             f"Faltam variáveis obrigatórias: {', '.join(missing)}. Encerrando."
@@ -349,9 +316,7 @@ if __name__ == "__main__":
         addr = get_active_address()
         logging.info(f"🔑 Carteira ativa: {addr}")
     except Exception as e:
-        logging.error(
-            f"Falha ao validar PRIVATE_KEY: {e}", exc_info=True
-        )
+        logging.error(f"Falha ao validar PRIVATE_KEY: {e}", exc_info=True)
         raise SystemExit(1)
 
     asyncio.set_event_loop(loop)
