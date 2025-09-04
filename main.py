@@ -1,5 +1,3 @@
-# main.py — PARTE 1
-
 import os
 import asyncio
 import logging
@@ -243,7 +241,14 @@ async def test_notify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"Erro no /testnotify: {e}", exc_info=True)
         await update.message.reply_text(f"⚠️ Erro ao enviar mensagem: {e}")
 
-# main.py — PARTE 2
+# Definição do handler /relatorio para evitar NameError
+async def relatorio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        # TODO: implementar lógica real de geração de relatório de eventos
+        await update.message.reply_text("📊 Relatório de eventos não implementado.")
+    except Exception as e:
+        logging.error(f"Erro no /relatorio: {e}", exc_info=True)
+        await update.message.reply_text("⚠️ Erro ao gerar relatório.")
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
