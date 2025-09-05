@@ -53,8 +53,8 @@ REQUIRED = [
     "RPC_URL",
     "CHAIN_ID",
     "PRIVATE_KEY",
-    "CLIENT_ID",
-    "CLIENT_SECRET",
+    "AUTHO_CLIENT_ID",
+    "AUTHO_CLIENT_SECRET",
 ]
 missing = [v for v in REQUIRED if not os.getenv(v)]
 if missing:
@@ -66,8 +66,8 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID").strip()
 RPC_URL          = os.getenv("RPC_URL").strip()
 CHAIN_ID         = int(os.getenv("CHAIN_ID").strip())
 PRIVATE_KEY_RAW  = os.getenv("PRIVATE_KEY").strip()
-CLIENT_ID        = os.getenv("CLIENT_ID").strip()
-CLIENT_SECRET    = os.getenv("CLIENT_SECRET").strip()
+CLIENT_ID        = os.getenv("AUTHO_CLIENT_ID").strip()
+CLIENT_SECRET    = os.getenv("AUTHO_CLIENT_SECRET").strip()
 WEBHOOK_URL      = os.getenv("WEBHOOK_URL", "").strip()
 FLASK_PORT       = int(os.getenv("PORT", "10000"))
 
