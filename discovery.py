@@ -1,4 +1,5 @@
 # discovery.py
+
 import asyncio
 import logging
 import threading
@@ -116,7 +117,8 @@ class SniperDiscovery:
         asyncio.run_coroutine_threadsafe(
             send_report(
                 bot=self.bot,
-                message="🔍 Sniper iniciado! Monitorando novas DEXes..."
+                message="🔍 Sniper iniciado! Monitorando novas DEXes...",
+                telegram_loop=self._tg_loop
             ),
             self._tg_loop
         )
@@ -188,8 +190,10 @@ class SniperDiscovery:
                                 bot=self.bot,
                                 message=(
                                     f"🆕 [{pair.dex.name}] Novo par:\n"
-                                    f"{pair.address}\nTokens: {pair.token0} / {pair.token1}"
-                                )
+                                    f"{pair.address}\n"
+                                    f"Tokens: {pair.token0} / {pair.token1}"
+                                ),
+                                telegram_loop=self._tg_loop
                             ),
                             self._tg_loop
                         )
@@ -199,12 +203,14 @@ class SniperDiscovery:
                             asyncio.run_coroutine_threadsafe(
                                 send_report(
                                     bot=self.bot,
-                                    message=f"⏳ Sem liquidez mínima: {pair.address}"
+                                    message=f"⏳ Sem liquidez mínima: {pair.address}",
+                                    telegram_loop=self._tg_loop
                                 ),
                                 self._tg_loop
                             )
                             continue
 
+                        # atualização de métricas e callback
                         self.pair_count += 1
                         self.last_pair = pair
 
@@ -217,7 +223,8 @@ class SniperDiscovery:
                             asyncio.run_coroutine_threadsafe(
                                 send_report(
                                     bot=self.bot,
-                                    message=f"⚠️ Erro no callback: {e}"
+                                    message=f"⚠️ Erro no callback: {e}",
+                                    telegram_loop=self._tg_loop
                                 ),
                                 self._tg_loop
                             )
@@ -227,7 +234,8 @@ class SniperDiscovery:
                 asyncio.run_coroutine_threadsafe(
                     send_report(
                         bot=self.bot,
-                        message=f"⚠️ Erro no loop de discovery: {e}"
+                        message=f"⚠️ Erro no loop de discovery: {e}",
+                        telegram_loop=self._tg_loop
                     ),
                     self._tg_loop
                 )
@@ -245,9 +253,7 @@ class SniperDiscovery:
             addr_word = body[0:64] if dex.type == "v2" else body[-64:]
             pair_addr = self._decode_address(addr_word)
 
-            logger.info(
-                f"[{dex.name}] Novo par detectado: {pair_addr} ({t0}/{t1})"
-            )
+            logger.info(f"[{dex.name}] Novo par detectado: {pair_addr} ({t0}/{t1})")
             return PairInfo(dex=dex, address=pair_addr, token0=t0, token1=t1)
 
         except Exception as e:
@@ -318,14 +324,14 @@ def run_discovery(
     global _discovery_instance
     if _discovery_instance is None:
         _discovery_instance = SniperDiscovery(
-            web3,
-            dexes,
-            base_tokens,
-            min_liq_weth,
-            interval_sec,
-            bot,
-            callback_on_pair,
-            telegram_loop,
+            web3=web3,
+            dexes=dexes,
+            base_tokens=base_tokens,
+            min_liq_weth=min_liq_weth,
+            interval_sec=interval_sec,
+            bot=bot,
+            callback_on_pair=callback_on_pair,
+            telegram_loop=telegram_loop,
         )
     _discovery_instance.start()
 
