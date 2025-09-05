@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 main.py — Sniper Bot com Flask API, Telegram e módulo de discovery
 """
@@ -7,7 +6,26 @@ main.py — Sniper Bot com Flask API, Telegram e módulo de discovery
 from dotenv import load_dotenv
 load_dotenv()
 
+# 1.5) Mapeamento de variáveis sem underscore (ex: Render.com)
 import os
+
+_env_mapping = [
+    ("TELEGRAMTOKEN",    "TELEGRAM_TOKEN"),
+    ("TELEGRAMCHATID",   "TELEGRAM_CHAT_ID"),
+    ("RPCURL",           "RPC_URL"),
+    ("CHAINID",          "CHAIN_ID"),
+    ("PRIVATEKEY",       "PRIVATE_KEY"),
+    ("AUTH0DOMAIN",      "AUTH0_DOMAIN"),
+    ("AUTH0AUDIENCE",    "AUTH0_AUDIENCE"),
+    ("AUTH0CLIENTID",    "AUTH0_CLIENT_ID"),
+    ("AUTH0CLIENTSECRET","AUTH0_CLIENT_SECRET"),
+]
+
+for raw_name, expected_name in _env_mapping:
+    val = os.getenv(raw_name)
+    if val is not None and os.getenv(expected_name) is None:
+        os.environ[expected_name] = val
+
 import logging
 import asyncio
 import time
