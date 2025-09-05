@@ -47,6 +47,7 @@ class SniperDiscovery:
         interval_sec: int,
         bot: Any,
         callback_on_pair: Callable[[PairInfo], Awaitable[Any] | None],
+        telegram_loop: asyncio.AbstractEventLoop,
     ):
         self.web3 = web3
         self.dexes = dexes
@@ -56,7 +57,10 @@ class SniperDiscovery:
         self.bot = bot
         self.callback = callback_on_pair
 
-        # agora usamos threading.Event para sinalizar parada
+        # loop do Telegram, para todos os send_report
+        self._tg_loop = telegram_loop
+
+        # threading.Event para sinalizar parada
         self._stop_event = threading.Event()
         self._last_block: Dict[str, int] = {}
         self._start_time: float = 0.0
@@ -66,10 +70,14 @@ class SniperDiscovery:
         self.last_pair: Optional[PairInfo] = None
 
         # sinais para logs de evento
-        self.SIG_V2 = Web3.to_hex(Web3.keccak(text="PairCreated(address,address,address,uint256)"))
-        self.SIG_V3 = Web3.to_hex(Web3.keccak(text="PoolCreated(address,address,uint24,int24,address)"))
+        self.SIG_V2 = Web3.to_hex(
+            Web3.keccak(text="PairCreated(address,address,address,uint256)")
+        )
+        self.SIG_V3 = Web3.to_hex(
+            Web3.keccak(text="PoolCreated(address,address,uint24,int24,address)")
+        )
 
-        # referência ao loop exclusivo do discovery
+        # loop exclusivo para discovery
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     def _decode_address(self, hexstr: str) -> str:
@@ -97,18 +105,20 @@ class SniperDiscovery:
 
         def _run_loop_in_thread():
             asyncio.set_event_loop(self._loop)
-            # agenda o loop principal de discovery
             self._loop.create_task(self._run_loop())
-            # mantém o loop rodando
             self._loop.run_forever()
 
         # dispara o loop em thread daemon
         thread = threading.Thread(target=_run_loop_in_thread, daemon=True)
         thread.start()
 
-        # agenda a mensagem de “iniciado” dentro do loop do discovery
-        self._loop.call_soon_threadsafe(
-            lambda: send_report(bot=self.bot, message="🔍 Sniper iniciado! Monitorando novas DEXes...")
+        # envia alerta de “sniper iniciado” via o loop do Telegram
+        asyncio.run_coroutine_threadsafe(
+            send_report(
+                bot=self.bot,
+                message="🔍 Sniper iniciado! Monitorando novas DEXes..."
+            ),
+            self._tg_loop
         )
         logger.info("🔍 SniperDiscovery iniciado")
 
@@ -172,10 +182,27 @@ class SniperDiscovery:
                         if not {pair.token0, pair.token1} & set(self.base_tokens):
                             continue
 
-                        await self._notify_new_pair(pair)
+                        # notifica novo par no Telegram
+                        asyncio.run_coroutine_threadsafe(
+                            send_report(
+                                bot=self.bot,
+                                message=(
+                                    f"🆕 [{pair.dex.name}] Novo par:\n"
+                                    f"{pair.address}\nTokens: {pair.token0} / {pair.token1}"
+                                )
+                            ),
+                            self._tg_loop
+                        )
 
                         if not await self._has_min_liq(pair):
-                            await self._notify(f"⏳ Sem liquidez mínima: {pair.address}")
+                            # sem liquidez mínima
+                            asyncio.run_coroutine_threadsafe(
+                                send_report(
+                                    bot=self.bot,
+                                    message=f"⏳ Sem liquidez mínima: {pair.address}"
+                                ),
+                                self._tg_loop
+                            )
                             continue
 
                         self.pair_count += 1
@@ -187,11 +214,23 @@ class SniperDiscovery:
                                 await res
                         except Exception as e:
                             logger.error("Erro no callback", exc_info=True)
-                            await self._notify(f"⚠️ Erro no callback: {e}")
+                            asyncio.run_coroutine_threadsafe(
+                                send_report(
+                                    bot=self.bot,
+                                    message=f"⚠️ Erro no callback: {e}"
+                                ),
+                                self._tg_loop
+                            )
 
             except Exception as e:
                 logger.error("Erro no loop de discovery", exc_info=True)
-                await self._notify(f"⚠️ Erro no loop: {e}")
+                asyncio.run_coroutine_threadsafe(
+                    send_report(
+                        bot=self.bot,
+                        message=f"⚠️ Erro no loop de discovery: {e}"
+                    ),
+                    self._tg_loop
+                )
 
             await asyncio.sleep(self.interval)
 
@@ -206,7 +245,9 @@ class SniperDiscovery:
             addr_word = body[0:64] if dex.type == "v2" else body[-64:]
             pair_addr = self._decode_address(addr_word)
 
-            logger.info(f"[{dex.name}] Novo par detectado: {pair_addr} ({t0}/{t1})")
+            logger.info(
+                f"[{dex.name}] Novo par detectado: {pair_addr} ({t0}/{t1})"
+            )
             return PairInfo(dex=dex, address=pair_addr, token0=t0, token1=t1)
 
         except Exception as e:
@@ -223,13 +264,25 @@ class SniperDiscovery:
                             "inputs": [],
                             "name": "getReserves",
                             "outputs": [
-                                {"type": "uint112"}, {"type": "uint112"}, {"type": "uint32"}
+                                {"type": "uint112"},
+                                {"type": "uint112"},
+                                {"type": "uint32"}
                             ],
                             "stateMutability": "view",
                             "type": "function",
                         },
-                        {"inputs": [], "name": "token0", "outputs":[{"type":"address"}], "type":"function"},
-                        {"inputs": [], "name": "token1", "outputs":[{"type":"address"}], "type":"function"},
+                        {
+                            "inputs": [],
+                            "name": "token0",
+                            "outputs": [{"type": "address"}],
+                            "type": "function"
+                        },
+                        {
+                            "inputs": [],
+                            "name": "token1",
+                            "outputs": [{"type": "address"}],
+                            "type": "function"
+                        },
                     ]
                 )
                 r0, r1, _ = pair_contract.functions.getReserves().call()
@@ -239,17 +292,7 @@ class SniperDiscovery:
                 return reserve_weth >= self.min_liq_wei
             except Exception:
                 return False
-        return True  # v3 ou outros tipos, assume ok
-
-    async def _notify_new_pair(self, pair: PairInfo) -> None:
-        text = (
-            f"🆕 [{pair.dex.name}] Novo par:\n"
-            f"{pair.address}\nTokens: {pair.token0} / {pair.token1}"
-        )
-        await self._notify(text)
-
-    async def _notify(self, msg: str) -> None:
-        send_report(bot=self.bot, message=msg)
+        return True
 
 
 # ===========================
@@ -259,13 +302,31 @@ class SniperDiscovery:
 _discovery_instance: Optional[SniperDiscovery] = None
 
 
-def run_discovery(*args, **kwargs) -> None:
+def run_discovery(
+    web3: Web3,
+    dexes: List[DexInfo],
+    base_tokens: List[str],
+    min_liq_weth: Decimal,
+    interval_sec: int,
+    bot: Any,
+    callback_on_pair: Callable[[PairInfo], Awaitable[Any] | None],
+    telegram_loop: asyncio.AbstractEventLoop,
+) -> None:
     """
     Inicializa e inicia o discovery se ainda não estiver rodando.
     """
     global _discovery_instance
     if _discovery_instance is None:
-        _discovery_instance = SniperDiscovery(*args, **kwargs)
+        _discovery_instance = SniperDiscovery(
+            web3,
+            dexes,
+            base_tokens,
+            min_liq_weth,
+            interval_sec,
+            bot,
+            callback_on_pair,
+            telegram_loop,
+        )
     _discovery_instance.start()
 
 
