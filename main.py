@@ -160,6 +160,7 @@ def iniciar_sniper():
                 MIN_LIQ_WETH,
                 INTERVAL_SEC,
                 application.bot,
+                loop,  # novo parâmetro telegram_loop
                 lambda pair: on_new_pair(
                     pair.dex,
                     pair.address,
@@ -215,7 +216,6 @@ def comprar():
     token = fetch_token()
     if not token:
         return jsonify({"error": "Falha ao gerar token"}), 502
-    # TODO: implementar lógica de compra real usando `token`
     return jsonify({"status": "comprando", "par": par}), 200
 
 @app.route("/webhook", methods=["POST"])
