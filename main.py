@@ -1,5 +1,5 @@
 from dotenv import load_dotenv
-load_dotenv()  # carrega variáveis de .env ou do ambiente
+load_dotenv()  # carrega .env
 
 import os
 import asyncio
@@ -30,19 +30,17 @@ from discovery import run_discovery, stop_discovery, get_discovery_status, DexIn
 from risk_manager import RiskManager
 from config import config
 
-# configuração de logging
+# --- logger ---
 logging.basicConfig(
     format='[%(asctime)s] %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger("main")
 
-# Flask app
+# --- Flask ---
 app = Flask(__name__)
 
-# ----------------------------------------
-# Globals & Environment
-# ----------------------------------------
+# --- Globals & ENV ---
 loop            = asyncio.new_event_loop()
 application     = None
 sniper_thread   = None
@@ -55,15 +53,13 @@ dexes = [
     DexInfo(name=d.name, factory=d.factory, router=d.router, type=d.type)
     for d in config.get("DEXES", [])
 ]
-base_tokens   = config.get("BASE_TOKENS", [config.get("WETH")])
-MIN_LIQ_WETH  = Decimal(str(config.get("MIN_LIQ_WETH", "0.5")))
-INTERVAL_SEC  = int(config.get("INTERVAL", 3))
+base_tokens  = config.get("BASE_TOKENS", [config.get("WETH")])
+MIN_LIQ_WETH = Decimal(str(config.get("MIN_LIQ_WETH", "0.5")))
+INTERVAL_SEC = int(config.get("INTERVAL", 3))
 
 risk_manager = RiskManager()
 
-# ----------------------------------------
-# Helpers
-# ----------------------------------------
+# --- Helpers ---
 def require_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -77,7 +73,7 @@ def fetch_token() -> str | None:
     cid = os.getenv("CLIENT_ID", "").strip()
     cs  = os.getenv("CLIENT_SECRET", "").strip()
     if not cid or not cs:
-        logger.error("CLIENT_ID ou CLIENT_SECRET não configurados.")
+        logger.error("CLIENT_ID/CLIENT_SECRET não configurados.")
         return None
     try:
         return gerar_meu_token_externo(cid, cs)
@@ -127,13 +123,8 @@ def iniciar_sniper():
                 INTERVAL_SEC,
                 application.bot,
                 lambda pair: on_new_pair(
-                    pair.dex,
-                    pair.address,
-                    pair.token0,
-                    pair.token1,
-                    bot=application.bot,
-                    loop=loop,
-                    token=token
+                    pair.dex, pair.address, pair.token0, pair.token1,
+                    bot=application.bot, loop=loop, token=token
                 )
             )
         except Exception as e:
@@ -151,7 +142,6 @@ def env_summary_text() -> str:
         addr = get_active_address()
     except Exception as e:
         addr = f"Erro: {e}"
-
     return (
         f"🔑 Endereço: `{addr}`\n"
         f"🌐 Chain ID: {os.getenv('CHAIN_ID')}\n"
@@ -164,9 +154,7 @@ def env_summary_text() -> str:
         f"🧪 Dry Run: {os.getenv('DRY_RUN')}"
     )
 
-# ----------------------------------------
-# HTTP Endpoints
-# ----------------------------------------
+# --- HTTP Endpoints ---
 @app.route("/api/token", methods=["GET"])
 def get_token():
     cid = os.getenv("CLIENT_ID", "").strip()
@@ -230,20 +218,18 @@ def start_flask():
     port = int(os.getenv("PORT", "10000"))
     app.run(host="0.0.0.0", port=port, threaded=True)
 
-# ----------------------------------------
-# Telegram Handlers
-# ----------------------------------------
+# --- Telegram Handlers ---
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "🎯 **Bem-vindo ao Sniper Bot Criado por Luis Fernando**\n\n"
+        "🎯 **Bem-vindo ao Sniper Bot**\n\n"
         "🟢 /snipe — Inicia o sniper\n"
         "🔴 /stop — Para o sniper\n"
         "📈 /sniperstatus — Status do sniper\n"
         "💰 /status — Saldo ETH/WETH\n"
         "🏓 /ping — Teste de vida\n"
-        "🛰️ /testnotify — Mensagem de teste\n"
+        "🛰️ /testnotify — Teste de notificação\n"
         "📜 /menu — Mostrar comandos\n"
-        "📊 /relatorio — Gera relatório de eventos\n"
+        "📊 /relatorio — Relatório de eventos\n"
         "━━━━━━━━━━━━━━━━\n"
         "🛠 **Configuração Atual**\n"
         f"{env_summary_text()}"
@@ -309,14 +295,12 @@ async def relatorio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Você disse: {update.message.text}")
 
-# ----------------------------------------
-# Startup
-# ----------------------------------------
+# --- Startup ---
 if __name__ == "__main__":
+    # validações iniciais
     if not TELEGRAM_TOKEN:
         logger.error("Falta TELEGRAM_TOKEN. Abortando.")
         raise SystemExit(1)
-
     validate_sniper_config()
     try:
         addr = get_active_address()
@@ -325,36 +309,27 @@ if __name__ == "__main__":
         logger.error("Chave inválida: %s", e, exc_info=True)
         raise SystemExit(1)
 
+    # configura e associa o loop manualmente
     asyncio.set_event_loop(loop)
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
-    # registra handlers
-    application.add_handler(CommandHandler("start", start_cmd))
-    application.add_handler(CommandHandler("menu", menu_cmd))
-    application.add_handler(CommandHandler("status", status_cmd))
-    application.add_handler(CommandHandler("snipe", snipe_cmd))
-    application.add_handler(CommandHandler("stop", stop_cmd))
-    application.add_handler(CommandHandler("sniperstatus", sniper_status_cmd))
-    application.add_handler(CommandHandler("ping", ping_cmd))
-    application.add_handler(CommandHandler("testnotify", test_notify_cmd))
-    application.add_handler(CommandHandler("relatorio", relatorio_cmd))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
+    # aguarda inicialização e start antes de rodar loop
+    loop.run_until_complete(application.initialize())
+    loop.run_until_complete(application.start())
+    loop.run_until_complete(
+        application.bot.set_my_commands([
+            BotCommand("start",        "🎯 Bem-vindo"),
+            BotCommand("snipe",        "🟢 Iniciar sniper"),
+            BotCommand("stop",         "🔴 Parar sniper"),
+            BotCommand("sniperstatus", "📈 Status do sniper"),
+            BotCommand("status",       "💰 Saldo ETH/WETH"),
+            BotCommand("ping",         "🏓 Ping"),
+            BotCommand("testnotify",   "🛰️ Teste de notificação"),
+            BotCommand("relatorio",    "📊 Relatório")
+        ])
+    )
 
-    # inicializa bot e webhook
-    asyncio.create_task(application.initialize())
-    asyncio.create_task(application.start())
-    asyncio.create_task(application.bot.set_my_commands([
-        BotCommand("start",        "🎯 Bem-vindo"),
-        BotCommand("snipe",        "🟢 Iniciar sniper"),
-        BotCommand("stop",         "🔴 Parar sniper"),
-        BotCommand("sniperstatus", "📈 Status do sniper"),
-        BotCommand("status",       "💰 Saldo ETH/WETH"),
-        BotCommand("ping",         "🏓 Ping"),
-        BotCommand("testnotify",   "🛰️ Notificação de teste"),
-        BotCommand("relatorio",    "📊 Relatório de eventos")
-    ]))
-
-    # inicia Flask e registra webhook
+    # Flask e webhook em threads
     Thread(target=start_flask,            daemon=True).start()
     Thread(target=set_webhook_with_retry, daemon=True).start()
 
