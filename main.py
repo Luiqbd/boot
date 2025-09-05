@@ -1,3 +1,8 @@
+# ===== main.py — PARTE 1 =====
+
+from dotenv import load_dotenv
+load_dotenv()  # carrega variáveis de .env ou do ambiente
+
 import os
 import asyncio
 import logging
@@ -7,8 +12,9 @@ import datetime
 import uuid
 from threading import Thread
 from decimal import Decimal
+from functools import wraps
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, abort
 from telegram import Update, BotCommand
 from telegram.ext import (
     ApplicationBuilder,
@@ -19,42 +25,37 @@ from telegram.ext import (
 )
 from web3 import Web3
 
+from token_service import gerar_meu_token_externo
 from check_balance import get_wallet_status
 from strategy_sniper import on_new_pair
-from discovery import (
-    run_discovery,
-    stop_discovery,
-    get_discovery_status,
-    DexInfo
-)
+from discovery import run_discovery, stop_discovery, get_discovery_status, DexInfo
 from risk_manager import RiskManager
 from config import config
 
-# Se tiver um módulo de geração de token, importe aqui:
-# from token_service import gerar_meu_token_externo
-
-def gerar_meu_token_externo(client_id: str, client_secret: str) -> str:
-    """
-    Placeholder: implemente aqui a lógica real de geração de token
-    (OAuth, JWT, chamada a API externa, etc.).
-    """
-    raise NotImplementedError("Implemente a função gerar_meu_token_externo")
-
-# Configuração de logging
+# configuração de logging
 logging.basicConfig(
     format='[%(asctime)s] %(levelname)s - %(message)s',
     level=logging.INFO
 )
 
-# Inicialização do Flask
+# Flask app
 app = Flask(__name__)
 
-# Rota para emissão de token
+# Decorator básico de autenticação
+def require_auth(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth = request.headers.get("Authorization", "")
+        if not auth.lower().startswith("bearer "):
+            abort(401)
+        return f(*args, **kwargs)
+    return decorated
+
+# Endpoint para emissão de token via Auth0
 @app.route("/api/token", methods=["GET"])
 def get_token():
     client_id     = os.getenv("CLIENT_ID", "").strip()
     client_secret = os.getenv("CLIENT_SECRET", "").strip()
-
     if not client_id or not client_secret:
         return jsonify({"error": "Credenciais não configuradas"}), 500
 
@@ -66,20 +67,17 @@ def get_token():
 
     return jsonify({"token": token}), 200
 
-def fetch_token() -> str:
-    flask_host = os.getenv("FLASK_HOST", "localhost")
-    flask_port = os.getenv("PORT", "10000")
-    url = f"http://{flask_host}:{flask_port}/api/token"
+# Endpoint protegido que aciona a compra
+@app.route("/api/comprar", methods=["POST"])
+@require_auth
+def comprar():
+    payload = request.get_json(silent=True) or {}
+    par = payload.get("par")
+    # Aqui você pode chamar on_new_pair ou outro método de compra:
+    # on_new_pair(..., token=request.headers["Authorization"].split()[1])
+    return jsonify({"status": "comprando", "par": par}), 200
 
-    try:
-        resp = requests.get(url, timeout=5)
-        resp.raise_for_status()
-        return resp.json().get("token")
-    except Exception as e:
-        logging.error(f"Erro ao obter token: {e}", exc_info=True)
-        return None
-
-# Rota de webhook do Telegram
+# Webhook para o Telegram
 @app.route("/webhook", methods=["POST"])
 def webhook():
     if application is None:
@@ -105,29 +103,31 @@ def webhook():
     return "ignored", 200
 
 def set_webhook_with_retry(max_attempts: int = 5, delay: int = 3):
+    TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
+    WEBHOOK_URL    = os.getenv("WEBHOOK_URL", "").strip()
     if not TELEGRAM_TOKEN or not WEBHOOK_URL:
         logging.error("Faltam TELEGRAM_TOKEN ou WEBHOOK_URL.")
         return
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
-    payload = {"url": WEBHOOK_URL}
     for attempt in range(1, max_attempts + 1):
         try:
-            resp = requests.post(url, json=payload, timeout=10)
+            resp = requests.post(url, json={"url": WEBHOOK_URL}, timeout=10)
             if resp.status_code == 200 and resp.json().get("ok"):
                 logging.info(f"✅ Webhook registrado: {WEBHOOK_URL}")
                 return
             logging.warning(f"Tentativa {attempt} falhou: {resp.text}")
         except Exception as e:
-            logging.warning(f"Tentativa {attempt} levantou exceção: {e}")
+            logging.warning(f"Tentativa {attempt} erro: {e}")
         time.sleep(delay)
 
     logging.error("❌ Falha ao registrar webhook após várias tentativas.")
 
 def start_flask():
     port = int(os.getenv("PORT", "10000"))
-    app.run(host="0.0.0.0", port=port, threaded=True)
+    app.run(host="0.0.0.0", port=port, threaded=True).
 
+# ===== main.py — PARTE 2 =====
 
 # Estado global e variáveis de ambiente
 loop            = asyncio.new_event_loop()
@@ -149,8 +149,6 @@ base_tokens  = config.get("BASE_TOKENS", [config.get("WETH")])
 MIN_LIQ_WETH = Decimal(str(config.get("MIN_LIQ_WETH", "0.5")))
 INTERVAL_SEC = int(config.get("INTERVAL", 3))
 
-
-# Utilitários
 def str_to_bool(v: str) -> bool:
     return v.strip().lower() in {"1", "true", "t", "yes", "y"}
 
@@ -161,7 +159,7 @@ def normalize_private_key(pk: str) -> str:
     if pk.startswith("0x"):
         pk = pk[2:]
     if len(pk) != 64 or not all(c in "0123456789abcdefABCDEF" for c in pk):
-        raise ValueError("PRIVATE_KEY inválida: formato incorreto.")
+        raise ValueError("PRIVATE_KEY inválida.")
     return pk
 
 def get_active_address() -> str:
@@ -187,8 +185,7 @@ def env_summary_text() -> str:
         f"🧪 Dry Run: {os.getenv('DRY_RUN')}"
     )
 
-
-# Sniper
+# Inicia a thread do Sniper
 def iniciar_sniper():
     global sniper_thread
     if sniper_thread and sniper_thread.is_alive():
@@ -231,7 +228,6 @@ def iniciar_sniper():
 def parar_sniper():
     stop_discovery()
 
-
 # Handlers do Telegram
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mensagem = (
@@ -245,10 +241,10 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🛰️ /testnotify — Mensagem de teste.\n"
         "📜 /menu — Reexibe este menu.\n"
         "📊 /relatorio — Gera relatório de eventos.\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "🛠 **Configuração Atual**\n"
         f"{env_summary_text()}\n"
-        "━━━━━━━━━━━━━━━━━━━━━━"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
     await update.message.reply_text(mensagem, parse_mode="Markdown")
 
@@ -315,7 +311,6 @@ async def test_notify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def relatorio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        # TODO: implementar lógica real de geração de relatório de eventos
         await update.message.reply_text("📊 Relatório de eventos não implementado.")
     except Exception as e:
         logging.error(f"Erro no /relatorio: {e}", exc_info=True)
@@ -323,7 +318,6 @@ async def relatorio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Você disse: {update.message.text}")
-
 
 # Startup
 if __name__ == "__main__":
@@ -333,7 +327,7 @@ if __name__ == "__main__":
 
     missing = [k for k in ("RPC_URL", "PRIVATE_KEY", "CHAIN_ID") if not os.getenv(k)]
     if missing:
-        logging.error(f"Faltam variáveis obrigatórias: {', '.join(missing)}. Encerrando.")
+        logging.error(f"Faltam variáveis obrigatórias: {', '.join(missing)}.")
         raise SystemExit(1)
 
     try:
@@ -363,15 +357,15 @@ if __name__ == "__main__":
         await application.initialize()
         await application.start()
         await application.bot.set_my_commands([
-            BotCommand("start",        "Mostra boas-vindas e configuração"),
-            BotCommand("menu",         "Reexibe o menu"),
-            BotCommand("status",       "Mostra saldo ETH/WETH"),
-            BotCommand("snipe",        "Inicia o sniper"),
-            BotCommand("stop",         "Para o sniper"),
-            BotCommand("sniperstatus", "Status do sniper"),
-            BotCommand("ping",         "Teste de vida (pong)"),
-            BotCommand("testnotify",   "Envia notificação de teste"),
-            BotCommand("relatorio",    "Mostra relatório de eventos")
+            BotCommand("start",        "🎯 Boas-vindas e configuração"),
+            BotCommand("menu",         "📜 Reexibir o menu"),
+            BotCommand("status",       "💰 Saldo ETH/WETH"),
+            BotCommand("snipe",        "🟢 Iniciar sniper"),
+            BotCommand("stop",         "🔴 Parar sniper"),
+            BotCommand("sniperstatus", "📈 Status do sniper"),
+            BotCommand("ping",         "🏓 Teste de vida"),
+            BotCommand("testnotify",   "🛰️ Notificação de teste"),
+            BotCommand("relatorio",    "📊 Relatório de eventos")
         ])
 
     # Inicia Flask e Telegram em threads separadas
