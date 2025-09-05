@@ -3,9 +3,13 @@
 main.py — Sniper Bot com Flask API, Telegram e módulo de discovery
 """
 
+# 1) Carrega variáveis de .env antes de qualquer getenv
+from dotenv import load_dotenv
+load_dotenv()
+
 import os
-import asyncio
 import logging
+import asyncio
 import time
 import datetime
 import uuid
@@ -13,7 +17,6 @@ from threading import Thread
 from decimal import Decimal
 from functools import wraps
 
-from dotenv import load_dotenv
 from flask import Flask, request, jsonify, abort
 from telegram import Update, BotCommand
 from telegram.ext import (
@@ -28,37 +31,32 @@ from web3 import Web3
 from token_service import gerar_meu_token_externo
 from check_balance import get_wallet_status
 from strategy_sniper import on_new_pair
-from discovery import (
-    run_discovery,
-    stop_discovery,
-    get_discovery_status,
-    DexInfo,
-)
+from discovery import run_discovery, stop_discovery, get_discovery_status, DexInfo
 from risk_manager import RiskManager
 from config import config
 
-# --- Carrega .env e configura logger ---
-load_dotenv()
+# 2) Configura logger
 logging.basicConfig(
     format="[%(asctime)s] %(levelname)s - %(message)s",
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-
-# --- Validação de variáveis de ambiente obrigatórias ---
+# 3) Validação de variáveis de ambiente obrigatórias
 REQUIRED = [
     "TELEGRAM_TOKEN",
     "TELEGRAM_CHAT_ID",
     "RPC_URL",
     "CHAIN_ID",
     "PRIVATE_KEY",
-    "AUTHO_CLIENT_ID",
-    "AUTHO_CLIENT_SECRET",
+    "AUTH0_DOMAIN",
+    "AUTH0_AUDIENCE",
+    "AUTH0_CLIENT_ID",
+    "AUTH0_CLIENT_SECRET",
 ]
 missing = [v for v in REQUIRED if not os.getenv(v)]
 if missing:
-    logger.error("Variáveis obrigatórias faltando: %s", missing)
+    logger.error("Ambiente incompleto, faltando: %s", missing)
     raise SystemExit(1)
 
 TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN").strip()
@@ -66,13 +64,14 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID").strip()
 RPC_URL          = os.getenv("RPC_URL").strip()
 CHAIN_ID         = int(os.getenv("CHAIN_ID").strip())
 PRIVATE_KEY_RAW  = os.getenv("PRIVATE_KEY").strip()
-CLIENT_ID        = os.getenv("AUTHO_CLIENT_ID").strip()
-CLIENT_SECRET    = os.getenv("AUTHO_CLIENT_SECRET").strip()
+AUTH0_DOMAIN     = os.getenv("AUTH0_DOMAIN").strip()
+AUTH0_AUDIENCE   = os.getenv("AUTH0_AUDIENCE").strip()
+CLIENT_ID        = os.getenv("AUTH0_CLIENT_ID").strip()
+CLIENT_SECRET    = os.getenv("AUTH0_CLIENT_SECRET").strip()
 WEBHOOK_URL      = os.getenv("WEBHOOK_URL", "").strip()
 FLASK_PORT       = int(os.getenv("PORT", "10000"))
 
-
-# --- Normaliza e valida a chave privada Ethereum ---
+# 4) Normaliza e valida a chave privada Ethereum
 def normalize_private_key(raw: str) -> str:
     key = raw.lower()
     if key.startswith("0x"):
@@ -84,32 +83,32 @@ def normalize_private_key(raw: str) -> str:
 
 PRIVATE_KEY = normalize_private_key(PRIVATE_KEY_RAW)
 
-
-# --- Helpers HTTP e Auth ---
+# 5) Autenticação básica (TODO: implementar verificação JWT real)
 def require_auth(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
         auth = request.headers.get("Authorization", "")
         if not auth.lower().startswith("bearer "):
             abort(401)
+        token = auth.split(None, 1)[1]
+        # TODO: validar token JWT contra Auth0 usando AUTH0_DOMAIN e AUTH0_AUDIENCE
         return f(*args, **kwargs)
     return wrapper
 
-
+# 6) Função que obtém token do Auth0
 def fetch_token() -> str | None:
     """
-    Obtém token do Auth0 (token_service) e loga erros.
+    Obtém token do Auth0 e loga erros.
     """
     try:
-        token = gerar_meu_token_externo(CLIENT_ID, CLIENT_SECRET)
+        token = gerar_meu_token_externo()
         logger.info("✅ Token de acesso obtido")
         return token
     except Exception as e:
         logger.error("❌ Não foi possível obter token: %s", e, exc_info=True)
         return None
 
-
-# --- Configuração do módulo de discovery/sniper ---
+# 7) Configuração do módulo de discovery/sniper
 dexes = [
     DexInfo(name=d.name, factory=d.factory, router=d.router, type=d.type)
     for d in config.get("DEXES", [])
@@ -122,7 +121,6 @@ risk_manager = RiskManager()
 sniper_thread = None
 application = None
 loop = None
-
 
 def iniciar_sniper():
     global sniper_thread
@@ -160,11 +158,9 @@ def iniciar_sniper():
     sniper_thread = Thread(target=_runner, daemon=True)
     sniper_thread.start()
 
-
 def parar_sniper():
     stop_discovery()
     logger.info("🛑 Sniper parado.")
-
 
 def env_summary_text() -> str:
     """Retorna bloco de texto com configurações atuais."""
@@ -183,10 +179,8 @@ def env_summary_text() -> str:
         f"🧪 Dry Run: {os.getenv('DRY_RUN','false')}"
     )
 
-
-# --- Flask App & Endpoints ---
+# 8) Flask App & Endpoints
 app = Flask(__name__)
-
 
 @app.route("/api/token", methods=["GET"])
 def get_token():
@@ -195,23 +189,21 @@ def get_token():
         return jsonify({"error": "Falha ao gerar token"}), 502
     return jsonify({"token": token}), 200
 
-
 @app.route("/api/comprar", methods=["POST"])
 @require_auth
 def comprar():
     data = request.get_json(silent=True) or {}
     par = data.get("par")
-    # TODO: implementar lógica de compra real
+    token = fetch_token()
+    if not token:
+        return jsonify({"error": "Falha ao gerar token"}), 502
+    # TODO: implementar lógica de compra real usando `token`
     return jsonify({"status": "comprando", "par": par}), 200
-
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    logger.info(
-        "INCOMING WEBHOOK headers=%s body=%s",
-        dict(request.headers),
-        request.get_data(),
-    )
+    safe_headers = {k: v for k, v in request.headers.items() if k in ("Content-Type",)}
+    logger.info("INCOMING WEBHOOK headers=%s", safe_headers)
     if application is None:
         return "not ready", 503
 
@@ -223,9 +215,7 @@ def webhook():
     if "message" in payload:
         try:
             update = Update.de_json(payload, application.bot)
-            asyncio.run_coroutine_threadsafe(
-                application.process_update(update), loop
-            )
+            asyncio.run_coroutine_threadsafe(application.process_update(update), loop)
             return "ok", 200
         except Exception as e:
             logger.error("❌ Erro no webhook: %s", e, exc_info=True)
@@ -233,8 +223,7 @@ def webhook():
 
     return "ignored", 200
 
-
-# --- Handlers Telegram ---
+# 9) Handlers Telegram
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto = (
         "🎯 *Bem-vindo ao Sniper Bot*\n\n"
@@ -251,43 +240,36 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(texto, parse_mode="Markdown")
 
-
 async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start_cmd(update, context)
-
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         addr = context.args[0] if context.args else None
         bal = get_wallet_status(addr)
         await update.message.reply_text(bal)
-    except Exception as e:
-        logger.error("❌ Erro em /status: %s", e, exc_info=True)
+    except Exception:
+        logger.exception("Erro em /status")
         await update.message.reply_text("⚠️ Erro ao consultar saldo.")
-
 
 async def snipe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⚙️ Iniciando sniper via /snipe...")
     iniciar_sniper()
 
-
 async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parar_sniper()
     await update.message.reply_text("🛑 Sniper interrompido.")
-
 
 async def sniper_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ativo = get_discovery_status()
     msg = "🟢 Sniper ativo" if ativo else "🔴 Sniper parado"
     await update.message.reply_text(msg)
 
-
 async def ping_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uptime = int(time.time() - context.bot_data.get("start_time", time.time()))
     await update.message.reply_text(
         f"pong 🏓\n⏱ Uptime: {datetime.timedelta(seconds=uptime)}"
     )
-
 
 async def test_notify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -300,22 +282,18 @@ async def test_notify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
         )
         await update.message.reply_text(f"Mensagem enviada (ID={uid})")
-    except Exception as e:
-        logger.error("❌ Erro em /testnotify: %s", e, exc_info=True)
+    except Exception:
+        logger.exception("Erro em /testnotify")
         await update.message.reply_text("⚠️ Falha na notificação.")
-
 
 async def relatorio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📊 Relatório de eventos não implementado.")
 
-
 async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Você disse: {update.message.text}")
 
-
-# --- Pontos principais de inicialização ---
+# 10) Inicialização principal
 if __name__ == "__main__":
-    # 1) Mostra endereço na inicialização
     try:
         active_addr = Web3().eth.account.from_key(PRIVATE_KEY).address
         logger.info("🔑 Carteira ativa: %s", active_addr)
@@ -323,28 +301,31 @@ if __name__ == "__main__":
         logger.error("PRIVATE_KEY inválida: %s", e, exc_info=True)
         raise SystemExit(1)
 
-    # 2) Prepara loop e instância do Telegram Bot
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    application.bot_data["start_time"] = time.time()
 
-    # 3) Registra handlers
-    application.add_handler(CommandHandler("start", start_cmd))
-    application.add_handler(CommandHandler("menu", menu_cmd))
-    application.add_handler(CommandHandler("status", status_cmd))
-    application.add_handler(CommandHandler("snipe", snipe_cmd))
-    application.add_handler(CommandHandler("stop", stop_cmd))
-    application.add_handler(CommandHandler("sniperstatus", sniper_status_cmd))
-    application.add_handler(CommandHandler("ping", ping_cmd))
-    application.add_handler(CommandHandler("testnotify", test_notify_cmd))
-    application.add_handler(CommandHandler("relatorio", relatorio_cmd))
+    # registra handlers de comando
+    for cmd, fn in [
+        ("start", start_cmd),
+        ("menu", menu_cmd),
+        ("status", status_cmd),
+        ("snipe", snipe_cmd),
+        ("stop", stop_cmd),
+        ("sniperstatus", sniper_status_cmd),
+        ("ping", ping_cmd),
+        ("testnotify", test_notify_cmd),
+        ("relatorio", relatorio_cmd),
+    ]:
+        application.add_handler(CommandHandler(cmd, fn))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
-    # 4) Inicializa e inicia bot em background
+    # inicializa e inicia bot Telegram
     loop.run_until_complete(application.initialize())
     loop.run_until_complete(application.start())
 
-    # 5) Define comandos inline no Telegram
+    # define comandos inline
     loop.run_until_complete(
         application.bot.set_my_commands([
             BotCommand("start",        "🎯 Bem-vindo"),
@@ -359,16 +340,14 @@ if __name__ == "__main__":
         ])
     )
 
-    # 6) Webhook ou polling
+    # webhook ou polling
     if WEBHOOK_URL:
         loop.run_until_complete(application.bot.set_webhook(WEBHOOK_URL))
         logger.info("✅ Webhook registrado em %s", WEBHOOK_URL)
     else:
         logger.warning("Nenhum WEBHOOK_URL. Usando polling.")
 
-    # 7) Roda loop do Telegram em thread separada
+    # roda Telegram em background e depois Flask
     Thread(target=loop.run_forever, daemon=True).start()
     logger.info("🚀 Bot Telegram rodando em thread separada.")
-
-    # 8) Inicia Flask API (endpoints /api/* e /webhook)
     app.run(host="0.0.0.0", port=FLASK_PORT, threaded=True)
