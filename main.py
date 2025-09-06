@@ -160,7 +160,7 @@ def iniciar_sniper():
                 MIN_LIQ_WETH,
                 INTERVAL_SEC,
                 application.bot,
-                loop,  # novo parâmetro telegram_loop
+                # 1) callback_on_pair
                 lambda pair: on_new_pair(
                     pair.dex,
                     pair.address,
@@ -169,7 +169,9 @@ def iniciar_sniper():
                     bot=application.bot,
                     loop=loop,
                     token=token
-                )
+                ),
+                # 2) telegram_loop via keyword
+                telegram_loop=loop,
             )
         except Exception as e:
             logger.error("❌ Erro em discovery: %s", e, exc_info=True)
