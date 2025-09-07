@@ -58,10 +58,10 @@ class SniperDiscovery:
         self.bot = bot
         self.callback = callback_on_pair
 
-        # loop do Telegram, para todos os send_report
+        # loop do Telegram, para agendar send_report
         self._tg_loop = telegram_loop
 
-        # threading.Event para sinalizar parada
+        # sinal de parada e controle de bloco
         self._stop_event = threading.Event()
         self._last_block: Dict[str, int] = {}
         self._start_time: float = 0.0
@@ -70,7 +70,6 @@ class SniperDiscovery:
         self.pnl_total = Decimal("0")
         self.last_pair: Optional[PairInfo] = None
 
-        # sinais para logs de evento
         self.SIG_V2 = Web3.to_hex(
             Web3.keccak(text="PairCreated(address,address,address,uint256)")
         )
@@ -78,7 +77,7 @@ class SniperDiscovery:
             Web3.keccak(text="PoolCreated(address,address,uint24,int24,address)")
         )
 
-        # loop exclusivo para discovery
+        # loop exclusivo para polling
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     def _decode_address(self, hexstr: str) -> str:
@@ -101,7 +100,6 @@ class SniperDiscovery:
         self._stop_event.clear()
         self._init_blocks()
 
-        # cria e guarda um loop exclusivo para o discovery
         self._loop = asyncio.new_event_loop()
 
         def _run_loop_in_thread():
@@ -109,18 +107,14 @@ class SniperDiscovery:
             self._loop.create_task(self._run_loop())
             self._loop.run_forever()
 
-        # dispara o loop em thread daemon
         thread = threading.Thread(target=_run_loop_in_thread, daemon=True)
         thread.start()
 
-        # alerta “sniper iniciado” no loop Telegram
-        asyncio.run_coroutine_threadsafe(
-            send_report(
-                bot=self.bot,
-                message="🔍 Sniper iniciado! Monitorando novas DEXes...",
-                loop=self._tg_loop
-            ),
-            self._tg_loop
+        # alerta de “sniper iniciado”
+        self._tg_loop.call_soon_threadsafe(
+            send_report,
+            self.bot,
+            "🔍 Sniper iniciado! Monitorando novas DEXes..."
         )
         logger.info("🔍 SniperDiscovery iniciado")
 
@@ -141,7 +135,7 @@ class SniperDiscovery:
 
     def status(self) -> Dict[str, Any]:
         """
-        Retorna dicionário com status atual: ativo, tempo, contagem e último par.
+        Retorna status atual.
         """
         if not self.is_running():
             return {"active": False, "text": "🔴 Sniper parado.", "button": None}
@@ -184,33 +178,25 @@ class SniperDiscovery:
                         if not {pair.token0, pair.token1} & set(self.base_tokens):
                             continue
 
-                        # notifica novo par no Telegram
-                        asyncio.run_coroutine_threadsafe(
-                            send_report(
-                                bot=self.bot,
-                                message=(
-                                    f"🆕 [{pair.dex.name}] Novo par:\n"
-                                    f"{pair.address}\n"
-                                    f"Tokens: {pair.token0} / {pair.token1}"
-                                ),
-                                loop=self._tg_loop
-                            ),
-                            self._tg_loop
+                        # notifica novo par
+                        self._tg_loop.call_soon_threadsafe(
+                            send_report,
+                            self.bot,
+                            f"🆕 [{pair.dex.name}] Novo par:\n"
+                            f"{pair.address}\n"
+                            f"Tokens: {pair.token0} / {pair.token1}"
                         )
 
                         if not await self._has_min_liq(pair):
                             # sem liquidez mínima
-                            asyncio.run_coroutine_threadsafe(
-                                send_report(
-                                    bot=self.bot,
-                                    message=f"⏳ Sem liquidez mínima: {pair.address}",
-                                    loop=self._tg_loop
-                                ),
-                                self._tg_loop
+                            self._tg_loop.call_soon_threadsafe(
+                                send_report,
+                                self.bot,
+                                f"⏳ Sem liquidez mínima: {pair.address}"
                             )
                             continue
 
-                        # atualização de métricas e callback
+                        # métricas e callback
                         self.pair_count += 1
                         self.last_pair = pair
 
@@ -220,24 +206,18 @@ class SniperDiscovery:
                                 await res
                         except Exception as e:
                             logger.error("Erro no callback", exc_info=True)
-                            asyncio.run_coroutine_threadsafe(
-                                send_report(
-                                    bot=self.bot,
-                                    message=f"⚠️ Erro no callback: {e}",
-                                    loop=self._tg_loop
-                                ),
-                                self._tg_loop
+                            self._tg_loop.call_soon_threadsafe(
+                                send_report,
+                                self.bot,
+                                f"⚠️ Erro no callback: {e}"
                             )
 
             except Exception as e:
                 logger.error("Erro no loop de discovery", exc_info=True)
-                asyncio.run_coroutine_threadsafe(
-                    send_report(
-                        bot=self.bot,
-                        message=f"⚠️ Erro no loop de discovery: {e}",
-                        loop=self._tg_loop
-                    ),
-                    self._tg_loop
+                self._tg_loop.call_soon_threadsafe(
+                    send_report,
+                    self.bot,
+                    f"⚠️ Erro no loop de discovery: {e}"
                 )
 
             await asyncio.sleep(self.interval)
