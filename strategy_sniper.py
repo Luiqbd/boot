@@ -1,3 +1,5 @@
+# strategy_sniper.py
+
 import logging
 import asyncio
 import traceback
@@ -31,6 +33,7 @@ rate_limiter.set_notifier(lambda msg: safe_notify(bot_notify, msg))
 _PAIR_DUP_INTERVAL = 5
 _recent_pairs: dict[tuple[str, str, str], float] = {}
 
+
 def notify(msg: str):
     coro = bot_notify.send_message(
         chat_id=config["TELEGRAM_CHAT_ID"],
@@ -42,6 +45,7 @@ def notify(msg: str):
         loop.create_task(coro)
     except RuntimeError:
         asyncio.run(coro)
+
 
 def safe_notify(alert: TelegramAlert | Bot | None, msg: str,
                 loop: asyncio.AbstractEventLoop | None = None):
@@ -68,8 +72,16 @@ def safe_notify(alert: TelegramAlert | Bot | None, msg: str,
     else:
         notify(msg)
 
-async def on_new_pair(dex_info, pair_addr, token0, token1,
-                      bot=None, loop=None):
+
+async def on_new_pair(
+    dex_info,
+    pair_addr,
+    token0,
+    token1,
+    bot=None,
+    loop=None,
+    token=None
+):
     from risk_manager import risk_manager
 
     # pausa por rate limit
@@ -121,22 +133,22 @@ async def on_new_pair(dex_info, pair_addr, token0, token1,
             raise ValueError("TRADE_SIZE_ETH inválido")
 
         dex_client = DexClient(web3, getattr(dex_info, "router"))
-        version     = dex_client.detect_version(pair_addr)
+        version = dex_client.detect_version(pair_addr)
 
         # pega liquidez on-chain
         if version == DexVersion.V2:
-            r0, r1        = dex_client._get_reserves(pair_addr)
-            actual_liq    = max(r0, r1)
+            r0, r1 = dex_client._get_reserves(pair_addr)
+            actual_liq = max(r0, r1)
         elif version == DexVersion.V3:
-            actual_liq    = dex_client._get_liquidity_v3(pair_addr)
+            actual_liq = dex_client._get_liquidity_v3(pair_addr)
         else:
-            actual_liq    = Decimal(0)
+            actual_liq = Decimal(0)
 
         MIN_LIQ = Decimal(str(config.get("MIN_LIQ_WETH", 0.5)))
-        liq_ok  = actual_liq >= MIN_LIQ
+        liq_ok = actual_liq >= MIN_LIQ
 
-        price  = dex_client.get_token_price(target, weth)
-        slip   = dex_client.calc_dynamic_slippage(pair_addr, float(amt_eth))
+        price = dex_client.get_token_price(target, weth)
+        slip = dex_client.calc_dynamic_slippage(pair_addr, float(amt_eth))
 
         # notifica resumo e próximos passos
         safe_notify(
@@ -168,16 +180,18 @@ async def on_new_pair(dex_info, pair_addr, token0, token1,
             )
             safe_notify(
                 bot,
-                f"⚠️ *Pool Ignorada:* liquidez on-chain `{actual_liq:.4f}` WETH < mínimo `{MIN_LIQ}` WETH\n"
-                f"_Compra abortada_",
+                (
+                    f"⚠️ *Pool Ignorada:* liquidez on-chain `{actual_liq:.4f}` WETH < mínimo `{MIN_LIQ}` WETH\n"
+                    f"_Compra abortada_"
+                ),
                 loop
             )
             return
 
         # filtro 2: taxa
         exchange_for_tax = ExchangeClient(router_address=getattr(dex_info, "router"))
-        MAX_TAX  = float(config.get("MAX_TAX_PCT", 10.0))
-        tax_ok   = not has_high_tax(
+        MAX_TAX = float(config.get("MAX_TAX_PCT", 10.0))
+        tax_ok = not has_high_tax(
             exchange_for_tax,
             target,
             weth,
@@ -196,8 +210,10 @@ async def on_new_pair(dex_info, pair_addr, token0, token1,
             )
             safe_notify(
                 bot,
-                f"⚠️ *Token Ignorado:* taxa estimada > `{MAX_TAX}`%\n"
-                f"_Compra abortada_",
+                (
+                    f"⚠️ *Token Ignorado:* taxa estimada > `{MAX_TAX}`%\n"
+                    f"_Compra abortada_"
+                ),
                 loop
             )
             return
@@ -217,8 +233,10 @@ async def on_new_pair(dex_info, pair_addr, token0, token1,
             )
             safe_notify(
                 bot,
-                "🚫 *Token Bloqueado:* contrato não verificado\n"
-                "_Compra abortada_",
+                (
+                    "🚫 *Token Bloqueado:* contrato não verificado\n"
+                    "_Compra abortada_"
+                ),
                 loop
             )
             return
@@ -237,8 +255,10 @@ async def on_new_pair(dex_info, pair_addr, token0, token1,
             )
             safe_notify(
                 bot,
-                f"🚫 *Token Bloqueado:* concentração de holders > `{TOP_LIMIT}`%\n"
-                "_Compra abortada_",
+                (
+                    f"🚫 *Token Bloqueado:* concentração de holders > `{TOP_LIMIT}`%\n"
+                    "_Compra abortada_"
+                ),
                 loop
             )
             return
@@ -257,10 +277,12 @@ async def on_new_pair(dex_info, pair_addr, token0, token1,
         )
         safe_notify(
             bot,
-            "*❌ Erro nos filtros iniciais:*\n"
-            f"`{e}`\n\n"
-            "_Traceback:_\n"
-            f"```{tb}```",
+            (
+                "*❌ Erro nos filtros iniciais:*\n"
+                f"`{e}`\n\n"
+                "_Traceback:_\n"
+                f"```{tb}```"
+            ),
             loop
         )
         return
@@ -276,14 +298,14 @@ async def on_new_pair(dex_info, pair_addr, token0, token1,
         dry_run=config["DRY_RUN"]
     )
 
-# 6) setup e execução da compra
+    # 6) setup e execução da compra
     try:
         exchange = ExchangeClient(router_address=getattr(dex_info, "router"))
         trade_exec = TradeExecutor(
             exchange_client=exchange,
             dry_run=config["DRY_RUN"]
         )
-        safe_exec  = SafeTradeExecutor(
+        safe_exec = SafeTradeExecutor(
             executor=trade_exec,
             risk_manager=risk_manager
         )
@@ -398,15 +420,15 @@ async def on_new_pair(dex_info, pair_addr, token0, token1,
         return
 
     # 8) monitoramento para venda
-    highest    = price
-    entry      = price
-    tp_pct     = float(config.get("TAKE_PROFIT_PCT", 0.2))
-    sl_pct     = float(config.get("STOP_LOSS_PCT", 0.05))
-    trail      = float(config.get("TRAIL_PCT", 0.05))
-    tp_price   = entry * (1 + tp_pct)
-    hard_stop  = entry * (1 - sl_pct)
+    highest = price
+    entry = price
+    tp_pct = float(config.get("TAKE_PROFIT_PCT", 0.2))
+    sl_pct = float(config.get("STOP_LOSS_PCT", 0.05))
+    trail = float(config.get("TRAIL_PCT", 0.05))
+    tp_price = entry * (1 + tp_pct)
+    hard_stop = entry * (1 - sl_pct)
     stop_price = highest * (1 - trail)
-    sold       = False
+    sold = False
 
     from discovery import is_discovery_running
     while is_discovery_running():
@@ -417,10 +439,9 @@ async def on_new_pair(dex_info, pair_addr, token0, token1,
             continue
 
         if price > highest:
-            highest    = price
+            highest = price
             stop_price = highest * (1 - trail)
 
-        # condições de saída
         if price >= tp_price or price <= stop_price or price <= hard_stop:
             balance = get_token_balance(exchange, target)
             if balance <= 0:
