@@ -1,5 +1,3 @@
-# telegram_alert.py
-
 import asyncio
 import logging
 import random
@@ -7,6 +5,8 @@ from typing import Optional, List
 
 from telegram import Bot
 from telegram.error import TelegramError
+
+from utils import escape_md_v2
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +19,7 @@ class TelegramAlert:
       - divisão em partes (chunking)
       - retries com backoff exponencial + jitter
       - suporte a loop existente ou criação de loop standalone
+      - escape automático de MarkdownV2
     """
 
     def __init__(
@@ -57,13 +58,16 @@ class TelegramAlert:
         Envia `message` de forma thread-safe:
           - Se um loop estiver rodando, agenda com run_coroutine_threadsafe
           - Caso contrário, cria e executa um loop temporário.
+        Aplica escape de MarkdownV2 e faz chunking.
         Retorna True se o envio foi agendado ou executado sem erro imediato.
         """
         if not self.bot or not self.chat_id:
             logger.warning("TelegramAlert: bot ou chat_id não configurados.")
             return False
 
-        coro = self._send_all(message)
+        # escape MarkdownV2 antes do chunking
+        escaped = escape_md_v2(message)
+        coro = self._send_all(escaped)
 
         try:
             if self.loop.is_running():
@@ -78,7 +82,7 @@ class TelegramAlert:
 
     async def _send_all(self, message: str) -> None:
         """
-        Envia cada parte de `message`, respeitando tamanho máximo,
+        Envia cada parte de `message` (já escapada), respeitando tamanho máximo,
         usando o método `_send_with_retries`.
         """
         parts = self._chunk_text(message)
@@ -148,7 +152,7 @@ def send_report(
 ) -> bool:
     """
     Envia `message` via TelegramAlert. Usa chat_id padrão de config
-    se não for fornecido. Aceita parâmetros extras (parse_mode, retries etc.),
+    se não for fornecido. Aceita parâmetros extras (parse_mode, retries etc.), 
     inclusive `loop`.
     """
     from config import config  # evita import cíclico
