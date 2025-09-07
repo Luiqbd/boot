@@ -2,11 +2,13 @@ import os
 import time
 import requests
 import logging
+import re
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from web3 import Web3
+from web3.exceptions import BadFunctionCallOutput, ABIFunctionNotFound, ContractLogicError
 from dotenv import load_dotenv
 
 from exchange_client import ExchangeClient
@@ -24,19 +26,16 @@ ETHERSCAN_V1_URL = "https://api.basescan.org/api"
 ETHERSCAN_V2_URL = "https://api.etherscan.io/v2/api"
 CHAIN_ID_BASE = "8453"  # Base Mainnet (Etherscan V2)
 
-# Verifica se a chave foi carregada
 if not ETHERSCAN_API_KEY or len(ETHERSCAN_API_KEY) < 10:
     log.warning("⚠️ ETHERSCAN_API_KEY não configurada ou inválida.")
 else:
     log.info(f"[INFO] ETHERSCAN_API_KEY carregada: {ETHERSCAN_API_KEY[:6]}...")
-
 
 def is_v2_key(api_key: str) -> bool:
     """
     Retorna True se a chave fornecida for válida para o Etherscan V2.
     """
     return bool(api_key)
-
 
 # ===========================
 # Rate Limiter
@@ -120,7 +119,6 @@ class ApiRateLimiter:
         Lança RuntimeError se os limites de QPS ou diário estiverem excedidos.
         """
         self._reset_daily_if_needed()
-
         if self.is_paused():
             raise RuntimeError("API rate-limited: paused")
 
@@ -160,10 +158,8 @@ class ApiRateLimiter:
                 )
             raise RuntimeError("API rate-limited: daily threshold reached")
 
-
 # Instância global do rate limiter
 rate_limiter = ApiRateLimiter()
-
 
 def configure_rate_limiter_from_config(config: dict) -> None:
     """
@@ -179,7 +175,6 @@ def configure_rate_limiter_from_config(config: dict) -> None:
         rate_limiter.pause_enabled = bool(config.get("PAUSE_SNIPER_ON_RATE_LIMIT", rate_limiter.pause_enabled))
     except Exception:
         log.warning("Falha ao aplicar configs do rate limiter.", exc_info=True)
-
 
 # ===========================
 # Verificações no Explorer
@@ -225,7 +220,6 @@ def is_contract_verified(token_address: str, api_key: str = ETHERSCAN_API_KEY) -
         log.error(f"Erro ao verificar contrato {token_address}: {e}", exc_info=True)
         return False
 
-
 def is_token_concentrated(token_address: str, top_limit_pct: float, api_key: str = ETHERSCAN_API_KEY) -> bool:
     """
     Verifica se há holder com participação >= top_limit_pct do supply total.
@@ -268,7 +262,6 @@ def is_token_concentrated(token_address: str, top_limit_pct: float, api_key: str
     except Exception as e:
         log.error(f"Erro ao verificar concentração de holders: {e}", exc_info=True)
         return True
-
 
 def testar_etherscan_v2(
     api_key: str = ETHERSCAN_API_KEY,
@@ -315,7 +308,6 @@ def testar_etherscan_v2(
     log.error("❌ Todas as tentativas de teste falharam.")
     return False
 
-
 def has_high_tax(
     client: ExchangeClient,
     token_address: str,
@@ -325,7 +317,6 @@ def has_high_tax(
 ) -> bool:
     """
     Verifica se o token aplica taxa de transferência (tax) maior que max_tax_bps.
-
     Stub atual; sempre retorna False.
     """
     log.debug(
@@ -335,19 +326,34 @@ def has_high_tax(
     # TODO: implementar lógica real de detecção de tax on-transfer
     return False
 
-
 def get_token_balance(
     client: ExchangeClient,
     token_address: str
 ) -> int:
     """
     Retorna o saldo bruto (raw, em unidades base) do token na carteira do client.
+    Em caso de erro de chamada on-chain, retorna 0 para não interromper o fluxo.
     """
-    token_address = Web3.to_checksum_address(token_address)
-    contract = client.web3.eth.contract(
-        address=token_address,
-        abi=client.erc20_abi
-    )
-    balance_raw = contract.functions.balanceOf(client.wallet).call()
-    log.debug("Saldo raw de %s: %d", token_address, balance_raw)
-    return int(balance_raw)
+    try:
+        checksum = Web3.to_checksum_address(token_address)
+        contract = client.web3.eth.contract(
+            address=checksum,
+            abi=client.erc20_abi
+        )
+        balance_raw = contract.functions.balanceOf(client.wallet).call()
+        log.debug(f"Saldo raw de {checksum}: {balance_raw}")
+        return int(balance_raw)
+
+    except (BadFunctionCallOutput, ABIFunctionNotFound, ContractLogicError) as e:
+        log.error(f"Erro ao obter saldo de {token_address}: {e}", exc_info=True)
+        return 0
+
+    except Exception as e:
+        log.error(f"Erro inesperado ao obter saldo de {token_address}: {e}", exc_info=True)
+        return 0
+
+def escape_md_v2(text: str) -> str:
+    """
+    Escapa caracteres especiais para uso com parse_mode="MarkdownV2" no Telegram.
+    """
+    return re.sub(r'([._\\-\\*\\[\\]\\(\\)~`>#+=|{}.!])', r'\\\1', text)
