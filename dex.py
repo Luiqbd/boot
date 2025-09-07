@@ -14,48 +14,33 @@ from web3.exceptions import BadFunctionCallOutput, ABIFunctionNotFound, Contract
 BASE_DIR = Path(__file__).parent
 ABIS_DIR = BASE_DIR / "abis"
 
-# Carrega os ABIs de arquivos JSON na pasta abis/
 with open(ABIS_DIR / "uniswap_router.json", encoding="utf-8") as f:
     ROUTER_ABI = json.load(f)
-
 with open(ABIS_DIR / "uniswap_v2_pair.json", encoding="utf-8") as f:
     V2_PAIR_ABI = json.load(f)
-
 with open(ABIS_DIR / "uniswap_v3_pool.json", encoding="utf-8") as f:
     V3_POOL_ABI = json.load(f)
 
 logger = logging.getLogger(__name__)
 
-
 class DexVersion(str, Enum):
-    V2      = "v2"
-    V3      = "v3"
+    V2 = "v2"
+    V3 = "v3"
     UNKNOWN = "unknown"
-
 
 class DexClient:
     """
     Cliente para leitura de dados on-chain em pares/pools
     e cálculo de liquidez e slippage dinâmicos.
     """
-
     def __init__(self, web3: Web3, router_address: str):
-        # Web3 provider
         self.web3 = web3
-
-        # Cache de contratos para evitar recriações
         self._contract_cache: Dict[Tuple[str, Tuple[str, ...]], Contract] = {}
-
-        # Contrato do router Uniswap
         self.router = self._contract(router_address, ROUTER_ABI)
 
     def _contract(self, address: str, abi: List[dict]) -> Contract:
-        """
-        Retorna um objeto Contract para o endereço+ABI, armazenando em cache.
-        """
         checksum = Web3.to_checksum_address(address)
         key = (checksum, tuple(sorted(item.get("name", "") for item in abi)))
-
         if key not in self._contract_cache:
             logger.debug(f"Caching new contract {checksum}")
             self._contract_cache[key] = self.web3.eth.contract(
@@ -66,12 +51,8 @@ class DexClient:
 
     @lru_cache(maxsize=128)
     def detect_version(self, pair_address: str) -> DexVersion:
-        """
-        Detecta se um par é Uniswap V2 ou V3. Retorna UNKNOWN se não for reconhecido.
-        """
         addr = Web3.to_checksum_address(pair_address)
-
-        # Verifica V2
+        # V2?
         try:
             c = self._contract(addr, V2_PAIR_ABI)
             c.functions.getReserves().call()
@@ -80,8 +61,7 @@ class DexClient:
             pass
         except Exception as e:
             logger.debug(f"detect_version V2 check falhou: {e}")
-
-        # Verifica V3
+        # V3?
         try:
             c = self._contract(addr, V3_POOL_ABI)
             c.functions.liquidity().call()
@@ -90,21 +70,14 @@ class DexClient:
             pass
         except Exception as e:
             logger.debug(f"detect_version V3 check falhou: {e}")
-
         return DexVersion.UNKNOWN
 
     def _get_reserves(self, pair_address: str) -> Tuple[Decimal, Decimal]:
-        """
-        Retorna as reservas de um par V2 (unidades de token conforme 18 decimals).
-        """
         contract = self._contract(pair_address, V2_PAIR_ABI)
         r0, r1, _ = contract.functions.getReserves().call()
         return Decimal(r0) / Decimal(1e18), Decimal(r1) / Decimal(1e18)
 
     def _get_liquidity_v3(self, pool_address: str) -> Decimal:
-        """
-        Retorna o campo `liquidity` de um pool V3.
-        """
         contract = self._contract(pool_address, V3_POOL_ABI)
         liq = contract.functions.liquidity().call()
         return Decimal(liq) / Decimal(1e18)
@@ -114,9 +87,6 @@ class DexClient:
         pair_address: str,
         min_liq_weth: Union[float, Decimal] = Decimal("0.5")
     ) -> bool:
-        """
-        Verifica se o par/pool tem liquidez mínima em WETH.
-        """
         version = self.detect_version(pair_address)
         try:
             if version == DexVersion.V2:
@@ -124,15 +94,12 @@ class DexClient:
                 reserve_weth = max(r0, r1)
                 logger.info(f"[{pair_address}] V2 liquidez = {reserve_weth:.4f} WETH")
                 return reserve_weth >= Decimal(min_liq_weth)
-
             if version == DexVersion.V3:
                 reserve_eq = self._get_liquidity_v3(pair_address)
                 logger.info(f"[{pair_address}] V3 liquidez eq = {reserve_eq:.4f} WETH")
                 return reserve_eq >= Decimal(min_liq_weth)
-
             logger.warning(f"[{pair_address}] Tipo de pool desconhecido: {version}")
             return False
-
         except Exception as e:
             logger.error(f"Erro ao verificar liquidez ({version}): {e}", exc_info=True)
             return False
@@ -142,12 +109,8 @@ class DexClient:
         pair_address: str,
         amount_in_eth: Union[float, Decimal]
     ) -> Decimal:
-        """
-        Calcula slippage dinâmica segundo a versão do DEX.
-        """
         version = self.detect_version(pair_address)
         amt_in = Decimal(str(amount_in_eth))
-
         try:
             if version == DexVersion.V2:
                 r0, r1 = self._get_reserves(pair_address)
@@ -155,16 +118,13 @@ class DexClient:
                 impact = amt_in / reserve
                 sl = (impact * Decimal("1.5")).quantize(Decimal("0.00000001"))
                 return min(max(sl, Decimal("0.002")), Decimal("0.02"))
-
             if version == DexVersion.V3:
                 reserve = self._get_liquidity_v3(pair_address)
                 impact = amt_in / reserve
                 sl = (impact * Decimal("2")).quantize(Decimal("0.00000001"))
                 return min(max(sl, Decimal("0.0025")), Decimal("0.025"))
-
         except Exception as e:
             logger.error(f"Erro ao calcular slippage ({version}): {e}", exc_info=True)
-
         return Decimal("0.005")
 
     def get_token_price(
@@ -174,8 +134,8 @@ class DexClient:
         amount_tokens: int = 10**18
     ) -> Union[Decimal, None]:
         """
-        Retorna o preço de `amount_tokens` do token em WETH usando o router.
-        Se o contrato reverter ou não tiver liquidez, retorna None.
+        Retorna o preço de `amount_tokens` do token em WETH.
+        Se o call reverter ou falhar, retorna None.
         """
         try:
             path = [
@@ -189,11 +149,9 @@ class DexClient:
                 f"{price_weth:.6f} WETH"
             )
             return price_weth
-
         except ContractLogicError as e:
             logger.warning(f"Revert ao obter preço do token {token_address}: {e}")
             return None
-
         except Exception as e:
             logger.error(
                 f"Erro inesperado ao obter preço do token {token_address}: {e}",
