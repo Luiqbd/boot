@@ -113,11 +113,12 @@ class SniperDiscovery:
         thread = threading.Thread(target=_run_loop_in_thread, daemon=True)
         thread.start()
 
-        # envia alerta de “sniper iniciado” via o loop do Telegram
+        # alerta “sniper iniciado” no loop Telegram
         asyncio.run_coroutine_threadsafe(
             send_report(
                 bot=self.bot,
-                message="🔍 Sniper iniciado! Monitorando novas DEXes..."
+                message="🔍 Sniper iniciado! Monitorando novas DEXes...",
+                loop=self._tg_loop
             ),
             self._tg_loop
         )
@@ -191,7 +192,8 @@ class SniperDiscovery:
                                     f"🆕 [{pair.dex.name}] Novo par:\n"
                                     f"{pair.address}\n"
                                     f"Tokens: {pair.token0} / {pair.token1}"
-                                )
+                                ),
+                                loop=self._tg_loop
                             ),
                             self._tg_loop
                         )
@@ -201,7 +203,8 @@ class SniperDiscovery:
                             asyncio.run_coroutine_threadsafe(
                                 send_report(
                                     bot=self.bot,
-                                    message=f"⏳ Sem liquidez mínima: {pair.address}"
+                                    message=f"⏳ Sem liquidez mínima: {pair.address}",
+                                    loop=self._tg_loop
                                 ),
                                 self._tg_loop
                             )
@@ -220,7 +223,8 @@ class SniperDiscovery:
                             asyncio.run_coroutine_threadsafe(
                                 send_report(
                                     bot=self.bot,
-                                    message=f"⚠️ Erro no callback: {e}"
+                                    message=f"⚠️ Erro no callback: {e}",
+                                    loop=self._tg_loop
                                 ),
                                 self._tg_loop
                             )
@@ -230,7 +234,8 @@ class SniperDiscovery:
                 asyncio.run_coroutine_threadsafe(
                     send_report(
                         bot=self.bot,
-                        message=f"⚠️ Erro no loop de discovery: {e}"
+                        message=f"⚠️ Erro no loop de discovery: {e}",
+                        loop=self._tg_loop
                     ),
                     self._tg_loop
                 )
