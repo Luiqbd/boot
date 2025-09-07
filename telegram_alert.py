@@ -1,3 +1,5 @@
+# telegram_alert.py
+
 import asyncio
 import logging
 import random
@@ -63,16 +65,14 @@ class TelegramAlert:
 
         coro = self._send_all(message)
 
-        # se há loop rodando, agenda de forma thread-safe
         try:
             if self.loop.is_running():
                 asyncio.run_coroutine_threadsafe(coro, self.loop)
             else:
-                # cria um novo loop apenas para este envio
                 asyncio.run(coro)
             return True
 
-        except Exception as e:
+        except Exception:
             logger.error("Falha ao agendar/executar alerta", exc_info=True)
             return False
 
@@ -107,7 +107,6 @@ class TelegramAlert:
                 return
 
             except TelegramError as te:
-                # se for rate limit, espera retry_after antes de retentar
                 retry_after = getattr(te, "retry_after", None)
                 if retry_after:
                     backoff = float(retry_after)
@@ -117,7 +116,6 @@ class TelegramAlert:
                     await asyncio.sleep(backoff)
                     continue
 
-                # calcula backoff exponencial + jitter
                 backoff = min(self.base_backoff * 2 ** (attempt - 1), self.max_backoff)
                 jitter = random.uniform(0, backoff * 0.1)
                 sleep_time = backoff + jitter
@@ -130,7 +128,6 @@ class TelegramAlert:
                     await asyncio.sleep(sleep_time)
                     continue
 
-                # ultrapassou número de tentativas
                 logger.error(
                     f"[{label}] Falha definitiva ao enviar alerta após "
                     f"{self.max_retries} tentativas: {te}",
@@ -151,16 +148,20 @@ def send_report(
 ) -> bool:
     """
     Envia `message` via TelegramAlert. Usa chat_id padrão de config
-    se não for fornecido. Qualquer parâmetro extra (parse_mode, retries etc.)
-    pode ser passado em `alert_kwargs`.
+    se não for fornecido. Aceita parâmetros extras (parse_mode, retries etc.),
+    inclusive `loop`.
     """
-    from config import config  # evita import cíclico no módulo
+    from config import config  # evita import cíclico
 
     target = chat_id or config.get("TELEGRAM_CHAT_ID")
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
+
+    # extrai o loop, se foi passado em alert_kwargs
+    loop = alert_kwargs.pop("loop", None)
+    if loop is None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
 
     alert = TelegramAlert(
         bot=bot,
