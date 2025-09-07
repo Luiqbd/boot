@@ -152,16 +152,11 @@ def iniciar_sniper():
         if not token:
             logger.error("❌ Token não obtido, abortando sniper.")
             return
-        try:
-            run_discovery(
-                Web3(Web3.HTTPProvider(RPC_URL)),
-                dexes,
-                base_tokens,
-                MIN_LIQ_WETH,
-                INTERVAL_SEC,
-                application.bot,
-                # 1) callback_on_pair
-                lambda pair: on_new_pair(
+
+        # 1) converte callback async em agendamento na event loop
+        def _on_pair(pair):
+            asyncio.run_coroutine_threadsafe(
+                on_new_pair(
                     pair.dex,
                     pair.address,
                     pair.token0,
@@ -170,11 +165,19 @@ def iniciar_sniper():
                     loop=loop,
                     token=token
                 ),
-                # 2) telegram_loop via keyword
-                telegram_loop=loop,
+                loop
             )
-        except Exception as e:
-            logger.error("❌ Erro em discovery: %s", e, exc_info=True)
+
+        run_discovery(
+            Web3(Web3.HTTPProvider(RPC_URL)),
+            dexes,
+            base_tokens,
+            MIN_LIQ_WETH,
+            INTERVAL_SEC,
+            application.bot,
+            _on_pair,
+            telegram_loop=loop,
+        )
 
     sniper_thread = Thread(target=_runner, daemon=True)
     sniper_thread.start()
@@ -184,7 +187,9 @@ def parar_sniper():
     logger.info("🛑 Sniper parado.")
 
 def env_summary_text() -> str:
-    """Retorna bloco de texto com configurações atuais."""
+    """
+    Retorna bloco de texto com configurações atuais.
+    """
     try:
         addr = Web3().eth.account.from_key(PRIVATE_KEY).address
     except Exception as e:
