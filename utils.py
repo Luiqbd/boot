@@ -158,8 +158,10 @@ class ApiRateLimiter:
                 )
             raise RuntimeError("API rate-limited: daily threshold reached")
 
+
 # Instância global do rate limiter
 rate_limiter = ApiRateLimiter()
+
 
 def configure_rate_limiter_from_config(config: dict) -> None:
     """
@@ -175,6 +177,7 @@ def configure_rate_limiter_from_config(config: dict) -> None:
         rate_limiter.pause_enabled = bool(config.get("PAUSE_SNIPER_ON_RATE_LIMIT", rate_limiter.pause_enabled))
     except Exception:
         log.warning("Falha ao aplicar configs do rate limiter.", exc_info=True)
+
 
 # ===========================
 # Verificações no Explorer
@@ -220,6 +223,7 @@ def is_contract_verified(token_address: str, api_key: str = ETHERSCAN_API_KEY) -
         log.error(f"Erro ao verificar contrato {token_address}: {e}", exc_info=True)
         return False
 
+
 def is_token_concentrated(token_address: str, top_limit_pct: float, api_key: str = ETHERSCAN_API_KEY) -> bool:
     """
     Verifica se há holder com participação >= top_limit_pct do supply total.
@@ -262,6 +266,7 @@ def is_token_concentrated(token_address: str, top_limit_pct: float, api_key: str
     except Exception as e:
         log.error(f"Erro ao verificar concentração de holders: {e}", exc_info=True)
         return True
+
 
 def testar_etherscan_v2(
     api_key: str = ETHERSCAN_API_KEY,
@@ -308,6 +313,7 @@ def testar_etherscan_v2(
     log.error("❌ Todas as tentativas de teste falharam.")
     return False
 
+
 def has_high_tax(
     client: ExchangeClient,
     token_address: str,
@@ -325,6 +331,7 @@ def has_high_tax(
     )
     # TODO: implementar lógica real de detecção de tax on-transfer
     return False
+
 
 def get_token_balance(
     client: ExchangeClient,
@@ -352,8 +359,9 @@ def get_token_balance(
         log.error(f"Erro inesperado ao obter saldo de {token_address}: {e}", exc_info=True)
         return 0
 
+
 def escape_md_v2(text: str) -> str:
     """
-    Escapa caracteres especiais para uso com parse_mode="MarkdownV2" no Telegram.
+    Escapa caracteres especiais para uso com parse_mode="MarkdownV2".
     """
-    return re.sub(r'([._\\-\\*\\[\\]\\(\\)~`>#+=|{}.!])', r'\\\1', text)
+    return re.sub(r'([._\-*[\]()~`>#+=|{}.!])', r'\\\1', text)
