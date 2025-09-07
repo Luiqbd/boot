@@ -21,7 +21,8 @@ from utils import (
     has_high_tax,
     get_token_balance,
     rate_limiter,
-    configure_rate_limiter_from_config
+    configure_rate_limiter_from_config,
+    escape_md_v2
 )
 
 log = logging.getLogger("sniper")
@@ -35,9 +36,13 @@ _recent_pairs: dict[tuple[str, str, str], float] = {}
 
 
 def notify(msg: str):
+    """
+    Envia mensagem direta ao Telegram escapando MarkdownV2.
+    """
+    escaped = escape_md_v2(msg)
     coro = bot_notify.send_message(
         chat_id=config["TELEGRAM_CHAT_ID"],
-        text=msg,
+        text=escaped,
         parse_mode="MarkdownV2"
     )
     try:
@@ -47,19 +52,28 @@ def notify(msg: str):
         asyncio.run(coro)
 
 
-def safe_notify(alert: TelegramAlert | Bot | None, msg: str,
-                loop: asyncio.AbstractEventLoop | None = None):
+def safe_notify(
+    alert: TelegramAlert | Bot | None,
+    msg: str,
+    loop: asyncio.AbstractEventLoop | None = None
+):
+    """
+    Envia mensagem com dedupe e escapando MarkdownV2.
+    """
     now = time()
     key = hash(msg)
-    if getattr(safe_notify, "_last_msgs", {}).get(key, 0) + _PAIR_DUP_INTERVAL > now:
+    last = getattr(safe_notify, "_last_msgs", {})
+    if last.get(key, 0) + _PAIR_DUP_INTERVAL > now:
         return
-    safe_notify._last_msgs = getattr(safe_notify, "_last_msgs", {})
-    safe_notify._last_msgs[key] = now
+    last[key] = now
+    safe_notify._last_msgs = last
+
+    escaped = escape_md_v2(msg)
 
     if alert:
         coro = alert.send_message(
             chat_id=config["TELEGRAM_CHAT_ID"],
-            text=msg,
+            text=escaped,
             parse_mode="MarkdownV2"
         )
         if loop and loop.is_running():
@@ -84,7 +98,7 @@ async def on_new_pair(
 ):
     from risk_manager import risk_manager
 
-    # pausa por rate limit
+    # 1) pausa por rate limit
     if rate_limiter.is_paused():
         risk_manager.record(
             tipo="pair_skipped",
@@ -98,7 +112,7 @@ async def on_new_pair(
         safe_notify(bot, "⏸️ Sniper pausado por limite de API.", loop)
         return
 
-    # evita dupe
+    # 2) evita dupe
     now_ts = time()
     key = (pair_addr.lower(), token0.lower(), token1.lower())
     if key in _recent_pairs and (now_ts - _recent_pairs[key]) < _PAIR_DUP_INTERVAL:
@@ -118,8 +132,8 @@ async def on_new_pair(
         dry_run=config["DRY_RUN"]
     )
 
+    # 3) filtros iniciais
     try:
-        # inicializa cliente e params
         web3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
         weth = Web3.to_checksum_address(config["WETH"])
         target = (
@@ -135,7 +149,6 @@ async def on_new_pair(
         dex_client = DexClient(web3, getattr(dex_info, "router"))
         version = dex_client.detect_version(pair_addr)
 
-        # pega liquidez on-chain
         if version == DexVersion.V2:
             r0, r1 = dex_client._get_reserves(pair_addr)
             actual_liq = max(r0, r1)
@@ -147,25 +160,30 @@ async def on_new_pair(
         MIN_LIQ = Decimal(str(config.get("MIN_LIQ_WETH", 0.5)))
         liq_ok = actual_liq >= MIN_LIQ
 
+        # preço pode ser None se reverter
         price = dex_client.get_token_price(target, weth)
+        if price is None:
+            await safe_notify(
+                bot,
+                f"⚠️ Preço indisponível para {target}; pulando par.",
+                loop
+            )
+            return
+
         slip = dex_client.calc_dynamic_slippage(pair_addr, float(amt_eth))
 
-        # notifica resumo e próximos passos
-        safe_notify(
-            bot,
-            (
-                f"🔍 *Novo Par Detectado*\n"
-                f"• Endereço: `{pair_addr}`\n"
-                f"• DEX: `{dex_name}`\n"
-                f"• Versão: `{version.value}`\n"
-                f"• Alvo: `{target}`\n"
-                f"• Liquidez on-chain: `{actual_liq:.4f}` WETH (mín `{MIN_LIQ}`)\n"
-                f"• Preço 1 token: `{price:.10f}` WETH\n"
-                f"• Slippage sugerida: `{slip:.4f}`\n\n"
-                f"_Próximos filtros:_ liquidez → taxa → verificação → concentração"
-            ),
-            loop
+        summary = (
+            "🔍 *Novo Par Detectado*\n"
+            f"• Endereço: `{pair_addr}`\n"
+            f"• DEX: `{dex_name}`\n"
+            f"• Versão: `{version.value}`\n"
+            f"• Alvo: `{target}`\n"
+            f"• Liquidez on-chain: `{actual_liq:.4f}` WETH (mín `{MIN_LIQ}`)\n"
+            f"• Preço 1 token: `{price:.10f}` WETH\n"
+            f"• Slippage sugerida: `{slip:.4f}`\n\n"
+            "_Próximos filtros:_ liquidez → taxa → verificação → concentração"
         )
+        await safe_notify(bot, summary, loop)
 
         # filtro 1: liquidez
         if not liq_ok:
@@ -178,11 +196,12 @@ async def on_new_pair(
                 tx_hash=None,
                 dry_run=config["DRY_RUN"]
             )
-            safe_notify(
+            await safe_notify(
                 bot,
                 (
-                    f"⚠️ *Pool Ignorada:* liquidez on-chain `{actual_liq:.4f}` WETH < mínimo `{MIN_LIQ}` WETH\n"
-                    f"_Compra abortada_"
+                    f"⚠️ *Pool Ignorada:* liquidez on-chain `{actual_liq:.4f}` WETH "
+                    f"< mínimo `{MIN_LIQ}` WETH\n"
+                    "_Compra abortada_"
                 ),
                 loop
             )
@@ -208,11 +227,11 @@ async def on_new_pair(
                 tx_hash=None,
                 dry_run=config["DRY_RUN"]
             )
-            safe_notify(
+            await safe_notify(
                 bot,
                 (
                     f"⚠️ *Token Ignorado:* taxa estimada > `{MAX_TAX}`%\n"
-                    f"_Compra abortada_"
+                    "_Compra abortada_"
                 ),
                 loop
             )
@@ -231,7 +250,7 @@ async def on_new_pair(
                 tx_hash=None,
                 dry_run=config["DRY_RUN"]
             )
-            safe_notify(
+            await safe_notify(
                 bot,
                 (
                     "🚫 *Token Bloqueado:* contrato não verificado\n"
@@ -253,7 +272,7 @@ async def on_new_pair(
                 tx_hash=None,
                 dry_run=config["DRY_RUN"]
             )
-            safe_notify(
+            await safe_notify(
                 bot,
                 (
                     f"🚫 *Token Bloqueado:* concentração de holders > `{TOP_LIMIT}`%\n"
@@ -275,16 +294,13 @@ async def on_new_pair(
             tx_hash=None,
             dry_run=config["DRY_RUN"]
         )
-        safe_notify(
-            bot,
-            (
-                "*❌ Erro nos filtros iniciais:*\n"
-                f"`{e}`\n\n"
-                "_Traceback:_\n"
-                f"```{tb}```"
-            ),
-            loop
+        error_msg = (
+            "*❌ Erro nos filtros iniciais:*\n"
+            f"`{e}`\n\n"
+            "_Traceback:_\n"
+            f"```{tb}```"
         )
+        await safe_notify(bot, error_msg, loop)
         return
 
     # 5) tentativa de compra
@@ -321,16 +337,13 @@ async def on_new_pair(
             tx_hash=None,
             dry_run=config["DRY_RUN"]
         )
-        safe_notify(
-            bot,
-            (
-                "*❌ Erro ao inicializar executor*\n"
-                f"`{e}`\n\n"
-                "_Traceback:_\n"
-                f"```{tb}```"
-            ),
-            loop
+        error_msg = (
+            "*❌ Erro ao inicializar executor*\n"
+            f"`{e}`\n\n"
+            "_Traceback:_\n"
+            f"```{tb}```"
         )
+        await safe_notify(bot, error_msg, loop)
         return
 
     # 7) tentativa de compra
@@ -360,7 +373,7 @@ async def on_new_pair(
                 direction="buy",
                 now_ts=int(time()),
             )
-            safe_notify(
+            await safe_notify(
                 bot,
                 f"✅ *Compra realizada*\nToken: `{target}`\nTX: `{tx_buy}`",
                 loop
@@ -382,7 +395,7 @@ async def on_new_pair(
                 direction="buy",
                 now_ts=int(time()),
             )
-            safe_notify(
+            await safe_notify(
                 bot,
                 f"🚫 *Compra falhou*\nMotivo: `{motivo}`",
                 loop
@@ -407,16 +420,13 @@ async def on_new_pair(
             direction="buy",
             now_ts=int(time()),
         )
-        safe_notify(
-            bot,
-            (
-                "*🚫 Exceção na compra automática*\n"
-                f"`{e}`\n\n"
-                "_Traceback:_\n"
-                f"```{tb}```"
-            ),
-            loop
+        error_msg = (
+            "*🚫 Exceção na compra automática*\n"
+            f"`{e}`\n\n"
+            "_Traceback:_\n"
+            f"```{tb}```"
         )
+        await safe_notify(bot, error_msg, loop)
         return
 
     # 8) monitoramento para venda
@@ -431,10 +441,16 @@ async def on_new_pair(
     sold = False
 
     from discovery import is_discovery_running
+
     while is_discovery_running():
+        # tenta ler preço; pula iteração em caso de erro ou None
         try:
             price = dex_client.get_token_price(target, weth)
         except Exception:
+            await asyncio.sleep(1)
+            continue
+
+        if price is None:
             await asyncio.sleep(1)
             continue
 
@@ -471,7 +487,7 @@ async def on_new_pair(
                         direction="sell",
                         now_ts=int(time()),
                     )
-                    safe_notify(
+                    await safe_notify(
                         bot,
                         f"💰 *Venda realizada*\nToken: `{target}`\nTX: `{tx_sell}`",
                         loop
@@ -494,7 +510,7 @@ async def on_new_pair(
                         direction="sell",
                         now_ts=int(time()),
                     )
-                    safe_notify(
+                    await safe_notify(
                         bot,
                         f"⚠️ *Venda falhou*\nMotivo: `{motivo}`",
                         loop
@@ -517,22 +533,19 @@ async def on_new_pair(
                     direction="sell",
                     now_ts=int(time()),
                 )
-                safe_notify(
-                    bot,
-                    (
-                        "*⚠️ Exceção na venda automática*\n"
-                        f"`{e}`\n\n"
-                        "_Traceback:_\n"
-                        f"```{tb}```"
-                    ),
-                    loop
+                error_msg = (
+                    "*⚠️ Exceção na venda automática*\n"
+                    f"`{e}`\n\n"
+                    "_Traceback:_\n"
+                    f"```{tb}```"
                 )
+                await safe_notify(bot, error_msg, loop)
             break
 
         await asyncio.sleep(int(config.get("INTERVAL", 3)))
 
     if not sold:
-        safe_notify(
+        await safe_notify(
             bot,
             f"⏹ *Monitoramento encerrou sem venda* para `{target}`",
             loop
