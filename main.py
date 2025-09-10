@@ -46,19 +46,32 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- Web3 & DEX check ---
+# --- Conexão Web3 e verificação de DEXes ---
 web3 = Web3(Web3.HTTPProvider(RPC_URL))
 if not web3.is_connected():
     logger.error("Falha ao conectar no RPC %s", RPC_URL)
     sys.exit(1)
 
-if not config["DEXES"]:
+raw_dexes = config.get("DEXES", [])
+if not raw_dexes:
     logger.error("Nenhuma DEX configurada. Verifique variáveis DEX_1_*")
     sys.exit(1)
 
-exchange_client = ExchangeClient(config["DEXES"][0].router)
+# converte DexConfig (namedtuple/dataclass) em dicts para discovery
+dexes_dicts = []
+for dex in raw_dexes:
+    if hasattr(dex, "_asdict"):
+        dexes_dicts.append(dex._asdict())
+    elif hasattr(dex, "__dict__"):
+        dexes_dicts.append(vars(dex))
+    else:
+        dexes_dicts.append(dex)
+config["DEXES"] = dexes_dicts
 
-# --- Telegram setup ---
+# instância ExchangeClient usando router do primeiro DEX dict
+exchange_client = ExchangeClient(config["DEXES"][0]["router"])
+
+# --- Telegram Bot Setup ---
 telegram_loop = asyncio.new_event_loop()
 asyncio.set_event_loop(telegram_loop)
 
@@ -79,7 +92,7 @@ def log_cmd(name: str, update: Update):
     user = update.effective_user.username or update.effective_user.id
     logger.info("🛎 Comando /%s recebido de %s", name, user)
 
-# --- Telegram command handlers ---
+# --- Handlers de comando Telegram ---
 async def start_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     log_cmd("start", update)
     texto = (
@@ -102,7 +115,7 @@ async def snipe_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⚙️ Iniciando sniper...")
     token = fetch_token()
     if not token:
-        await update.message.reply_text("❌ Falha ao obter token Auth0, verifique logs.")
+        await update.message.reply_text("❌ Falha ao obter token Auth0")
     iniciar_sniper()
 
 async def stop_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -143,7 +156,7 @@ async def echo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     txt = escape_md_v2(update.message.text)
     await update.message.reply_text(f"Você disse: {txt}")
 
-# register handlers
+# registra os handlers
 for name, handler in [
     ("start", start_cmd),
     ("menu", start_cmd),
@@ -158,7 +171,7 @@ for name, handler in [
     application.add_handler(CommandHandler(name, handler))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
-# set bot commands & webhook
+# --- Inscrição de comandos e webhook ---
 command_list = [
     BotCommand("start",        "Mostrar menu do bot"),
     BotCommand("menu",         "Mostrar menu do bot"),
@@ -181,7 +194,7 @@ if WEBHOOK_URL:
 Thread(target=telegram_loop.run_forever, daemon=True).start()
 logger.info("🚀 Telegram bot rodando em background")
 
-# --- Sniper orchestration ---
+# --- Orquestração do Sniper ---
 def iniciar_sniper():
     if is_discovery_running():
         logger.info("⚠️ Sniper já ativo")
@@ -243,7 +256,7 @@ def webhook():
     asyncio.run_coroutine_threadsafe(application.process_update(upd), telegram_loop)
     return "ok", 200
 
-# graceful shutdown
+# --- Graceful shutdown ---
 def _shutdown(signum, frame):
     parar_sniper()
     asyncio.run(application.shutdown())
@@ -252,6 +265,7 @@ def _shutdown(signum, frame):
 for sig in (signal.SIGINT, signal.SIGTERM):
     signal.signal(sig, _shutdown)
 
+# --- Entry point ---
 if __name__ == "__main__":
     try:
         _ = web3.eth.account.from_key(config["PRIVATE_KEY"]).address
