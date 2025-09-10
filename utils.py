@@ -1,50 +1,61 @@
+# utils.py
+
 import os
-import time
-import requests
-import logging
 import re
+import time
+import logging
+import requests
 from collections import deque
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal
+from typing import Any, Callable, Deque, Dict, List, Optional, Union
 
 from web3 import Web3
 from web3.exceptions import BadFunctionCallOutput, ABIFunctionNotFound, ContractLogicError
-from dotenv import load_dotenv
 
-from exchange_client import ExchangeClient
+from config import config
 
-# Carrega variáveis de ambiente de um arquivo .env, se existir
-load_dotenv()
+logger = logging.getLogger(__name__)
 
-log = logging.getLogger(__name__)
+# -------------------------------------------------------------------
+# Notificações Telegram (via Bot API)
+# -------------------------------------------------------------------
 
-# ===========================
-# Configuração de Endpoints
-# ===========================
-ETHERSCAN_API_KEY = os.getenv("ETHERSCAN_API_KEY", "").strip()
-ETHERSCAN_V1_URL = "https://api.basescan.org/api"
-ETHERSCAN_V2_URL = "https://api.etherscan.io/v2/api"
-CHAIN_ID_BASE = "8453"  # Base Mainnet (Etherscan V2)
-
-if not ETHERSCAN_API_KEY or len(ETHERSCAN_API_KEY) < 10:
-    log.warning("⚠️ ETHERSCAN_API_KEY não configurada ou inválida.")
-else:
-    log.info(f"[INFO] ETHERSCAN_API_KEY carregada: {ETHERSCAN_API_KEY[:6]}...")
-
-def is_v2_key(api_key: str) -> bool:
+def _notify(text: str, via_alert: bool = False) -> None:
     """
-    Retorna True se a chave fornecida for válida para o Etherscan V2.
+    Envia mensagem ao Telegram via Bot API, usando MarkdownV2.
+    via_alert está reservado para futuros usos (por exemplo, TelegramAlert).
     """
-    return bool(api_key)
+    token   = config["TELEGRAM_TOKEN"]
+    chat_id = config["TELEGRAM_CHAT_ID"]
+    url     = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id":    chat_id,
+        "text":       text,
+        "parse_mode": "MarkdownV2"
+    }
+    try:
+        requests.post(url, data=payload, timeout=10)
+    except Exception as e:
+        logger.error(f"Falha ao enviar Telegram: {e}", exc_info=True)
 
-# ===========================
-# Rate Limiter
-# ===========================
+
+def escape_md_v2(text: str) -> str:
+    """
+    Escapa caracteres especiais para MarkdownV2.
+    """
+    return re.sub(r'([._\\-\\*\\[\\]\\(\\)~`>#+=|{}.!])', r'\\\1', text)
+
+
+# -------------------------------------------------------------------
+# Rate Limiter para APIs externas
+# -------------------------------------------------------------------
+
 class ApiRateLimiter:
     """
-    Limita as chamadas à API para QPS e total diário,
-    com notificações via callback.
+    Limita chamadas de API por QPS e total diário, emitindo avisos via callback.
     """
+
     def __init__(
         self,
         qps_limit: int = 5,
@@ -55,53 +66,52 @@ class ApiRateLimiter:
         daily_cooldown_sec: int = 3600,
         pause_enabled: bool = True
     ):
-        self.qps_limit = qps_limit
-        self.daily_limit = daily_limit
-        self.warn_pct = warn_pct
-        self.pause_daily_pct = pause_daily_pct
-        self.qps_cd = qps_cooldown_sec
-        self.daily_cd = daily_cooldown_sec
-        self.pause_enabled = pause_enabled
+        self.qps_limit         = qps_limit
+        self.daily_limit       = daily_limit
+        self.warn_pct          = warn_pct
+        self.pause_daily_pct   = pause_daily_pct
+        self.qps_cd            = qps_cooldown_sec
+        self.daily_cd          = daily_cooldown_sec
+        self.pause_enabled     = pause_enabled
 
-        self.calls_window = deque()
-        self.daily_count = 0
-        self.day_anchor = self._today_utc()
-        self.paused_until = None
-
-        self._notifier = None
-        self._warned_qps = False
-        self._warned_daily = False
+        self.calls_window: Deque[datetime] = deque()
+        self.daily_count      = 0
+        self.day_anchor       = self._today_utc()
+        self.paused_until: Optional[datetime] = None
+        self._notifier        = None
+        self._warned_qps      = False
+        self._warned_daily    = False
 
     def _today_utc(self) -> datetime:
         now = datetime.now(timezone.utc)
-        return datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+        return now.replace(hour=0, minute=0, second=0, microsecond=0)
 
     def _reset_daily_if_needed(self) -> None:
         now = datetime.now(timezone.utc)
         if now >= self.day_anchor + timedelta(days=1):
-            self.day_anchor = self._today_utc()
-            self.daily_count = 0
+            self.day_anchor    = self._today_utc()
+            self.daily_count   = 0
             self._warned_daily = False
             self._notify("🔁 Limite diário de API resetado (novo dia).")
 
-    def set_notifier(self, notifier_callable) -> None:
+    def set_notifier(self, notifier: Callable[[str], None]) -> None:
         """
-        Define uma função callback(msg: str) para receber avisos.
+        Define callback(msg: str) para avisos do rate limiter.
         """
-        self._notifier = notifier_callable
+        self._notifier = notifier
 
     def _notify(self, msg: str) -> None:
         try:
             if self._notifier:
                 self._notifier(msg)
             else:
-                log.info(f"[RATE LIMITER] {msg}")
+                logger.info(f"[RATE LIMITER] {msg}")
         except Exception:
-            log.warning("Falha ao notificar rate limiter.", exc_info=True)
+            logger.warning("Falha em notifier do rate limiter.", exc_info=True)
 
     def is_paused(self) -> bool:
         """
-        Retorna True se estiver em pausa por limite de QPS ou diário.
+        Retorna True se atualmente em pausa por limite de API.
         """
         self._reset_daily_if_needed()
         if not self.paused_until:
@@ -109,24 +119,25 @@ class ApiRateLimiter:
         now = datetime.now(timezone.utc)
         if now >= self.paused_until:
             self.paused_until = None
-            self._notify("▶️ Sniper retomado: pausa de limite de API encerrada.")
+            self._notify("▶️ Retomando após pausa de API.")
             return False
         return True
 
     def before_api_call(self) -> None:
         """
-        Deve ser chamado antes de cada request ao explorer.
-        Lança RuntimeError se os limites de QPS ou diário estiverem excedidos.
+        Deve ser chamado antes de cada request a APIs externas.
+        Lança RuntimeError se exceder QPS ou limite diário.
         """
         self._reset_daily_if_needed()
         if self.is_paused():
             raise RuntimeError("API rate-limited: paused")
 
         now = datetime.now(timezone.utc)
-        one_sec_ago = now - timedelta(seconds=1)
-        while self.calls_window and self.calls_window[0] < one_sec_ago:
+        window_start = now - timedelta(seconds=1)
+        while self.calls_window and self.calls_window[0] < window_start:
             self.calls_window.popleft()
 
+        # Aviso de QPS
         if not self._warned_qps and len(self.calls_window) >= int(self.qps_limit * self.warn_pct):
             self._warned_qps = True
             self._notify(f"⚠️ Aproximando do limite de QPS ({len(self.calls_window)}/{self.qps_limit}/s).")
@@ -134,12 +145,13 @@ class ApiRateLimiter:
         if len(self.calls_window) >= self.qps_limit:
             if self.pause_enabled:
                 self.paused_until = now + timedelta(seconds=self.qps_cd)
-                self._notify(f"⏸️ Pausa automática {self.qps_cd}s: QPS atingido ({self.qps_limit}/s).")
+                self._notify(f"⏸️ Pausa QPS ({self.qps_cd}s): QPS atingido ({self.qps_limit}/s).")
             raise RuntimeError("API rate-limited: QPS exceeded")
 
         self.calls_window.append(now)
         self.daily_count += 1
 
+        # Aviso diário
         if not self._warned_daily and self.daily_count >= int(self.daily_limit * self.warn_pct):
             self._warned_daily = True
             self._notify(f"⚠️ Aproximando do limite diário ({self.daily_count}/{self.daily_limit}).")
@@ -150,218 +162,191 @@ class ApiRateLimiter:
                     now + timedelta(seconds=self.daily_cd),
                     self.day_anchor + timedelta(days=1)
                 )
-                self.paused_until = until
                 restante = int((until - now).total_seconds())
+                self.paused_until = until
                 self._notify(
-                    f"⏸️ Pausa automática: consumo diário alto "
-                    f"({self.daily_count}/{self.daily_limit}). Retoma em ~{restante}s."
+                    f"⏸️ Pausa diária ({restante}s): consumo alto ({self.daily_count}/{self.daily_limit})."
                 )
             raise RuntimeError("API rate-limited: daily threshold reached")
 
 
-# Instância global do rate limiter
+# Instância global
 rate_limiter = ApiRateLimiter()
 
 
-def configure_rate_limiter_from_config(config: dict) -> None:
+def configure_rate_limiter_from_config(cfg: Dict[str, Any]) -> None:
     """
-    Ajusta parâmetros do rate_limiter com base em um dicionário de configuração.
+    Ajusta parâmetros do rate_limiter a partir do dict de config.
     """
     try:
-        rate_limiter.qps_limit = int(config.get("RATE_QPS_LIMIT", rate_limiter.qps_limit))
-        rate_limiter.daily_limit = int(config.get("RATE_DAILY_LIMIT", rate_limiter.daily_limit))
-        rate_limiter.warn_pct = float(config.get("RATE_WARN_PCT", rate_limiter.warn_pct))
-        rate_limiter.pause_daily_pct = float(config.get("RATE_PAUSE_DAILY_PCT", rate_limiter.pause_daily_pct))
-        rate_limiter.qps_cd = int(config.get("RATE_QPS_COOLDOWN_SEC", rate_limiter.qps_cd))
-        rate_limiter.daily_cd = int(config.get("RATE_DAILY_COOLDOWN_SEC", rate_limiter.daily_cd))
-        rate_limiter.pause_enabled = bool(config.get("PAUSE_SNIPER_ON_RATE_LIMIT", rate_limiter.pause_enabled))
+        rate_limiter.qps_limit       = int(cfg.get("RATE_QPS_LIMIT", rate_limiter.qps_limit))
+        rate_limiter.daily_limit     = int(cfg.get("RATE_DAILY_LIMIT", rate_limiter.daily_limit))
+        rate_limiter.warn_pct        = float(cfg.get("RATE_WARN_PCT", rate_limiter.warn_pct))
+        rate_limiter.pause_daily_pct = float(cfg.get("RATE_PAUSE_DAILY_PCT", rate_limiter.pause_daily_pct))
+        rate_limiter.qps_cd          = int(cfg.get("RATE_QPS_COOLDOWN_SEC", rate_limiter.qps_cd))
+        rate_limiter.daily_cd        = int(cfg.get("RATE_DAILY_COOLDOWN_SEC", rate_limiter.daily_cd))
+        rate_limiter.pause_enabled   = bool(cfg.get("PAUSE_SNIPER_ON_RATE_LIMIT", rate_limiter.pause_enabled))
     except Exception:
-        log.warning("Falha ao aplicar configs do rate limiter.", exc_info=True)
+        logger.warning("Falha ao configurar rate limiter.", exc_info=True)
 
 
-# ===========================
-# Verificações no Explorer
-# ===========================
-def is_contract_verified(token_address: str, api_key: str = ETHERSCAN_API_KEY) -> bool:
+# -------------------------------------------------------------------
+# Verificações on-chain via Etherscan/BaseScan
+# -------------------------------------------------------------------
+
+ETHERSCAN_KEY = config.get("ETHERSCAN_API_KEY", "")
+ETHERSCAN_V1 = "https://api.basescan.org/api"
+ETHERSCAN_V2 = "https://api.etherscan.io/v2/api"
+CHAIN_ID_BASE = "8453"
+
+
+def is_contract_verified(token: str, api_key: str = ETHERSCAN_KEY) -> bool:
     """
-    Consulta Etherscan/BaseScan para verificar se o contrato está verificado.
+    Consulta Etherscan/BaseScan para checar contrato verificado.
     """
     rate_limiter.before_api_call()
-
     if not api_key:
-        log.warning("⚠️ ETHERSCAN_API_KEY não configurada — pulando verificação de contrato.")
+        logger.warning("ETHERSCAN_API_KEY ausente, pulando verificação.")
         return True
 
     params = {
-        "module": "contract",
-        "action": "getsourcecode",
-        "address": token_address,
-        "chainid": CHAIN_ID_BASE,
-        "apikey": api_key
+        "module":   "contract",
+        "action":   "getsourcecode",
+        "address":  token,
+        "chainid":  CHAIN_ID_BASE,
+        "apikey":   api_key
     }
-    url = ETHERSCAN_V2_URL if is_v2_key(api_key) else ETHERSCAN_V1_URL
+    url = ETHERSCAN_V2 if api_key else ETHERSCAN_V1
 
     try:
         resp = requests.get(url, params=params, timeout=15)
         resp.raise_for_status()
         data = resp.json()
-
-        if data.get("status") != "1" or not isinstance(data.get("result"), list) or not data["result"]:
-            log.warning(f"[Verificação] Contrato {token_address} NÃO verificado.")
+        if data.get("status") != "1" or not data.get("result"):
+            logger.warning(f"Contrato {token} NÃO verificado.")
             return False
-
-        source_code = data["result"][0].get("SourceCode", "")
-        if not source_code:
-            log.warning(f"[Verificação] Contrato {token_address} sem código-fonte.")
+        code = data["result"][0].get("SourceCode", "")
+        if not code:
+            logger.warning(f"Contrato {token} sem código-fonte.")
             return False
-
-        name = data["result"][0].get("ContractName", "N/A")
-        log.info(f"[Verificação] Contrato verificado: {name} ({token_address})")
+        logger.info(f"Contrato verificado: {token}.")
         return True
-
     except Exception as e:
-        log.error(f"Erro ao verificar contrato {token_address}: {e}", exc_info=True)
+        logger.error(f"Erro verificação contrato {token}: {e}", exc_info=True)
         return False
 
 
-def is_token_concentrated(token_address: str, top_limit_pct: float, api_key: str = ETHERSCAN_API_KEY) -> bool:
+def is_token_concentrated(
+    token: str,
+    top_limit_pct: float,
+    api_key: str = ETHERSCAN_KEY
+) -> bool:
     """
-    Verifica se há holder com participação >= top_limit_pct do supply total.
+    Consulta lista de holders e retorna True se algum >= top_limit_pct%.
     """
     rate_limiter.before_api_call()
-
     if not api_key:
-        log.warning("⚠️ ETHERSCAN_API_KEY não configurada — pulando verificação de concentração.")
+        logger.warning("ETHERSCAN_API_KEY ausente, pulando concentração.")
         return False
 
     params = {
-        "module": "token",
-        "action": "tokenholderlist",
-        "contractaddress": token_address,
-        "chainid": CHAIN_ID_BASE,
-        "apikey": api_key
+        "module":          "token",
+        "action":          "tokenholderlist",
+        "contractaddress": token,
+        "chainid":         CHAIN_ID_BASE,
+        "apikey":          api_key
     }
-    url = ETHERSCAN_V2_URL if is_v2_key(api_key) else ETHERSCAN_V1_URL
+    url = ETHERSCAN_V2 if api_key else ETHERSCAN_V1
 
     try:
         resp = requests.get(url, params=params, timeout=15)
         resp.raise_for_status()
         holders = resp.json().get("result", [])
-
         if not isinstance(holders, list):
-            log.error(f"Resposta inesperada ao listar holders: {holders}")
+            logger.error(f"Resposta holders inesperada: {holders}")
             return True
-
         for h in holders:
-            pct_str = str(h.get("Percentage", "0")).replace("%", "").strip()
-            try:
-                pct = float(pct_str)
-            except ValueError:
-                pct = 0.0
+            pct = float(str(h.get("Percentage", "0")).strip().replace("%", "")) or 0.0
             if pct >= top_limit_pct:
                 return True
-
         return False
-
     except Exception as e:
-        log.error(f"Erro ao verificar concentração de holders: {e}", exc_info=True)
+        logger.error(f"Erro concentração holders: {e}", exc_info=True)
         return True
 
 
 def testar_etherscan_v2(
-    api_key: str = ETHERSCAN_API_KEY,
+    api_key: str = ETHERSCAN_KEY,
     address: str = "0x4200000000000000000000000000000000000006"
 ) -> bool:
     """
-    Testa a conexão com a API Etherscan V2 na Base (chainid=8453).
-    Faz até 3 tentativas, aumenta timeout e loga o tempo de resposta.
+    Testa conexão Etherscan V2 (até 3 tentativas) e loga tempos.
     """
     if not api_key:
-        log.error("❌ Nenhuma API Key encontrada para teste.")
+        logger.error("Nenhuma ETHERSCAN_API_KEY para teste.")
         return False
 
-    url = ETHERSCAN_V2_URL
     params = {
-        "chainid": CHAIN_ID_BASE,
-        "module": "contract",
-        "action": "getsourcecode",
+        "module":  "contract",
+        "action":  "getsourcecode",
         "address": address,
-        "apikey": api_key
+        "chainid": CHAIN_ID_BASE,
+        "apikey":  api_key
     }
+    url = ETHERSCAN_V2
 
-    log.info("➡️ Iniciando teste de conexão com Etherscan V2 (Base).")
-    for tentativa in range(1, 4):
-        inicio = time.time()
+    for i in range(1, 4):
+        start = time.time()
         try:
             resp = requests.get(url, params=params, timeout=30)
-            duracao = time.time() - inicio
-            log.info(f"[Tentativa {tentativa}] Tempo: {duracao:.2f}s | HTTP: {resp.status_code}")
+            dur = time.time() - start
+            logger.info(f"[Teste {i}] {dur:.2f}s HTTP {resp.status_code}")
             data = resp.json()
-            log.debug(f"[Tentativa {tentativa}] Resposta: {data}")
-
             if data.get("status") == "1":
-                log.info("✅ Teste bem-sucedido — Etherscan V2 está respondendo corretamente.")
+                logger.info("Etherscan V2 OK.")
                 return True
-            else:
-                log.warning(f"⚠️ Resposta sem sucesso ({tentativa}): {data}")
-
-        except requests.exceptions.ReadTimeout:
-            log.warning(f"⏳ Timeout na tentativa {tentativa} após {time.time() - inicio:.2f}s")
         except Exception as e:
-            log.error(f"❌ Erro na tentativa {tentativa}: {e}", exc_info=True)
-
-    log.error("❌ Todas as tentativas de teste falharam.")
+            logger.warning(f"[Teste {i}] falha: {e}", exc_info=True)
+    logger.error("Teste Etherscan V2 falhou.")
     return False
 
 
+# -------------------------------------------------------------------
+# Outros utilitários
+# -------------------------------------------------------------------
+
 def has_high_tax(
-    client: ExchangeClient,
+    client: Any,
     token_address: str,
     token_in_weth: str,
     sample_amount_wei: int = Web3.to_wei(Decimal("0.01"), "ether"),
     max_tax_bps: int = 500
 ) -> bool:
     """
-    Verifica se o token aplica taxa de transferência (tax) maior que max_tax_bps.
-    Stub atual; sempre retorna False.
+    Stub: detecta taxa on-transfer maior que max_tax_bps.
+    Atualmente sempre retorna False.
     """
-    log.debug(
-        "has_high_tax stub: token=%s sample_amount=%d",
-        token_address, sample_amount_wei
-    )
-    # TODO: implementar lógica real de detecção de tax on-transfer
+    logger.debug(f"has_high_tax stub: token={token_address}, sample={sample_amount_wei}")
     return False
 
 
 def get_token_balance(
-    client: ExchangeClient,
+    client: Any,
     token_address: str
 ) -> int:
     """
-    Retorna o saldo bruto (raw, em unidades base) do token na carteira do client.
-    Em caso de erro de chamada on-chain, retorna 0 para não interromper o fluxo.
+    Retorna saldo bruto (units) de token_address para a carteira de client.
+    Se falhar, retorna 0.
     """
     try:
-        checksum = Web3.to_checksum_address(token_address)
-        contract = client.web3.eth.contract(
-            address=checksum,
-            abi=client.erc20_abi
-        )
-        balance_raw = contract.functions.balanceOf(client.wallet).call()
-        log.debug(f"Saldo raw de {checksum}: {balance_raw}")
-        return int(balance_raw)
-
+        addr = Web3.to_checksum_address(token_address)
+        contract = client.web3.eth.contract(address=addr, abi=client.erc20_abi)
+        bal = contract.functions.balanceOf(client.wallet).call()
+        logger.debug(f"Balance raw {addr}: {bal}")
+        return int(bal)
     except (BadFunctionCallOutput, ABIFunctionNotFound, ContractLogicError) as e:
-        log.error(f"Erro ao obter saldo de {token_address}: {e}", exc_info=True)
+        logger.error(f"Erro on-chain balanceOf {token_address}: {e}", exc_info=True)
         return 0
-
     except Exception as e:
-        log.error(f"Erro inesperado ao obter saldo de {token_address}: {e}", exc_info=True)
+        logger.error(f"Erro inesperado balanceOf {token_address}: {e}", exc_info=True)
         return 0
-
-
-def escape_md_v2(text: str) -> str:
-    """
-    Escapa caracteres especiais para uso com parse_mode="MarkdownV2".
-    """
-    return re.sub(r'([._\-*[\]()~`>#+=|{}.!])', r'\\\1', text)
