@@ -19,6 +19,7 @@ from telegram.ext import (
     MessageHandler,
     ContextTypes,
     filters,
+    CallbackContext,
 )
 from web3 import Web3
 
@@ -31,54 +32,54 @@ from strategy_sniper import on_new_pair
 from token_service import gerar_meu_token_externo
 from check_balance import get_wallet_status
 
-# --- Configurações básicas ---
-RPC_URL      = config["RPC_URL"]
-CHAIN_ID     = int(config["CHAIN_ID"])
-TELE_TOKEN   = config["TELEGRAM_TOKEN"]
-TELE_CHAT    = config["TELEGRAM_CHAT_ID"]
-WEBHOOK_URL  = config.get("WEBHOOK_URL", "")
-PORT         = int(os.getenv("PORT", 10000))
+# ─── Configurações básicas ─────────────────────────────────────────────
+RPC_URL    = config["RPC_URL"]
+CHAIN_ID   = int(config["CHAIN_ID"])
+TELE_TOKEN = config["TELEGRAM_TOKEN"]
+TELE_CHAT  = config["TELEGRAM_CHAT_ID"]
+WEBHOOK    = config.get("WEBHOOK_URL", "")
+PORT       = int(os.getenv("PORT", 10000))
 
-# --- Logger setup ---
+# ─── Logger ─────────────────────────────────────────────────────────────
 logging.basicConfig(
     format="[%(asctime)s] %(levelname)s: %(message)s",
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# --- Web3 & DEX check ---
+# ─── Web3 e DEXes ───────────────────────────────────────────────────────
 web3 = Web3(Web3.HTTPProvider(RPC_URL))
 if not web3.is_connected():
-    logger.error("Falha ao conectar no RPC %s", RPC_URL)
+    logger.error("Falha ao conectar RPC %s", RPC_URL)
     sys.exit(1)
 
-# transforma DexConfig em dict antes de usar
 raw_dexes = config.get("DEXES", [])
 if not raw_dexes:
-    logger.error("Nenhuma DEX configurada. Verifique variáveis DEX_1_*")
+    logger.error("Nenhuma DEX configurada (DEX_1_*).")
     sys.exit(1)
 
-dex_dicts = []
-for dex in raw_dexes:
-    if hasattr(dex, "_asdict"):
-        dex_dicts.append(dex._asdict())
-    elif hasattr(dex, "__dict__"):
-        dex_dicts.append(vars(dex))
+# converter DexConfig → dict para discovery
+dexes = []
+for d in raw_dexes:
+    if hasattr(d, "_asdict"):
+        dexes.append(d._asdict())
+    elif hasattr(d, "__dict__"):
+        dexes.append(vars(d))
     else:
-        dex_dicts.append(dex)
-config["DEXES"] = dex_dicts
+        dexes.append(d)
+config["DEXES"] = dexes
 
 exchange_client = ExchangeClient(config["DEXES"][0]["router"])
 
-# --- Telegram Bot Setup ---
+# ─── Telegram Bot Setup ─────────────────────────────────────────────────
 telegram_loop = asyncio.new_event_loop()
 asyncio.set_event_loop(telegram_loop)
 
 application = ApplicationBuilder().token(TELE_TOKEN).build()
-app_bot = application.bot
+bot = application.bot
 application.bot_data["start_time"] = time.time()
 
-# --- Auth0 token fetch ---
+# ─── Helpers ────────────────────────────────────────────────────────────
 def fetch_token() -> str:
     try:
         t = gerar_meu_token_externo()
@@ -88,26 +89,33 @@ def fetch_token() -> str:
         logger.error("❌ Erro Auth0: %s", e, exc_info=True)
         return ""
 
-# --- Command logging helper ---
 def log_cmd(name: str, update: Update):
     user = update.effective_user.username or update.effective_user.id
-    logger.info("🛎 Comando /%s recebido de %s", name, user)
+    logger.info("🛎 /%s de %s", name, user)
 
-# --- Build env summary without Markdown ---
 def env_summary_text() -> str:
     addr = web3.eth.account.from_key(config["PRIVATE_KEY"]).address
     return (
         f"🔑 {addr}\n"
         f"🌐 Chain ID: {CHAIN_ID}\n"
         f"🔗 RPC: {RPC_URL}\n"
-        f"⏱ Disc Interval: {config['DISCOVERY_INTERVAL']}s\n"
+        f"⏱ Interval: {config['DISCOVERY_INTERVAL']}s\n"
         f"🧪 Dry Run: {config['DRY_RUN']}"
     )
 
-# --- Telegram command handlers ---
+async def handle_new_pair(dex_info, pair_addr, token0, token1):
+    """
+    Wrapper to call on_new_pair and log any errors.
+    """
+    try:
+        await on_new_pair(dex_info, pair_addr, token0, token1)
+    except Exception as e:
+        logger.error("🚨 Erro ao notificar novo par: %s", e, exc_info=True)
+
+# ─── Handlers Telegram ───────────────────────────────────────────────────
 async def start_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     log_cmd("start", update)
-    menu = (
+    txt = (
         "🎯 Sniper Bot\n\n"
         "/snipe — iniciar sniper\n"
         "/stop — parar sniper\n"
@@ -120,14 +128,14 @@ async def start_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "Config atual:\n"
         f"{env_summary_text()}"
     )
-    await update.message.reply_text(menu)
+    await update.message.reply_text(txt)
 
 async def snipe_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     log_cmd("snipe", update)
     await update.message.reply_text("⚙️ Iniciando sniper...")
     token = fetch_token()
     if not token:
-        await update.message.reply_text("❌ Falha ao obter token Auth0, veja logs")
+        await update.message.reply_text("❌ Falha ao obter token Auth0.")
     iniciar_sniper()
 
 async def stop_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -156,7 +164,7 @@ async def testnotify_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     uid = uuid.uuid4().hex[:6]
     text = f"✅ Teste {ts}\nID: {uid}"
-    await app_bot.send_message(chat_id=TELE_CHAT, text=text)
+    await bot.send_message(chat_id=TELE_CHAT, text=text)
     await update.message.reply_text(f"Enviado (ID={uid})")
 
 async def relatorio_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -168,8 +176,8 @@ async def echo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     txt = escape_md_v2(update.message.text)
     await update.message.reply_text(f"Você disse: {txt}")
 
-# register handlers
-for name, handler in [
+# ─── Registrar Handlers ─────────────────────────────────────────────────
+commands = [
     ("start", start_cmd),
     ("menu", start_cmd),
     ("snipe", snipe_cmd),
@@ -179,13 +187,13 @@ for name, handler in [
     ("ping", ping_cmd),
     ("testnotify", testnotify_cmd),
     ("relatorio", relatorio_cmd),
-]:
+]
+for name, handler in commands:
     application.add_handler(CommandHandler(name, handler))
-
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
-# set commands & webhook
-command_list = [
+# ─── Seta comandos e webhook ────────────────────────────────────────────
+cmd_list = [
     BotCommand("start",        "Mostrar menu"),
     BotCommand("menu",         "Mostrar menu"),
     BotCommand("snipe",        "Iniciar sniper"),
@@ -193,29 +201,29 @@ command_list = [
     BotCommand("sniperstatus", "Status do sniper"),
     BotCommand("status",       "Saldo ETH/WETH"),
     BotCommand("ping",         "Verificar alive"),
-    BotCommand("testnotify",   "Notificação teste"),
+    BotCommand("testnotify",   "Teste notificação"),
     BotCommand("relatorio",    "Relatório"),
 ]
 
 telegram_loop.run_until_complete(application.initialize())
 telegram_loop.run_until_complete(application.start())
-telegram_loop.run_until_complete(app_bot.set_my_commands(command_list))
-if WEBHOOK_URL:
-    telegram_loop.run_until_complete(app_bot.set_webhook(url=WEBHOOK_URL))
-    logger.info("✅ Webhook configurado em %s", WEBHOOK_URL)
+telegram_loop.run_until_complete(bot.set_my_commands(cmd_list))
+if WEBHOOK:
+    telegram_loop.run_until_complete(bot.set_webhook(url=WEBHOOK))
+    logger.info("✅ Webhook em %s", WEBHOOK)
 
 Thread(target=telegram_loop.run_forever, daemon=True).start()
 logger.info("🚀 Telegram bot rodando em background")
 
-# --- Sniper orchestration ---
+# ─── Sniper Orquestração ────────────────────────────────────────────────
 def iniciar_sniper():
     if is_discovery_running():
         logger.info("⚠️ Sniper já ativo")
         return
 
-    def _cb(pair_address, token0, token1, dex_info):
+    def _cb(pair_addr, token0, token1, dex_info):
         asyncio.run_coroutine_threadsafe(
-            on_new_pair(dex_info, pair_address, token0, token1),
+            handle_new_pair(dex_info, pair_addr, token0, token1),
             telegram_loop
         )
 
@@ -226,7 +234,7 @@ def parar_sniper():
     stop_discovery()
     logger.info("🔴 Sniper parado")
 
-# --- Flask API ---
+# ─── Flask API ───────────────────────────────────────────────────────────
 app = Flask(__name__)
 
 @app.route("/api/token", methods=["GET"])
@@ -255,19 +263,20 @@ def webhook():
     data = request.get_json(silent=True)
     if not data or "message" not in data:
         return "ignored", 200
-    upd = Update.de_json(data, app_bot)
+    upd = Update.de_json(data, bot)
     asyncio.run_coroutine_threadsafe(application.process_update(upd), telegram_loop)
     return "ok", 200
 
-# graceful shutdown
-def _shutdown(signum, frame):
+# ─── Shutdown Graceful ───────────────────────────────────────────────────
+def _shutdown(sig, frame):
     parar_sniper()
     asyncio.run(application.shutdown())
     sys.exit(0)
 
-for sig in (signal.SIGINT, signal.SIGTERM):
-    signal.signal(sig, _shutdown)
+for s in (signal.SIGINT, signal.SIGTERM):
+    signal.signal(s, _shutdown)
 
+# ─── Entry Point ─────────────────────────────────────────────────────────
 if __name__ == "__main__":
     try:
         _ = web3.eth.account.from_key(config["PRIVATE_KEY"]).address
