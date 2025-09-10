@@ -78,7 +78,8 @@ class StrategySniper:
         # Web3 + WETH
         prov = Web3.HTTPProvider(config["RPC_URL"])
         self.w3 = Web3(prov)
-        self.weth = self.w3.toChecksumAddress(config["WETH"])
+        # corrigido: usa to_checksum_address
+        self.weth = Web3.to_checksum_address(config["WETH"])
 
         # Parâmetros de configuração
         self.trade_size = Decimal(str(config.get("TRADE_SIZE_ETH", 0.1)))
@@ -256,8 +257,9 @@ class StrategySniper:
 
     def _identificar_tokens(self, t0: str, t1: str) -> Tuple[str, str]:
         """Retorna (base=WETH, target) em checksum."""
-        c0 = self.w3.toChecksumAddress(t0)
-        c1 = self.w3.toChecksumAddress(t1)
+        # corrigido: usa to_checksum_address
+        c0 = Web3.to_checksum_address(t0)
+        c1 = Web3.to_checksum_address(t1)
         return (self.weth, c1) if c0 == self.weth else (self.weth, c0)
 
     async def _monitorar_venda(
