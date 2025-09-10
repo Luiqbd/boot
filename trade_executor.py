@@ -5,7 +5,7 @@ import uuid
 import logging
 from decimal import Decimal, InvalidOperation
 from threading import RLock
-from typing import Optional, Tuple, Union, Dict
+from typing import Any, Optional, Tuple, Union, Dict
 
 from web3 import Web3
 from web3.exceptions import BadFunctionCallOutput
