@@ -76,8 +76,14 @@ def fetch_token() -> str:
         logger.error("❌ Erro Auth0: %s", e, exc_info=True)
         return ""
 
+# --- Helpers de log de comando ---
+def log_cmd(name: str, update: Update):
+    user = update.effective_user.username or update.effective_user.id
+    logger.info("🛎  Comando /%s recebido de %s", name, user)
+
 # --- Comandos Telegram ---
 async def start_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    log_cmd("start", update)
     texto = (
         "🎯 *Sniper Bot*\n\n"
         "/snipe — iniciar sniper\n"
@@ -94,36 +100,39 @@ async def start_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_markdown_v2(texto)
 
 async def snipe_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    log_cmd("snipe", update)
     await update.message.reply_text("⚙️ Iniciando sniper...", parse_mode="MarkdownV2")
     token = fetch_token()
     if not token:
         await update.message.reply_text(
-            "❌ Falha ao obter token Auth0, verifique logs.", parse_mode="MarkdownV2"
+            "❌ Falha ao obter token Auth0, verifique logs.",
+            parse_mode="MarkdownV2"
         )
-    else:
-        logger.info("✅ Token Auth0: %s", token)
     iniciar_sniper()
 
 async def stop_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    log_cmd("stop", update)
     parar_sniper()
     await update.message.reply_text("🛑 Sniper interrompido.", parse_mode="MarkdownV2")
 
 async def sniper_status_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    log_cmd("sniperstatus", update)
     msg = "🟢 Ativo" if is_discovery_running() else "🔴 Parado"
     await update.message.reply_text(msg)
 
 async def status_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    log_cmd("status", update)
     addr = ctx.args[0] if ctx.args else None
     bal = get_wallet_status(addr)
     await update.message.reply_text(bal)
 
 async def ping_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    log_cmd("ping", update)
     up = int(time.time() - ctx.bot_data["start_time"])
-    await update.message.reply_text(
-        f"pong 🏓\n⏱ Uptime: {datetime.timedelta(seconds=up)}"
-    )
+    await update.message.reply_text(f"pong 🏓\n⏱ Uptime: {datetime.timedelta(seconds=up)}")
 
 async def testnotify_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    log_cmd("testnotify", update)
     ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     uid = uuid.uuid4().hex[:6]
     text = f"✅ Teste 🕒{ts}\nID: `{uid}`"
@@ -131,6 +140,7 @@ async def testnotify_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Enviado (ID={uid})")
 
 async def relatorio_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    log_cmd("relatorio", update)
     report = risk_manager.gerar_relatorio()
     await update.message.reply_text(report)
 
@@ -152,10 +162,9 @@ cmds = [
 ]
 for name, handler in cmds:
     application.add_handler(CommandHandler(name, handler))
-
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
-# --- Inscreve comandos e opcionalmente webhook ---
+# --- Inscreve comandos e webhook ---
 command_list = [
     BotCommand("start",        "Mostrar menu do bot"),
     BotCommand("menu",         "Mostrar menu do bot"),
@@ -168,14 +177,18 @@ command_list = [
     BotCommand("relatorio",    "Gerar relatório de eventos"),
 ]
 
+# Precisamos inicializar e iniciar o Application antes do webhook
+telegram_loop.run_until_complete(application.initialize())
+telegram_loop.run_until_complete(application.start())
+
 telegram_loop.run_until_complete(app_bot.set_my_commands(command_list))
 if WEBHOOK_URL:
     telegram_loop.run_until_complete(app_bot.set_webhook(url=WEBHOOK_URL))
-    logger.info("Webhook configurado em %s", WEBHOOK_URL)
+    logger.info("✅ Webhook configurado em %s", WEBHOOK_URL)
 
 # --- Inicia loop do bot em background ---
 Thread(target=telegram_loop.run_forever, daemon=True).start()
-logger.info("Telegram bot rodando em background")
+logger.info("🚀 Telegram bot rodando em background")
 
 # --- Discovery / Sniper Orquestração ---
 def iniciar_sniper():
@@ -246,8 +259,8 @@ def _shutdown(signum, frame):
     asyncio.run(application.shutdown())
     sys.exit(0)
 
-for s in (signal.SIGINT, signal.SIGTERM):
-    signal.signal(s, _shutdown)
+for sig in (signal.SIGINT, signal.SIGTERM):
+    signal.signal(sig, _shutdown)
 
 # --- Entry Point ---
 if __name__ == "__main__":
