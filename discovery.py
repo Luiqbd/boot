@@ -6,13 +6,14 @@ import threading
 import time
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from web3 import Web3
 from web3.types import LogReceipt
 
 from config import config
-from telegram_alert import send_report
+from utils import escape_md_v2, _notify
 
 logger = logging.getLogger("discovery")
 
@@ -22,7 +23,7 @@ class DexInfo:
     name: str
     factory: str
     router: str
-    type: str    # "v2" ou "v3"
+    type: str  # "v2" ou "v3"
 
 
 @dataclass
@@ -35,8 +36,7 @@ class PairInfo:
 
 class SniperDiscovery:
     """
-    Serviço de descoberta de novos pares/pools em DEXes.
-    Ao detectar um par válido, dispara `callback_on_pair(pair)`.
+    Descobre novos pares em várias DEXes e dispara callback.
     """
 
     def __init__(
@@ -46,114 +46,81 @@ class SniperDiscovery:
         base_tokens: List[str],
         min_liq_weth: Decimal,
         interval_sec: int,
-        bot: Any,
-        callback_on_pair: Callable[[PairInfo], Awaitable[Any] | None],
-        telegram_loop: asyncio.AbstractEventLoop,
+        callback: Callable[[PairInfo], Awaitable[Any]],
     ):
         self.web3 = web3
         self.dexes = dexes
         self.base_tokens = [Web3.to_checksum_address(t) for t in base_tokens]
         self.min_liq_wei = int(min_liq_weth * Decimal(10**18))
         self.interval = interval_sec
-        self.bot = bot
-        self.callback = callback_on_pair
+        self.callback = callback
 
-        # loop do Telegram, para agendar send_report
-        self._tg_loop = telegram_loop
-
-        # sinal de parada e controle de bloco
-        self._stop_event = threading.Event()
+        self._stop = threading.Event()
         self._last_block: Dict[str, int] = {}
-        self._start_time: float = 0.0
+        self._start_ts: float = 0.0
 
         self.pair_count = 0
-        self.pnl_total = Decimal("0")
         self.last_pair: Optional[PairInfo] = None
 
-        self.SIG_V2 = Web3.to_hex(
-            Web3.keccak(text="PairCreated(address,address,address,uint256)")
-        )
-        self.SIG_V3 = Web3.to_hex(
-            Web3.keccak(text="PoolCreated(address,address,uint24,int24,address)")
-        )
+        # Sinais de evento PairCreated / PoolCreated
+        self.SIG_V2 = Web3.to_hex(Web3.keccak(text="PairCreated(address,address,address,uint256)"))
+        self.SIG_V3 = Web3.to_hex(Web3.keccak(text="PoolCreated(address,address,uint24,int24,address)"))
 
-        # loop exclusivo para polling
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
-    def _decode_address(self, hexstr: str) -> str:
-        return Web3.to_checksum_address("0x" + hexstr[-40:])
+    def _decode_addr(self, topic: bytes) -> str:
+        """Extrai e retorna endereço checksum de um tópico."""
+        return Web3.to_checksum_address("0x" + topic.hex()[-40:])
 
     def _init_blocks(self) -> None:
-        current = self.web3.eth.block_number
+        """Inicializa último bloco processado para cada DEX."""
+        blk = self.web3.eth.block_number
         for dex in self.dexes:
-            self._last_block[dex.name] = current
+            self._last_block[dex.name] = blk
 
     def start(self) -> None:
         """
-        Inicia o loop de discovery em background.
+        Inicia o polling em background para descobrir novos pares.
         """
-        if self._start_time:
+        if self._start_ts:
             logger.warning("SniperDiscovery já está rodando")
             return
 
-        self._start_time = time.time()
-        self._stop_event.clear()
+        self._start_ts = time.time()
+        self._stop.clear()
         self._init_blocks()
 
         self._loop = asyncio.new_event_loop()
 
-        def _run_loop_in_thread():
+        def _run() -> None:
             asyncio.set_event_loop(self._loop)
-            self._loop.create_task(self._run_loop())
+            self._loop.create_task(self._poll_loop())
             self._loop.run_forever()
 
-        thread = threading.Thread(target=_run_loop_in_thread, daemon=True)
-        thread.start()
+        threading.Thread(target=_run, daemon=True).start()
 
-        # alerta de “sniper iniciado”
-        self._tg_loop.call_soon_threadsafe(
-            send_report,
-            self.bot,
-            "🔍 Sniper iniciado! Monitorando novas DEXes..."
-        )
-        logger.info("🔍 SniperDiscovery iniciado")
+        _notify("🔍 SniperDiscovery iniciado", via_alert=True)
+        logger.info("SniperDiscovery iniciado")
 
     def stop(self) -> None:
         """
-        Para o loop de discovery.
+        Solicita parada do polling de discovery.
         """
-        self._stop_event.set()
+        self._stop.set()
         if self._loop and self._loop.is_running():
             self._loop.call_soon_threadsafe(self._loop.stop)
-        logger.info("🛑 SniperDiscovery interrompido")
+        _notify("🛑 SniperDiscovery parado", via_alert=True)
+        logger.info("SniperDiscovery parado")
 
     def is_running(self) -> bool:
-        """
-        Retorna True se o discovery estiver ativo.
-        """
-        return not self._stop_event.is_set()
+        """Retorna True se o discovery estiver ativo."""
+        return not self._stop.is_set()
 
-    def status(self) -> Dict[str, Any]:
+    async def _poll_loop(self) -> None:
         """
-        Retorna status atual.
+        Loop contínuo que busca logs de criação de pares e dispara o callback.
         """
-        if not self.is_running():
-            return {"active": False, "text": "🔴 Sniper parado.", "button": None}
-
-        elapsed = int(time.time() - self._start_time)
-        m, s = divmod(elapsed, 60)
-        txt = (
-            f"🟢 Ativo há {m}m{s}s\n"
-            f"🔢 Pares encontrados: {self.pair_count}\n"
-            f"💹 PnL simulado: {self.pnl_total:.4f} WETH\n"
-        )
-        if self.last_pair:
-            p = self.last_pair
-            txt += f"🆕 Último par: {p.address}\n  {p.token0[:6]}… / {p.token1[:6]}…"
-        return {"active": True, "text": txt, "button": "🛑 Parar sniper"}
-
-    async def _run_loop(self) -> None:
-        while not self._stop_event.is_set():
+        while not self._stop.is_set():
             try:
                 latest = self.web3.eth.block_number
                 for dex in self.dexes:
@@ -166,126 +133,133 @@ class SniperDiscovery:
                         "fromBlock": start_blk,
                         "toBlock": latest,
                         "address": dex.factory,
-                        "topics": [sig]
+                        "topics": [sig],
                     })
                     self._last_block[dex.name] = latest
 
-                    for log_entry in logs:
-                        pair = self._parse_log(dex, log_entry)
+                    for entry in logs:
+                        pair = self._parse_log(dex, entry)
                         if not pair:
                             continue
 
+                        # Filtra base_tokens
                         if not {pair.token0, pair.token1} & set(self.base_tokens):
                             continue
 
-                        # notifica novo par
-                        self._tg_loop.call_soon_threadsafe(
-                            send_report,
-                            self.bot,
-                            f"🆕 [{pair.dex.name}] Novo par:\n"
+                        # Notifica no Telegram
+                        msg = (
+                            f"🆕 [{pair.dex.name}] Novo par\n"
                             f"{pair.address}\n"
-                            f"Tokens: {pair.token0} / {pair.token1}"
+                            f"{pair.token0[:6]}… / {pair.token1[:6]}…"
                         )
+                        _notify(msg, via_alert=True)
 
+                        # Verifica liquidez on-chain
                         if not await self._has_min_liq(pair):
-                            # sem liquidez mínima
-                            self._tg_loop.call_soon_threadsafe(
-                                send_report,
-                                self.bot,
-                                f"⏳ Sem liquidez mínima: {pair.address}"
-                            )
+                            _notify(f"⏳ Sem liquidez mínima: {pair.address}", via_alert=True)
                             continue
 
-                        # métricas e callback
                         self.pair_count += 1
                         self.last_pair = pair
 
+                        # Dispara callback do sniper
                         try:
-                            res = self.callback(pair)
-                            if asyncio.iscoroutine(res):
-                                await res
+                            result = self.callback(pair.address, pair.token0, pair.token1, dex_info=pair.dex)
+                            if asyncio.iscoroutine(result):
+                                await result
                         except Exception as e:
                             logger.error("Erro no callback", exc_info=True)
-                            self._tg_loop.call_soon_threadsafe(
-                                send_report,
-                                self.bot,
-                                f"⚠️ Erro no callback: {e}"
-                            )
+                            _notify(f"⚠️ Erro no callback: {e}", via_alert=True)
 
             except Exception as e:
-                logger.error("Erro no loop de discovery", exc_info=True)
-                self._tg_loop.call_soon_threadsafe(
-                    send_report,
-                    self.bot,
-                    f"⚠️ Erro no loop de discovery: {e}"
-                )
+                logger.error("Erro no discovery loop", exc_info=True)
+                _notify(f"⚠️ Erro discovery: {e}", via_alert=True)
 
             await asyncio.sleep(self.interval)
 
     def _parse_log(self, dex: DexInfo, log: LogReceipt) -> Optional[PairInfo]:
+        """
+        Constrói e retorna um PairInfo a partir de um log de criação de par.
+        """
         try:
-            t0 = self._decode_address(log["topics"][1].hex())
-            t1 = self._decode_address(log["topics"][2].hex())
-            data = log["data"]
-            hexdata = data.hex() if hasattr(data, "hex") else str(data)
-            body = hexdata[2:] if hexdata.startswith("0x") else hexdata
-
-            addr_word = body[0:64] if dex.type == "v2" else body[-64:]
-            pair_addr = self._decode_address(addr_word)
-
-            logger.info(f"[{dex.name}] Novo par detectado: {pair_addr} ({t0}/{t1})")
-            return PairInfo(dex=dex, address=pair_addr, token0=t0, token1=t1)
-
+            t0 = self._decode_addr(log["topics"][1])
+            t1 = self._decode_addr(log["topics"][2])
+            raw = log["data"].hex() if hasattr(log["data"], "hex") else log["data"]
+            body = raw[2:] if raw.startswith("0x") else raw
+            word = body[0:64] if dex.type == "v2" else body[-64:]
+            addr = self._decode_addr(bytes.fromhex(word))
+            logger.info(f"[{dex.name}] Par detectado: {addr} ({t0}/{t1})")
+            return PairInfo(dex=dex, address=addr, token0=t0, token1=t1)
         except Exception as e:
-            logger.warning(f"Falha ao parsear log em {dex.name}: {e}")
+            logger.warning(f"Falha ao parsear log {dex.name}: {e}")
             return None
 
     async def _has_min_liq(self, pair: PairInfo) -> bool:
-        if pair.dex.type == "v2":
-            try:
-                pair_contract = self.web3.eth.contract(
-                    address=pair.address,
-                    abi=[
-                        {
-                            "inputs": [],
-                            "name": "getReserves",
-                            "outputs": [
-                                {"type": "uint112"},
-                                {"type": "uint112"},
-                                {"type": "uint32"}
-                            ],
-                            "stateMutability": "view",
-                            "type": "function",
-                        },
-                        {
-                            "inputs": [],
-                            "name": "token0",
-                            "outputs": [{"type": "address"}],
-                            "type": "function"
-                        },
-                        {
-                            "inputs": [],
-                            "name": "token1",
-                            "outputs": [{"type": "address"}],
-                            "type": "function"
-                        },
-                    ]
-                )
-                r0, r1, _ = pair_contract.functions.getReserves().call()
-                t0 = pair_contract.functions.token0().call().lower()
-                weth = self.base_tokens[0].lower()
-                reserve_weth = r0 if t0 == weth else r1
-                return reserve_weth >= self.min_liq_wei
-            except Exception:
-                return False
-        return True
+        """
+        Verifica se a pool V2 possui liquidez mínima em WETH.
+        """
+        if pair.dex.type != "v2":
+            return True
+
+        try:
+            abi = [
+                {"inputs": [], "name": "getReserves", "outputs": [
+                    {"type": "uint112"}, {"type": "uint112"}, {"type": "uint32"}],
+                 "stateMutability": "view", "type": "function"},
+                {"inputs": [], "name": "token0", "outputs": [{"type": "address"}], "type": "function"},
+            ]
+            contrato = self.web3.eth.contract(address=pair.address, abi=abi)
+            r0, r1, _ = contrato.functions.getReserves().call()
+            t0 = contrato.functions.token0().call().lower()
+            reserve = r0 if t0 == self.base_tokens[0].lower() else r1
+            return reserve >= self.min_liq_wei
+        except Exception:
+            return False
 
 
-# ===========================
-# Funções de controle externo
-# ===========================
+# ─── API de Discovery ─────────────────────────────────────
 
-_discovery_instance: Optional[SniperDiscovery] = None
+_discovery: Optional[SniperDiscovery] = None
+
+
+def subscribe_new_pairs(
+    callback: Callable[..., Awaitable[Any]]
+) -> None:
+    """
+    Registra seu callback on_new_pair(address, token0, token1, dex_info=DexInfo).
+    Inicia o SniperDiscovery automaticamente com config do arquivo.
+    """
+    global _discovery
+    if _discovery and _discovery.is_running():
+        logger.warning("Discovery já iniciado")
+        return
+
+    # Carrega DEXes da configuração
+    dexes_cfg = config.get("DEXES", [])
+    dexes = [DexInfo(**d) for d in dexes_cfg]
+
+    base = config.get("BASE_TOKENS", [])
+    min_liq = Decimal(str(config.get("MIN_LIQ_WETH", 0.5)))
+    interval = int(config.get("DISCOVERY_INTERVAL", 3))
+
+    web3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
+    _discovery = SniperDiscovery(web3, dexes, base, min_liq, interval, callback)
+    _discovery.start()
+
+
+def is_discovery_running() -> bool:
+    """
+    Retorna True se o SniperDiscovery estiver ativo.
+    """
+    return bool(_discovery and _discovery.is_running())
+
+
+def stop_discovery() -> None:
+    """
+    Para o SniperDiscovery em background.
+    """
+    if _discovery:
+        _discovery.stop()
 
 
 def run_discovery(
@@ -294,38 +268,20 @@ def run_discovery(
     base_tokens: List[str],
     min_liq_weth: Decimal,
     interval_sec: int,
-    bot: Any,
-    callback_on_pair: Callable[[PairInfo], Awaitable[Any] | None],
-    telegram_loop: asyncio.AbstractEventLoop,
+    callback: Callable[[PairInfo], Awaitable[Any]]
 ) -> None:
     """
-    Inicializa e inicia o discovery se ainda não estiver rodando.
+    Inicializa e inicia o discovery com parâmetros específicos,
+    caso precise customizar além do subscribe_new_pairs.
     """
-    global _discovery_instance
-    if _discovery_instance is None:
-        _discovery_instance = SniperDiscovery(
-            web3=web3,
-            dexes=dexes,
-            base_tokens=base_tokens,
-            min_liq_weth=min_liq_weth,
-            interval_sec=interval_sec,
-            bot=bot,
-            callback_on_pair=callback_on_pair,
-            telegram_loop=telegram_loop,
-        )
-    _discovery_instance.start()
-
-
-def stop_discovery() -> None:
-    """
-    Solicita parada do discovery em background.
-    """
-    if _discovery_instance:
-        _discovery_instance.stop()
+    global _discovery
+    if _discovery is None:
+        _discovery = SniperDiscovery(web3, dexes, base_tokens, min_liq_weth, interval_sec, callback)
+    _discovery.start()
 
 
 def get_discovery_status() -> bool:
     """
-    Retorna True se o discovery estiver ativo.
+    Informa se o discovery está rodando.
     """
-    return _discovery_instance.is_running() if _discovery_instance else False
+    return bool(_discovery and _discovery.is_running())
