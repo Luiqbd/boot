@@ -14,11 +14,9 @@ from config import config
 
 logger = logging.getLogger(__name__)
 
-
 def _codigo_vazio(codigo: bytes) -> bool:
     """Retorna True se não houver bytecode no endereço (contrato não implantado)."""
     return codigo is None or len(codigo) == 0
-
 
 class ExchangeClient:
     """
@@ -39,7 +37,8 @@ class ExchangeClient:
     def __init__(self, router_address: str):
         # Conexão Web3
         self.web3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
-        if not self.web3.isConnected():
+        # corrigido para snake_case
+        if not self.web3.is_connected():
             raise ConnectionError(f"Não conectado a {config['RPC_URL']}")
 
         # Conta e carteira
@@ -53,7 +52,7 @@ class ExchangeClient:
             if chk != Web3.to_checksum_address(self.wallet):
                 raise ValueError("WALLET_ADDRESS diferente da PRIVATE_KEY")
 
-        # Endereço do router
+        # Endereço do router em checksum
         self.router_address = Web3.to_checksum_address(router_address)
         code = self.web3.eth.get_code(self.router_address)
         if _codigo_vazio(code):
