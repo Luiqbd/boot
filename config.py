@@ -35,7 +35,7 @@ def get_env(
     Se required=True e valor vazio, dispara RuntimeError.
     """
     raw = os.getenv(key, None)
-    if raw is None or raw.strip() == "":
+    if raw is None or (isinstance(raw, str) and raw.strip() == ""):
         if required and default is None:
             raise RuntimeError(f"Variável obrigatória '{key}' não informada")
         raw = default
@@ -133,16 +133,22 @@ USDC = to_checksum(
     "USDC"
 )
 
+# Auth0
+AUTH0_DOMAIN        = get_env("AUTH0_DOMAIN",        required=True)
+AUTH0_AUDIENCE      = get_env("AUTH0_AUDIENCE",      required=True)
+AUTH0_CLIENT_ID     = get_env("AUTH0_CLIENT_ID",     required=True)
+AUTH0_CLIENT_SECRET = get_env("AUTH0_CLIENT_SECRET", required=True)
+
 # Telegram
 TELEGRAM_TOKEN = get_env("TELEGRAM_TOKEN", required=True)
 TELEGRAM_CHAT  = get_env("TELEGRAM_CHAT_ID", cast=int, default=0)
 
 # Operação
-DRY_RUN          = str_to_bool(get_env("DRY_RUN", default="true"))
-INTERVAL         = get_env("INTERVAL", default=3, cast=int)
-DEFAULT_SLIPPAGE = get_env("SLIPPAGE_BPS", default=50, cast=int)
-TX_DEADLINE_SEC  = get_env("TX_DEADLINE_SEC", default=300, cast=int)
-MIN_LIQ_WETH     = get_env("MIN_LIQ_WETH", default=Decimal("0.5"), cast=Decimal)
+DRY_RUN            = str_to_bool(get_env("DRY_RUN", default="true"))
+INTERVAL           = get_env("INTERVAL", default=3, cast=int)
+DEFAULT_SLIPPAGE   = get_env("SLIPPAGE_BPS", default=50, cast=int)
+TX_DEADLINE_SEC    = get_env("TX_DEADLINE_SEC", default=300, cast=int)
+MIN_LIQ_WETH       = get_env("MIN_LIQ_WETH", default=Decimal("0.5"), cast=Decimal)
 DISCOVERY_INTERVAL = get_env("DISCOVERY_INTERVAL", default=3, cast=int)
 PAIR_DUP_INTERVAL  = get_env("PAIR_DUP_INTERVAL", default=5, cast=int)
 
@@ -151,6 +157,7 @@ ETHERSCAN_API_KEY = get_env("ETHERSCAN_API_KEY", default="")
 
 # Lista de DEXes
 DEXES = load_dexes()
+
 
 # ---------------------------------------------------
 # Validação final de sanidade
@@ -164,6 +171,15 @@ def validate_cfg() -> None:
     for dex in DEXES:
         Web3.to_checksum_address(dex.factory)
         Web3.to_checksum_address(dex.router)
+    # Auth0 sanity check
+    if not AUTH0_DOMAIN:
+        raise ValueError("AUTH0_DOMAIN inválido")
+    if not AUTH0_AUDIENCE:
+        raise ValueError("AUTH0_AUDIENCE inválido")
+    if not AUTH0_CLIENT_ID:
+        raise ValueError("AUTH0_CLIENT_ID inválido")
+    if not AUTH0_CLIENT_SECRET:
+        raise ValueError("AUTH0_CLIENT_SECRET inválido")
 
 validate_cfg()
 
@@ -173,23 +189,27 @@ validate_cfg()
 # ---------------------------------------------------
 
 config: Dict[str, Any] = {
-    "RPC_URL": RPC_URL,
-    "CHAIN_ID": CHAIN_ID,
-    "PRIVATE_KEY": PRIVATE_KEY,
-    "WALLET": WALLET,
-    "WETH": WETH,
-    "USDC": USDC,
-    "TELEGRAM_TOKEN": TELEGRAM_TOKEN,
-    "TELEGRAM_CHAT_ID": TELEGRAM_CHAT,
-    "DRY_RUN": DRY_RUN,
-    "INTERVAL": INTERVAL,
+    "RPC_URL":             RPC_URL,
+    "CHAIN_ID":            CHAIN_ID,
+    "PRIVATE_KEY":         PRIVATE_KEY,
+    "WALLET":              WALLET,
+    "WETH":                WETH,
+    "USDC":                USDC,
+    "AUTH0_DOMAIN":        AUTH0_DOMAIN,
+    "AUTH0_AUDIENCE":      AUTH0_AUDIENCE,
+    "AUTH0_CLIENT_ID":     AUTH0_CLIENT_ID,
+    "AUTH0_CLIENT_SECRET": AUTH0_CLIENT_SECRET,
+    "TELEGRAM_TOKEN":      TELEGRAM_TOKEN,
+    "TELEGRAM_CHAT_ID":    TELEGRAM_CHAT,
+    "DRY_RUN":             DRY_RUN,
+    "INTERVAL":            INTERVAL,
     "DEFAULT_SLIPPAGE_BPS": DEFAULT_SLIPPAGE,
-    "TX_DEADLINE_SEC": TX_DEADLINE_SEC,
-    "MIN_LIQ_WETH": MIN_LIQ_WETH,
-    "DISCOVERY_INTERVAL": DISCOVERY_INTERVAL,
-    "PAIR_DUP_INTERVAL": PAIR_DUP_INTERVAL,
-    "ETHERSCAN_API_KEY": ETHERSCAN_API_KEY,
-    "DEXES": DEXES,
+    "TX_DEADLINE_SEC":     TX_DEADLINE_SEC,
+    "MIN_LIQ_WETH":        MIN_LIQ_WETH,
+    "DISCOVERY_INTERVAL":  DISCOVERY_INTERVAL,
+    "PAIR_DUP_INTERVAL":   PAIR_DUP_INTERVAL,
+    "ETHERSCAN_API_KEY":   ETHERSCAN_API_KEY,
+    "DEXES":               DEXES,
 }
 
 # Debug opcional
