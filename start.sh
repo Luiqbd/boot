@@ -1,8 +1,16 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-# 🧹 Mata qualquer instância anterior de main.py (se houver)
-pkill -f main.py || true
+# Se estiver em dev e quiser .env local:
+# [ -f .env ] && source .env
 
-echo "Iniciando bot unificado..."
-python main.py
+# Captura SIGINT/SIGTERM e repassa pra Python
+trap 'echo "🛑 Sinal recebido, fechando..."; kill "$pid"; wait "$pid"' SIGINT SIGTERM
 
+echo "🚀 Iniciando Sniper Bot..."
+# -u = unbuffered stdout/stderr; exec = substitui shell pelo Python
+exec python -u main.py &
+pid=$!
+
+# Espera o processo Python terminar (ou receber sinal)
+wait "$pid"
