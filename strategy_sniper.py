@@ -1,50 +1,63 @@
-# strategy_sniper.py
-
-import logging
 import asyncio
+import logging
 import traceback
 from decimal import Decimal
 from time import time
+from typing import Tuple
+
 from web3 import Web3
+from telegram import Bot
 
 from config import config
-from telegram import Bot
 from telegram_alert import TelegramAlert
 from dex import DexClient, DexVersion
 from exchange_client import ExchangeClient
 from trade_executor import TradeExecutor
 from safe_trade_executor import SafeTradeExecutor
-
+from risk_manager import risk_manager
+from discovery import subscribe_new_pairs, is_discovery_running
 from utils import (
+    escape_md_v2,
+    get_token_balance,
+    has_high_tax,
     is_contract_verified,
     is_token_concentrated,
-    has_high_tax,
-    get_token_balance,
     rate_limiter,
     configure_rate_limiter_from_config,
-    escape_md_v2
 )
 
 log = logging.getLogger("sniper")
-
-bot_notify = Bot(token=config["TELEGRAM_TOKEN"])
 configure_rate_limiter_from_config(config)
-rate_limiter.set_notifier(lambda msg: safe_notify(bot_notify, msg))
 
-_PAIR_DUP_INTERVAL = 5
-_recent_pairs: dict[tuple[str, str, str], float] = {}
+# Cliente Telegram (bot + alert) e chat ID
+BOT   = Bot(token=config["TELEGRAM_TOKEN"])
+ALERT = TelegramAlert(token=config["TELEGRAM_TOKEN"])
+CHAT  = config["TELEGRAM_CHAT_ID"]
+
+# Intervalos para dedupe de pares e mensagens
+PAIR_DUP_INTERVAL = float(config.get("PAIR_DUP_INTERVAL", 5))
+MSG_DUP_INTERVAL  = PAIR_DUP_INTERVAL * 0.5
+
+# Histórico de pares processados recentemente
+_processed_pairs: dict[Tuple[str, str, str], float] = {}
 
 
-def notify(msg: str):
+def _notify(texto: str, via_alert: bool = False):
     """
-    Envia mensagem direta ao Telegram escapando MarkdownV2.
+    Envia mensagem escapando MarkdownV2 e fazendo dedupe.
+    via_alert=True usa TelegramAlert, senão Bot.
     """
-    escaped = escape_md_v2(msg)
-    coro = bot_notify.send_message(
-        chat_id=config["TELEGRAM_CHAT_ID"],
-        text=escaped,
-        parse_mode="MarkdownV2"
-    )
+    agora = time()
+    chave = hash(texto)
+    last = getattr(_notify, "_last_msgs", {})
+    if last.get(chave, 0) + MSG_DUP_INTERVAL > agora:
+        return
+    last[chave] = agora
+    _notify._last_msgs = last
+
+    alvo = ALERT if via_alert else BOT
+    txt = escape_md_v2(texto)
+    coro = alvo.send_message(chat_id=CHAT, text=txt, parse_mode="MarkdownV2")
     try:
         loop = asyncio.get_running_loop()
         loop.create_task(coro)
@@ -52,502 +65,209 @@ def notify(msg: str):
         asyncio.run(coro)
 
 
-def safe_notify(
-    alert: TelegramAlert | Bot | None,
-    msg: str,
-    loop: asyncio.AbstractEventLoop | None = None
-):
-    """
-    Envia mensagem com dedupe e escapando MarkdownV2.
-    """
-    now_ts = time()
-    key = hash(msg)
-    last = getattr(safe_notify, "_last_msgs", {})
-    if last.get(key, 0) + _PAIR_DUP_INTERVAL > now_ts:
-        return
-    last[key] = now_ts
-    safe_notify._last_msgs = last
+class StrategySniper:
+    def __init__(self):
+        # Web3 + WETH
+        prov = Web3.HTTPProvider(config["RPC_URL"])
+        self.w3   = Web3(prov)
+        self.weth = self.w3.toChecksumAddress(config["WETH"])
 
-    escaped = escape_md_v2(msg)
+        # Parâmetros de configuração
+        self.trade_size       = Decimal(str(config.get("TRADE_SIZE_ETH", 0.1)))
+        self.min_liq          = Decimal(str(config.get("MIN_LIQ_WETH", 0.5)))
+        self.max_tax_bps      = int(float(config.get("MAX_TAX_PCT", 10.0)) * 100)
+        self.top_holder_limit = float(config.get("TOP_HOLDER_LIMIT", 30.0))
+        self.tp_pct           = float(config.get("TAKE_PROFIT_PCT", 0.2))
+        self.sl_pct           = float(config.get("STOP_LOSS_PCT", 0.05))
+        self.trail_pct        = float(config.get("TRAIL_PCT", 0.05))
+        self.interval         = int(config.get("INTERVAL", 3))
 
-    if alert:
-        coro = alert.send_message(
-            chat_id=config["TELEGRAM_CHAT_ID"],
-            text=escaped,
-            parse_mode="MarkdownV2"
-        )
-        if loop and loop.is_running():
-            asyncio.run_coroutine_threadsafe(coro, loop)
-        else:
-            try:
-                asyncio.get_running_loop().create_task(coro)
-            except RuntimeError:
-                asyncio.run(coro)
-    else:
-        notify(msg)
+    async def on_new_pair(self, dex_info, pair: str, t0: str, t1: str):
+        nome = getattr(dex_info, "name", "DEX")
+        key  = (pair.lower(), t0.lower(), t1.lower())
+        agora = time()
 
-
-async def on_new_pair(
-    dex_info,
-    pair_addr,
-    token0,
-    token1,
-    bot=None,
-    loop=None,
-    token=None
-):
-    from risk_manager import risk_manager
-
-    # 1) pausa por rate limit
-    if rate_limiter.is_paused():
-        risk_manager.record(
-            tipo="pair_skipped",
-            mensagem="API rate limit pause",
-            pair=pair_addr,
-            token=None,
-            origem=getattr(dex_info, "name", "DEX"),
-            tx_hash=None,
-            dry_run=config["DRY_RUN"]
-        )
-        safe_notify(bot, "⏸️ Sniper pausado por limite de API.", loop)
-        return
-
-    # 2) evita dupe
-    now_ts = time()
-    key = (pair_addr.lower(), token0.lower(), token1.lower())
-    if key in _recent_pairs and (now_ts - _recent_pairs[key]) < _PAIR_DUP_INTERVAL:
-        log.debug(f"[DUPE] Ignorando par: {pair_addr}")
-        return
-    _recent_pairs[key] = now_ts
-
-    dex_name = getattr(dex_info, "name", "DEX")
-    log.info(f"[Novo par] {dex_name} {pair_addr} {token0}/{token1}")
-    risk_manager.record(
-        tipo="pair_detected",
-        mensagem="Novo par detectado",
-        pair=pair_addr,
-        token=None,
-        origem=dex_name,
-        tx_hash=None,
-        dry_run=config["DRY_RUN"]
-    )
-
-    # 3) filtros iniciais
-    try:
-        web3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
-        weth = Web3.to_checksum_address(config["WETH"])
-        target = (
-            Web3.to_checksum_address(token1)
-            if token0.lower() == weth.lower()
-            else Web3.to_checksum_address(token0)
-        )
-
-        amt_eth = Decimal(str(config.get("TRADE_SIZE_ETH", 0.1)))
-        if amt_eth <= 0:
-            raise ValueError("TRADE_SIZE_ETH inválido")
-
-        dex_client = DexClient(web3, getattr(dex_info, "router"))
-        version = dex_client.detect_version(pair_addr)
-
-        if version == DexVersion.V2:
-            r0, r1 = dex_client._get_reserves(pair_addr)
-            actual_liq = max(r0, r1)
-        elif version == DexVersion.V3:
-            actual_liq = dex_client._get_liquidity_v3(pair_addr)
-        else:
-            actual_liq = Decimal(0)
-
-        MIN_LIQ = Decimal(str(config.get("MIN_LIQ_WETH", 0.5)))
-        liq_ok = actual_liq >= MIN_LIQ
-
-        # tenta obter preço
-        price = dex_client.get_token_price(target, weth)
-        if price is None:
-            safe_notify(
-                bot,
-                f"⚠️ Preço indisponível para {target}; pulando par.",
-                loop
-            )
+        # 1) pausa por rate limit
+        if rate_limiter.is_paused():
+            risk_manager.record("pair_skipped", "API pausada", pair, None, nome, None, config["DRY_RUN"])
+            _notify("⏸️ Sniper pausado por limite de API.", via_alert=True)
             return
 
-        # calcula slippage
-        slip = dex_client.calc_dynamic_slippage(pair_addr, float(amt_eth))
+        # 2) dedupe de pares
+        last = _processed_pairs.get(key, 0)
+        if agora - last < PAIR_DUP_INTERVAL:
+            log.debug(f"[DUPLICADO] pulando {pair}")
+            return
+        _processed_pairs[key] = agora
 
-        # notifica resumo
-        summary = (
-            "🔍 *Novo Par Detectado*\n"
-            f"• Endereço: `{pair_addr}`\n"
-            f"• DEX: `{dex_name}`\n"
-            f"• Versão: `{version.value}`\n"
-            f"• Alvo: `{target}`\n"
-            f"• Liquidez on-chain: `{actual_liq:.4f}` WETH (mín `{MIN_LIQ}`)\n"
-            f"• Preço 1 token: `{price:.10f}` WETH\n"
-            f"• Slippage sugerida: `{slip:.4f}`\n\n"
-            "_Próximos filtros:_ liquidez → taxa → verificação → concentração"
-        )
-        safe_notify(bot, summary, loop)
+        log.info(f"[NOVO PAR] {nome} {pair} {t0}/{t1}")
+        risk_manager.record("pair_detected", "Novo par detectado", pair, None, nome, None, config["DRY_RUN"])
 
-        # filtro 1: liquidez
-        if not liq_ok:
-            risk_manager.record(
-                tipo="pair_skipped",
-                mensagem=f"liquidez on-chain {actual_liq:.4f} < {MIN_LIQ}",
-                pair=pair_addr,
-                token=target,
-                origem="liq_check",
-                tx_hash=None,
-                dry_run=config["DRY_RUN"]
+        # 3) configuração inicial e filtros
+        try:
+            base, target = self._identificar_tokens(t0, t1)
+            dex = DexClient(self.w3, dex_info.router)
+            versao = dex.detect_version(pair)
+
+            # 3.1) liquidez
+            liq = (max(*dex._get_reserves(pair)) 
+                   if versao == DexVersion.V2 
+                   else dex._get_liquidity_v3(pair))
+            if liq < self.min_liq:
+                msg = f"Liquidez {liq:.4f} < mínimo {self.min_liq}"
+                risk_manager.record("pair_skipped", msg, pair, target, "liq_check", None, config["DRY_RUN"])
+                _notify(f"⚠️ Skip liquidez: {msg}", via_alert=True)
+                return
+
+            # 3.2) preço e slippage
+            preco = dex.get_token_price(target, base)
+            if preco is None:
+                _notify(f"⚠️ Preço indisponível para {target}", via_alert=True)
+                return
+            slip = dex.calc_dynamic_slippage(pair, float(self.trade_size))
+
+            # 3.3) notifica resumo
+            resumo = (
+                "🔍 *Novo Par Detectado*\n"
+                f"• Pair: `{pair}`\n"
+                f"• DEX: `{nome}`\n"
+                f"• Versão: `{versao.value}`\n"
+                f"• Alvo: `{target}`\n"
+                f"• Liquidez: `{liq:.4f}` WETH\n"
+                f"• Preço: `{preco:.10f}` WETH\n"
+                f"• Slippage: `{slip:.4f}`\n\n"
+                "_Próximos filtros:_ taxa → verificação → concentração"
             )
-            safe_notify(
-                bot,
-                (
-                    f"⚠️ *Pool Ignorada:* liquidez on-chain `{actual_liq:.4f}` WETH "
-                    f"< mínimo `{MIN_LIQ}` WETH\n"
-                    "_Compra abortada_"
-                ),
-                loop
-            )
+            _notify(resumo, via_alert=True)
+
+            # 3.4) taxa
+            exch = ExchangeClient(router_address=dex_info.router)
+            if has_high_tax(exch, target, base, self.w3.toWei(self.trade_size, "ether"), self.max_tax_bps):
+                risk_manager.record("pair_skipped", "Taxa alta", pair, target, "tax_check", None, config["DRY_RUN"])
+                _notify(f"⚠️ Skip taxa > {self.max_tax_bps/100:.1f}%", via_alert=True)
+                return
+
+            # 3.5) contrato verificado
+            if config.get("BLOCK_UNVERIFIED", False) and not is_contract_verified(target, config["ETHERSCAN_API_KEY"]):
+                risk_manager.record("pair_skipped", "Contrato não verificado", pair, target, "verify_check", None, config["DRY_RUN"])
+                _notify("🚫 Skip contrato não verificado", via_alert=True)
+                return
+
+            # 3.6) concentração de holders
+            if is_token_concentrated(target, self.top_holder_limit, config["ETHERSCAN_API_KEY"]):
+                msg = f"Concentração > {self.top_holder_limit:.1f}%"
+                risk_manager.record("pair_skipped", msg, pair, target, "concentration_check", None, config["DRY_RUN"])
+                _notify(f"🚫 Skip {msg}", via_alert=True)
+                return
+
+        except Exception as e:
+            tb = traceback.format_exc()
+            log.error(f"Erro filtros iniciais: {e}", exc_info=True)
+            risk_manager.record("error", str(e), pair, target, "filter_setup", None, config["DRY_RUN"])
+            _notify(f"*❌ Erro filtros:* `{e}`\n```{tb}```", via_alert=True)
             return
 
-        # filtro 2: taxa
-        exchange_for_tax = ExchangeClient(router_address=getattr(dex_info, "router"))
-        MAX_TAX = float(config.get("MAX_TAX_PCT", 10.0))
-        tax_ok = not has_high_tax(
-            exchange_for_tax,
-            target,
-            weth,
-            sample_amount_wei=Web3.to_wei(amt_eth, "ether"),
-            max_tax_bps=int(MAX_TAX * 100),
-        )
-        if not tax_ok:
-            risk_manager.record(
-                tipo="pair_skipped",
-                mensagem=f"taxa > {MAX_TAX}%",
-                pair=pair_addr,
-                token=target,
-                origem="tax_check",
-                tx_hash=None,
-                dry_run=config["DRY_RUN"]
+        # 4) tentativa de compra
+        try:
+            risk_manager.record("buy_attempt", "Tentativa de compra", pair, target, "buy_phase", None, config["DRY_RUN"])
+            exch2 = ExchangeClient(router_address=dex_info.router)
+            te   = TradeExecutor(exchange_client=exch2, dry_run=config["DRY_RUN"])
+            safe = SafeTradeExecutor(executor=te, risk_manager=risk_manager)
+
+            tx_hash = safe.buy(
+                token_in=base,
+                token_out=target,
+                amount_eth=self.trade_size,
+                current_price=preco,
+                last_trade_price=None,
+                amount_out_min=None,
+                slippage=slip
             )
-            safe_notify(
-                bot,
-                (
-                    f"⚠️ *Token Ignorado:* taxa estimada > `{MAX_TAX}`%\n"
-                    "_Compra abortada_"
-                ),
-                loop
-            )
+            if not tx_hash:
+                motivo = risk_manager.last_block_reason or "Desconhecido"
+                risk_manager.record("buy_failed", motivo, pair, target, "buy_phase", None, config["DRY_RUN"])
+                _notify(f"🚫 Compra falhou: {motivo}", via_alert=True)
+                return
+
+            risk_manager.record("buy_success", "Compra realizada", pair, target, "buy_phase", tx_hash, config["DRY_RUN"])
+            risk_manager.register_trade(True, pair, "buy", int(time()))
+            _notify(f"✅ Compra OK\nToken: `{target}`\nTX: `{tx_hash}`", via_alert=True)
+
+        except Exception as e:
+            tb = traceback.format_exc()
+            log.error(f"Erro na compra: {e}", exc_info=True)
+            risk_manager.record("buy_failed", str(e), pair, target, "buy_phase", None, config["DRY_RUN"])
+            _notify(f"*🚫 Exceção compra:* `{e}`\n```{tb}```", via_alert=True)
             return
 
-        # filtro 3: contrato verificado
-        if config.get("BLOCK_UNVERIFIED", False) and not is_contract_verified(
-            target,
-            config.get("ETHERSCAN_API_KEY"),
-        ):
-            risk_manager.record(
-                tipo="pair_skipped",
-                mensagem="contrato não verificado",
-                pair=pair_addr,
-                token=target,
-                origem="verify_check",
-                tx_hash=None,
-                dry_run=config["DRY_RUN"]
-            )
-            safe_notify(
-                bot,
-                (
-                    "🚫 *Token Bloqueado:* contrato não verificado\n"
-                    "_Compra abortada_"
-                ),
-                loop
-            )
-            return
+        # 5) monitoramento para venda
+        await self._monitorar_venda(dex, pair, base, target, preco)
 
-        # filtro 4: concentração de holders
-        TOP_LIMIT = float(config.get("TOP_HOLDER_LIMIT", 30.0))
-        if is_token_concentrated(
-            target,
-            TOP_LIMIT,
-            config.get("ETHERSCAN_API_KEY"),
-        ):
-            risk_manager.record(
-                tipo="pair_skipped",
-                mensagem=f"concentração > {TOP_LIMIT}%",
-                pair=pair_addr,
-                token=target,
-                origem="concentration_check",
-                tx_hash=None,
-                dry_run=config["DRY_RUN"]
-            )
-            safe_notify(
-                bot,
-                (
-                    f"🚫 *Token Bloqueado:* concentração de holders > `{TOP_LIMIT}`%\n"
-                    "_Compra abortada_"
-                ),
-                loop
-            )
-            return
+    def _identificar_tokens(self, t0: str, t1: str) -> Tuple[str, str]:
+        """Retorna (base=WETH, target) em checksum."""
+        c0 = self.w3.toChecksumAddress(t0)
+        c1 = self.w3.toChecksumAddress(t1)
+        return (self.weth, c1) if c0 == self.weth else (self.weth, c0)
 
-    except Exception as e:
-        tb = traceback.format_exc()
-        log.error(f"Erro nos filtros iniciais: {e}", exc_info=True)
-        risk_manager.record(
-            tipo="error",
-            mensagem=str(e),
-            pair=pair_addr,
-            token=target,
-            origem="filter_setup",
-            tx_hash=None,
-            dry_run=config["DRY_RUN"]
-        )
-        err_msg = (
-            "*❌ Erro nos filtros iniciais:*\n"
-            f"`{e}`\n\n"
-            "_Traceback:_\n"
-            f"```{tb}```"
-        )
-        safe_notify(bot, err_msg, loop)
-        return
+    async def _monitorar_venda(self, dex: DexClient, pair: str, base: str, target: str, entry: Decimal):
+        """
+        Aguarda condições de take-profit/trailing/stop-loss e vende.
+        """
+        highest    = entry
+        tp_price   = entry * (1 + self.tp_pct)
+        hard_stop  = entry * (1 - self.sl_pct)
+        stop_price = highest * (1 - self.trail_pct)
+        sold       = False
 
-    # 5) tentativa de compra
-    risk_manager.record(
-        tipo="buy_attempt",
-        mensagem="tentativa de compra",
-        pair=pair_addr,
-        token=target,
-        origem="buy_phase",
-        tx_hash=None,
-        dry_run=config["DRY_RUN"]
-    )
+        while is_discovery_running():
+            await asyncio.sleep(self.interval)
+            preco_atual = dex.get_token_price(target, base)
+            if preco_atual is None:
+                continue
 
-    # 6) setup executor
-    try:
-        exchange = ExchangeClient(router_address=getattr(dex_info, "router"))
-        trade_exec = TradeExecutor(
-            exchange_client=exchange,
-            dry_run=config["DRY_RUN"]
-        )
-        safe_exec = SafeTradeExecutor(
-            executor=trade_exec,
-            risk_manager=risk_manager
-        )
-    except Exception as e:
-        tb = traceback.format_exc()
-        log.error(f"Erro ao criar executor: {e}", exc_info=True)
-        risk_manager.record(
-            tipo="error",
-            mensagem=str(e),
-            pair=pair_addr,
-            token=target,
-            origem="exec_setup",
-            tx_hash=None,
-            dry_run=config["DRY_RUN"]
-        )
-        err_msg = (
-            "*❌ Erro ao inicializar executor*\n"
-            f"`{e}`\n\n"
-            "_Traceback:_\n"
-            f"```{tb}```"
-        )
-        safe_notify(bot, err_msg, loop)
-        return
+            if preco_atual > highest:
+                highest = preco_atual
+                stop_price = highest * (1 - self.trail_pct)
 
-    # 7) execução da compra
-    try:
-        tx_buy = safe_exec.buy(
-            token_in=weth,
-            token_out=target,
-            amount_eth=amt_eth,
-            current_price=price,
-            last_trade_price=None,
-            amount_out_min=None,
-            slippage=slip
-        )
-        if tx_buy:
-            risk_manager.record(
-                tipo="buy_success",
-                mensagem="compra realizada",
-                pair=pair_addr,
-                token=target,
-                origem="buy_phase",
-                tx_hash=tx_buy,
-                dry_run=config["DRY_RUN"]
-            )
-            risk_manager.register_trade(
-                success=True,
-                pair=pair_addr,
-                direction="buy",
-                now_ts=int(time()),
-            )
-            safe_notify(
-                bot,
-                f"✅ *Compra realizada*\nToken: `{target}`\nTX: `{tx_buy}`",
-                loop
-            )
-        else:
-            motivo = risk_manager.last_block_reason or "não informado"
-            risk_manager.record(
-                tipo="buy_failed",
-                mensagem=motivo,
-                pair=pair_addr,
-                token=target,
-                origem="buy_phase",
-                tx_hash=None,
-                dry_run=config["DRY_RUN"]
-            )
-            risk_manager.register_trade(
-                success=False,
-                pair=pair_addr,
-                direction="buy",
-                now_ts=int(time()),
-            )
-            safe_notify(
-                bot,
-                f"🚫 *Compra falhou*\nMotivo: `{motivo}`",
-                loop
-            )
-            return
-    except Exception as e:
-        tb = traceback.format_exc()
-        log.error(f"Erro ao executar compra: {e}", exc_info=True)
-        risk_manager.record(
-            tipo="buy_failed",
-            mensagem=str(e),
-            pair=pair_addr,
-            token=target,
-            origem="buy_phase",
-            tx_hash=None,
-            dry_run=config["DRY_RUN"]
-        )
-        risk_manager.register_trade(
-            success=False,
-            pair=pair_addr,
-            direction="buy",
-            now_ts=int(time()),
-        )
-        err_msg = (
-            "*🚫 Exceção na compra automática*\n"
-            f"`{e}`\n\n"
-            "_Traceback:_\n"
-            f"```{tb}```"
-        )
-        safe_notify(bot, err_msg, loop)
-        return
+            if preco_atual >= tp_price or preco_atual <= stop_price or preco_atual <= hard_stop:
+                bal = get_token_balance(ExchangeClient(router_address=dex.router), target)
+                if bal <= 0:
+                    break
 
-    # 8) monitoramento para venda
-    highest = price
-    entry = price
-    tp_pct = float(config.get("TAKE_PROFIT_PCT", 0.2))
-    sl_pct = float(config.get("STOP_LOSS_PCT", 0.05))
-    trail = float(config.get("TRAIL_PCT", 0.05))
-    tp_price = entry * (1 + tp_pct)
-    hard_stop = entry * (1 - sl_pct)
-    stop_price = highest * (1 - trail)
-    sold = False
+                try:
+                    exch3 = ExchangeClient(router_address=dex.router)
+                    te2  = TradeExecutor(exchange_client=exch3, dry_run=config["DRY_RUN"])
+                    safe2= SafeTradeExecutor(executor=te2, risk_manager=risk_manager)
 
-    from discovery import is_discovery_running
-
-    while is_discovery_running():
-        # atualiza preço, pula iteração em caso de None
-        price = dex_client.get_token_price(target, weth)
-        if price is None:
-            await asyncio.sleep(1)
-            continue
-
-        if price > highest:
-            highest = price
-            stop_price = highest * (1 - trail)
-
-        if price >= tp_price or price <= stop_price or price <= hard_stop:
-            balance = get_token_balance(exchange, target)
-            if balance <= 0:
+                    tx_s = safe2.sell(
+                        token_in=target,
+                        token_out=base,
+                        amount_eth=Decimal(str(bal)),
+                        current_price=preco_atual,
+                        last_trade_price=entry
+                    )
+                    if tx_s:
+                        risk_manager.record("sell_success","Venda realizada",pair,target,"sell_phase",tx_s,config["DRY_RUN"])
+                        risk_manager.register_trade(True, pair, "sell", int(time()))
+                        _notify(f"💰 Venda OK\nToken: `{target}`\nTX: `{tx_s}`", via_alert=True)
+                        sold = True
+                    else:
+                        motivo = risk_manager.last_block_reason or "Desconhecido"
+                        risk_manager.record("sell_failed",motivo,pair,target,"sell_phase",None,config["DRY_RUN"])
+                        _notify(f"⚠️ Venda falhou: {motivo}", via_alert=True)
+                except Exception as e:
+                    tb = traceback.format_exc()
+                    log.error(f"Erro na venda: {e}", exc_info=True)
+                    risk_manager.record("sell_failed",str(e),pair,target,"sell_phase",None,config["DRY_RUN"])
+                    _notify(f"*⚠️ Exceção venda:* `{e}`\n```{tb}```", via_alert=True)
                 break
 
-            try:
-                tx_sell = safe_exec.sell(
-                    token_in=target,
-                    token_out=weth,
-                    amount_eth=Decimal(str(balance)),
-                    current_price=price,
-                    last_trade_price=entry
-                )
-                if tx_sell:
-                    risk_manager.record(
-                        tipo="sell_success",
-                        mensagem="venda realizada",
-                        pair=pair_addr,
-                        token=target,
-                        origem="sell_phase",
-                        tx_hash=tx_sell,
-                        dry_run=config["DRY_RUN"]
-                    )
-                    risk_manager.register_trade(
-                        success=True,
-                        pair=pair_addr,
-                        direction="sell",
-                        now_ts=int(time()),
-                    )
-                    safe_notify(
-                        bot,
-                        f"💰 *Venda realizada*\nToken: `{target}`\nTX: `{tx_sell}`",
-                        loop
-                    )
-                    sold = True
-                else:
-                    motivo = risk_manager.last_block_reason or "não informado"
-                    risk_manager.record(
-                        tipo="sell_failed",
-                        mensagem=motivo,
-                        pair=pair_addr,
-                        token=target,
-                        origem="sell_phase",
-                        tx_hash=None,
-                        dry_run=config["DRY_RUN"]
-                    )
-                    risk_manager.register_trade(
-                        success=False,
-                        pair=pair_addr,
-                        direction="sell",
-                        now_ts=int(time()),
-                    )
-                    safe_notify(
-                        bot,
-                        f"⚠️ *Venda falhou*\nMotivo: `{motivo}`",
-                        loop
-                    )
-            except Exception as e:
-                tb = traceback.format_exc()
-                log.error(f"Erro ao executar venda: {e}", exc_info=True)
-                risk_manager.record(
-                    tipo="sell_failed",
-                    mensagem=str(e),
-                    pair=pair_addr,
-                    token=target,
-                    origem="sell_phase",
-                    tx_hash=None,
-                    dry_run=config["DRY_RUN"]
-                )
-                risk_manager.register_trade(
-                    success=False,
-                    pair=pair_addr,
-                    direction="sell",
-                    now_ts=int(time()),
-                )
-                err_msg = (
-                    "*⚠️ Exceção na venda automática*\n"
-                    f"`{e}`\n\n"
-                    "_Traceback:_\n"
-                    f"```{tb}```"
-                )
-                safe_notify(bot, err_msg, loop)
-            break
+        if not sold:
+            _notify(f"⏹ Monitoramento encerrado sem venda para `{target}`", via_alert=True)
 
-        await asyncio.sleep(int(config.get("INTERVAL", 3)))
 
-    if not sold:
-        safe_notify(
-            bot,
-            f"⏹ *Monitoramento encerrou sem venda* para `{target}`",
-            loop
-        )
+# ─── Entrypoint para iniciar o listener ──────────────────────
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    sniper = StrategySniper()
+    subscribe_new_pairs(sniper.on_new_pair)
