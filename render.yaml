@@ -4,8 +4,34 @@ services:
     env: python
     branch: main
     buildCommand: pip install -r requirements.txt
-    startCommand: bash start.sh
+    startCommand: ./start.sh
+    healthCheckPath: /healthz
     environment:
-      pythonVersion: 3.10.12
+      pythonVersion: "3.10.12"
+
+      # variáveis obrigatórias de infraestrutura
+      TELEGRAM_TOKEN:        $TELEGRAM_TOKEN
+      TELEGRAM_CHAT_ID:      $TELEGRAM_CHAT_ID
+      RPC_URL:               $RPC_URL
+      CHAIN_ID:              $CHAIN_ID
+      PRIVATE_KEY:           $PRIVATE_KEY
+
+      AUTH0_DOMAIN:          $AUTH0_DOMAIN
+      AUTH0_AUDIENCE:        $AUTH0_AUDIENCE
+      AUTH0_CLIENT_ID:       $AUTH0_CLIENT_ID
+      AUTH0_CLIENT_SECRET:   $AUTH0_CLIENT_SECRET
+
+      ETHERSCAN_API_KEY:     $ETHERSCAN_API_KEY
+
+      # ajustes de estratégia / preço
+      DRY_RUN:               "false"
+      SLIPPAGE_BPS:          "50"
+      TAKE_PROFIT_PCT:       "5"
+      TRADE_SIZE_ETH:        "0.01"
+      MIN_LIQ_WETH:          "0.5"
+      INTERVAL:              "3"
+      DISCOVERY_INTERVAL:    "3"
+      PAIR_DUP_INTERVAL:     "5"
+
     autoDeploy: true
     plan: starter
