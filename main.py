@@ -32,11 +32,12 @@ from token_service import gerar_meu_token_externo
 from check_balance import get_wallet_status
 
 # --- Configurações básicas ---
-RPC_URL    = config["RPC_URL"]
-CHAIN_ID   = int(config["CHAIN_ID"])
-TELE_TOKEN = config["TELEGRAM_TOKEN"]
-TELE_CHAT  = config["TELEGRAM_CHAT_ID"]
-PORT       = int(os.getenv("PORT", 10000))
+RPC_URL      = config["RPC_URL"]
+CHAIN_ID     = int(config["CHAIN_ID"])
+TELE_TOKEN   = config["TELEGRAM_TOKEN"]
+TELE_CHAT    = config["TELEGRAM_CHAT_ID"]
+WEBHOOK_URL  = config.get("WEBHOOK_URL", "")
+PORT         = int(os.getenv("PORT", 10000))
 
 # --- Logger setup ---
 logging.basicConfig(
@@ -65,6 +66,16 @@ application = ApplicationBuilder().token(TELE_TOKEN).build()
 app_bot = application.bot
 application.bot_data["start_time"] = time.time()
 
+# --- Função para obter token Auth0 ---
+def fetch_token() -> str:
+    try:
+        t = gerar_meu_token_externo()
+        logger.info("✅ Token Auth0 obtido")
+        return t
+    except Exception as e:
+        logger.error("❌ Erro Auth0: %s", e, exc_info=True)
+        return ""
+
 # --- Comandos Telegram ---
 async def start_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     texto = (
@@ -84,6 +95,13 @@ async def start_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def snipe_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⚙️ Iniciando sniper...", parse_mode="MarkdownV2")
+    token = fetch_token()
+    if not token:
+        await update.message.reply_text(
+            "❌ Falha ao obter token Auth0, verifique logs.", parse_mode="MarkdownV2"
+        )
+    else:
+        logger.info("✅ Token Auth0: %s", token)
     iniciar_sniper()
 
 async def stop_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -101,7 +119,9 @@ async def status_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def ping_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     up = int(time.time() - ctx.bot_data["start_time"])
-    await update.message.reply_text(f"pong 🏓\n⏱ Uptime: {datetime.timedelta(seconds=up)}")
+    await update.message.reply_text(
+        f"pong 🏓\n⏱ Uptime: {datetime.timedelta(seconds=up)}"
+    )
 
 async def testnotify_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -118,7 +138,7 @@ async def echo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     txt = escape_md_v2(update.message.text)
     await update.message.reply_text(f"Você disse: {txt}")
 
-# registra handlers
+# --- Registra handlers ---
 cmds = [
     ("start", start_cmd),
     ("menu", start_cmd),
@@ -132,9 +152,10 @@ cmds = [
 ]
 for name, handler in cmds:
     application.add_handler(CommandHandler(name, handler))
+
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
-# define comandos com descrições válidas
+# --- Inscreve comandos e opcionalmente webhook ---
 command_list = [
     BotCommand("start",        "Mostrar menu do bot"),
     BotCommand("menu",         "Mostrar menu do bot"),
@@ -147,18 +168,19 @@ command_list = [
     BotCommand("relatorio",    "Gerar relatório de eventos"),
 ]
 
-telegram_loop.run_until_complete(
-    app_bot.set_my_commands(command_list)
-)
+telegram_loop.run_until_complete(app_bot.set_my_commands(command_list))
+if WEBHOOK_URL:
+    telegram_loop.run_until_complete(app_bot.set_webhook(url=WEBHOOK_URL))
+    logger.info("Webhook configurado em %s", WEBHOOK_URL)
 
-# inicia bot em background
+# --- Inicia loop do bot em background ---
 Thread(target=telegram_loop.run_forever, daemon=True).start()
 logger.info("Telegram bot rodando em background")
 
 # --- Discovery / Sniper Orquestração ---
 def iniciar_sniper():
     if is_discovery_running():
-        logger.info("Sniper já ativo")
+        logger.info("⚠️ Sniper já ativo")
         return
 
     def _cb(pair_address, token0, token1, dex_info):
@@ -168,11 +190,11 @@ def iniciar_sniper():
         )
 
     subscribe_new_pairs(callback=_cb)
-    logger.info("Sniper iniciado")
+    logger.info("🟢 Sniper iniciado")
 
 def parar_sniper():
     stop_discovery()
-    logger.info("Sniper parado")
+    logger.info("🔴 Sniper parado")
 
 def env_summary_text() -> str:
     addr = web3.eth.account.from_key(config["PRIVATE_KEY"]).address
@@ -183,15 +205,6 @@ def env_summary_text() -> str:
         f"⏱ Disc Interval: {config['DISCOVERY_INTERVAL']}s\n"
         f"🧪 Dry Run: {config['DRY_RUN']}"
     )
-
-def fetch_token() -> str:
-    try:
-        t = gerar_meu_token_externo()
-        logger.info("Token Auth0 obtido")
-        return t
-    except Exception as e:
-        logger.error("Erro Auth0: %s", e, exc_info=True)
-        return ""
 
 # --- Flask API ---
 app = Flask(__name__)
@@ -244,5 +257,5 @@ if __name__ == "__main__":
         logger.error("PRIVATE_KEY inválida: %s", e)
         sys.exit(1)
 
-    logger.info("Iniciando Flask API na porta %s", PORT)
+    logger.info("🚀 Iniciando Flask API na porta %s", PORT)
     app.run(host="0.0.0.0", port=PORT, threaded=True)
