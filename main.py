@@ -65,6 +65,7 @@ application = ApplicationBuilder().token(TELE_TOKEN).build()
 app_bot = application.bot
 application.bot_data["start_time"] = time.time()
 
+# --- Comandos Telegram ---
 async def start_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     texto = (
         "🎯 *Sniper Bot*\n\n"
@@ -82,16 +83,12 @@ async def start_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_markdown_v2(texto)
 
 async def snipe_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "⚙️ Iniciando sniper...", parse_mode="MarkdownV2"
-    )
+    await update.message.reply_text("⚙️ Iniciando sniper...", parse_mode="MarkdownV2")
     iniciar_sniper()
 
 async def stop_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     parar_sniper()
-    await update.message.reply_text(
-        "🛑 Sniper interrompido.", parse_mode="MarkdownV2"
-    )
+    await update.message.reply_text("🛑 Sniper interrompido.", parse_mode="MarkdownV2")
 
 async def sniper_status_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = "🟢 Ativo" if is_discovery_running() else "🔴 Parado"
@@ -104,17 +101,13 @@ async def status_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def ping_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     up = int(time.time() - ctx.bot_data["start_time"])
-    await update.message.reply_text(
-        f"pong 🏓\n⏱ Uptime: {datetime.timedelta(seconds=up)}"
-    )
+    await update.message.reply_text(f"pong 🏓\n⏱ Uptime: {datetime.timedelta(seconds=up)}")
 
 async def testnotify_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     uid = uuid.uuid4().hex[:6]
     text = f"✅ Teste 🕒{ts}\nID: `{uid}`"
-    await app_bot.send_message(
-        chat_id=TELE_CHAT, text=text, parse_mode="MarkdownV2"
-    )
+    await app_bot.send_message(chat_id=TELE_CHAT, text=text, parse_mode="MarkdownV2")
     await update.message.reply_text(f"Enviado (ID={uid})")
 
 async def relatorio_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -125,7 +118,7 @@ async def echo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     txt = escape_md_v2(update.message.text)
     await update.message.reply_text(f"Você disse: {txt}")
 
-# Registra handlers
+# registra handlers
 cmds = [
     ("start", start_cmd),
     ("menu", start_cmd),
@@ -141,17 +134,31 @@ for name, handler in cmds:
     application.add_handler(CommandHandler(name, handler))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
+# define comandos com descrições válidas
+command_list = [
+    BotCommand("start",        "Mostrar menu do bot"),
+    BotCommand("menu",         "Mostrar menu do bot"),
+    BotCommand("snipe",        "Iniciar sniper"),
+    BotCommand("stop",         "Parar sniper"),
+    BotCommand("sniperstatus", "Ver status do sniper"),
+    BotCommand("status",       "Exibir saldo ETH/WETH"),
+    BotCommand("ping",         "Verificar se está vivo"),
+    BotCommand("testnotify",   "Enviar notificação teste"),
+    BotCommand("relatorio",    "Gerar relatório de eventos"),
+]
+
 telegram_loop.run_until_complete(
-    app_bot.set_my_commands([BotCommand(n, h.__doc__ or "") for n, h in cmds])
+    app_bot.set_my_commands(command_list)
 )
 
+# inicia bot em background
 Thread(target=telegram_loop.run_forever, daemon=True).start()
-logger.info("🛰️ Telegram bot rodando em background")
+logger.info("Telegram bot rodando em background")
 
-# --- Discovery / Sniper orchestration ---
+# --- Discovery / Sniper Orquestração ---
 def iniciar_sniper():
     if is_discovery_running():
-        logger.info("⚠️ Sniper já ativo")
+        logger.info("Sniper já ativo")
         return
 
     def _cb(pair_address, token0, token1, dex_info):
@@ -161,11 +168,11 @@ def iniciar_sniper():
         )
 
     subscribe_new_pairs(callback=_cb)
-    logger.info("🟢 Sniper iniciado")
+    logger.info("Sniper iniciado")
 
 def parar_sniper():
     stop_discovery()
-    logger.info("🔴 Sniper parado")
+    logger.info("Sniper parado")
 
 def env_summary_text() -> str:
     addr = web3.eth.account.from_key(config["PRIVATE_KEY"]).address
@@ -180,10 +187,10 @@ def env_summary_text() -> str:
 def fetch_token() -> str:
     try:
         t = gerar_meu_token_externo()
-        logger.info("✅ Token Auth0 obtido")
+        logger.info("Token Auth0 obtido")
         return t
     except Exception as e:
-        logger.error("❌ Erro Auth0: %s", e, exc_info=True)
+        logger.error("Erro Auth0: %s", e, exc_info=True)
         return ""
 
 # --- Flask API ---
@@ -202,7 +209,6 @@ def require_auth(f):
         hdr = request.headers.get("Authorization", "")
         if not hdr.lower().startswith("bearer "):
             abort(401)
-        # TODO: validar JWT contra Auth0
         return f(*args, **kwargs)
     return inner
 
@@ -218,14 +224,11 @@ def webhook():
         return "ignored", 200
 
     upd = Update.de_json(data, app_bot)
-    asyncio.run_coroutine_threadsafe(
-        application.process_update(upd), telegram_loop
-    )
+    asyncio.run_coroutine_threadsafe(application.process_update(upd), telegram_loop)
     return "ok", 200
 
-# --- Graceful shutdown ---
+# --- Graceful Shutdown ---
 def _shutdown(signum, frame):
-    logger.info("Recebido signal %s, encerrando...", signum)
     parar_sniper()
     asyncio.run(application.shutdown())
     sys.exit(0)
@@ -241,5 +244,5 @@ if __name__ == "__main__":
         logger.error("PRIVATE_KEY inválida: %s", e)
         sys.exit(1)
 
-    logger.info("🚀 Iniciando Flask API na porta %s", PORT)
+    logger.info("Iniciando Flask API na porta %s", PORT)
     app.run(host="0.0.0.0", port=PORT, threaded=True)
