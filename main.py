@@ -46,29 +46,28 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- Conexão Web3 e verificação de DEXes ---
+# --- Web3 & DEX check ---
 web3 = Web3(Web3.HTTPProvider(RPC_URL))
 if not web3.is_connected():
     logger.error("Falha ao conectar no RPC %s", RPC_URL)
     sys.exit(1)
 
+# transforma DexConfig em dict antes de usar
 raw_dexes = config.get("DEXES", [])
 if not raw_dexes:
     logger.error("Nenhuma DEX configurada. Verifique variáveis DEX_1_*")
     sys.exit(1)
 
-# converte DexConfig (namedtuple/dataclass) em dicts para discovery
-dexes_dicts = []
+dex_dicts = []
 for dex in raw_dexes:
     if hasattr(dex, "_asdict"):
-        dexes_dicts.append(dex._asdict())
+        dex_dicts.append(dex._asdict())
     elif hasattr(dex, "__dict__"):
-        dexes_dicts.append(vars(dex))
+        dex_dicts.append(vars(dex))
     else:
-        dexes_dicts.append(dex)
-config["DEXES"] = dexes_dicts
+        dex_dicts.append(dex)
+config["DEXES"] = dex_dicts
 
-# instância ExchangeClient usando router do primeiro DEX dict
 exchange_client = ExchangeClient(config["DEXES"][0]["router"])
 
 # --- Telegram Bot Setup ---
@@ -79,6 +78,7 @@ application = ApplicationBuilder().token(TELE_TOKEN).build()
 app_bot = application.bot
 application.bot_data["start_time"] = time.time()
 
+# --- Auth0 token fetch ---
 def fetch_token() -> str:
     try:
         t = gerar_meu_token_externo()
@@ -88,15 +88,27 @@ def fetch_token() -> str:
         logger.error("❌ Erro Auth0: %s", e, exc_info=True)
         return ""
 
+# --- Command logging helper ---
 def log_cmd(name: str, update: Update):
     user = update.effective_user.username or update.effective_user.id
     logger.info("🛎 Comando /%s recebido de %s", name, user)
 
-# --- Handlers de comando Telegram ---
+# --- Build env summary without Markdown ---
+def env_summary_text() -> str:
+    addr = web3.eth.account.from_key(config["PRIVATE_KEY"]).address
+    return (
+        f"🔑 {addr}\n"
+        f"🌐 Chain ID: {CHAIN_ID}\n"
+        f"🔗 RPC: {RPC_URL}\n"
+        f"⏱ Disc Interval: {config['DISCOVERY_INTERVAL']}s\n"
+        f"🧪 Dry Run: {config['DRY_RUN']}"
+    )
+
+# --- Telegram command handlers ---
 async def start_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     log_cmd("start", update)
-    texto = (
-        "🎯 *Sniper Bot*\n\n"
+    menu = (
+        "🎯 Sniper Bot\n\n"
         "/snipe — iniciar sniper\n"
         "/stop — parar sniper\n"
         "/sniperstatus — status sniper\n"
@@ -104,18 +116,18 @@ async def start_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/ping — alive check\n"
         "/testnotify — notificação teste\n"
         "/menu — este menu\n"
-        "/relatorio — relatório de eventos\n\n"
-        "*Config atual:*\n"
+        "/relatorio — relatório\n\n"
+        "Config atual:\n"
         f"{env_summary_text()}"
     )
-    await update.message.reply_markdown_v2(texto)
+    await update.message.reply_text(menu)
 
 async def snipe_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     log_cmd("snipe", update)
     await update.message.reply_text("⚙️ Iniciando sniper...")
     token = fetch_token()
     if not token:
-        await update.message.reply_text("❌ Falha ao obter token Auth0")
+        await update.message.reply_text("❌ Falha ao obter token Auth0, veja logs")
     iniciar_sniper()
 
 async def stop_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -125,8 +137,8 @@ async def stop_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def sniper_status_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     log_cmd("sniperstatus", update)
-    msg = "🟢 Ativo" if is_discovery_running() else "🔴 Parado"
-    await update.message.reply_text(msg)
+    status = "🟢 Ativo" if is_discovery_running() else "🔴 Parado"
+    await update.message.reply_text(status)
 
 async def status_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     log_cmd("status", update)
@@ -137,14 +149,14 @@ async def status_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def ping_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     log_cmd("ping", update)
     up = int(time.time() - ctx.bot_data["start_time"])
-    await update.message.reply_text(f"pong 🏓\n⏱ Uptime: {datetime.timedelta(seconds=up)}")
+    await update.message.reply_text(f"pong 🏓\nUptime: {datetime.timedelta(seconds=up)}")
 
 async def testnotify_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     log_cmd("testnotify", update)
     ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     uid = uuid.uuid4().hex[:6]
-    text = f"✅ Teste 🕒{ts}\nID: `{uid}`"
-    await app_bot.send_message(chat_id=TELE_CHAT, text=text, parse_mode="MarkdownV2")
+    text = f"✅ Teste {ts}\nID: {uid}"
+    await app_bot.send_message(chat_id=TELE_CHAT, text=text)
     await update.message.reply_text(f"Enviado (ID={uid})")
 
 async def relatorio_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -156,7 +168,7 @@ async def echo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     txt = escape_md_v2(update.message.text)
     await update.message.reply_text(f"Você disse: {txt}")
 
-# registra os handlers
+# register handlers
 for name, handler in [
     ("start", start_cmd),
     ("menu", start_cmd),
@@ -169,19 +181,20 @@ for name, handler in [
     ("relatorio", relatorio_cmd),
 ]:
     application.add_handler(CommandHandler(name, handler))
+
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
-# --- Inscrição de comandos e webhook ---
+# set commands & webhook
 command_list = [
-    BotCommand("start",        "Mostrar menu do bot"),
-    BotCommand("menu",         "Mostrar menu do bot"),
+    BotCommand("start",        "Mostrar menu"),
+    BotCommand("menu",         "Mostrar menu"),
     BotCommand("snipe",        "Iniciar sniper"),
     BotCommand("stop",         "Parar sniper"),
-    BotCommand("sniperstatus", "Ver status do sniper"),
-    BotCommand("status",       "Exibir saldo ETH/WETH"),
-    BotCommand("ping",         "Verificar se está vivo"),
-    BotCommand("testnotify",   "Enviar notificação teste"),
-    BotCommand("relatorio",    "Gerar relatório de eventos"),
+    BotCommand("sniperstatus", "Status do sniper"),
+    BotCommand("status",       "Saldo ETH/WETH"),
+    BotCommand("ping",         "Verificar alive"),
+    BotCommand("testnotify",   "Notificação teste"),
+    BotCommand("relatorio",    "Relatório"),
 ]
 
 telegram_loop.run_until_complete(application.initialize())
@@ -194,7 +207,7 @@ if WEBHOOK_URL:
 Thread(target=telegram_loop.run_forever, daemon=True).start()
 logger.info("🚀 Telegram bot rodando em background")
 
-# --- Orquestração do Sniper ---
+# --- Sniper orchestration ---
 def iniciar_sniper():
     if is_discovery_running():
         logger.info("⚠️ Sniper já ativo")
@@ -212,16 +225,6 @@ def iniciar_sniper():
 def parar_sniper():
     stop_discovery()
     logger.info("🔴 Sniper parado")
-
-def env_summary_text() -> str:
-    addr = web3.eth.account.from_key(config["PRIVATE_KEY"]).address
-    return (
-        f"🔑 `{addr}`\n"
-        f"🌐 Chain ID: {CHAIN_ID}\n"
-        f"🔗 RPC: {RPC_URL}\n"
-        f"⏱ Disc Interval: {config['DISCOVERY_INTERVAL']}s\n"
-        f"🧪 Dry Run: {config['DRY_RUN']}"
-    )
 
 # --- Flask API ---
 app = Flask(__name__)
@@ -256,7 +259,7 @@ def webhook():
     asyncio.run_coroutine_threadsafe(application.process_update(upd), telegram_loop)
     return "ok", 200
 
-# --- Graceful shutdown ---
+# graceful shutdown
 def _shutdown(signum, frame):
     parar_sniper()
     asyncio.run(application.shutdown())
@@ -265,7 +268,6 @@ def _shutdown(signum, frame):
 for sig in (signal.SIGINT, signal.SIGTERM):
     signal.signal(sig, _shutdown)
 
-# --- Entry point ---
 if __name__ == "__main__":
     try:
         _ = web3.eth.account.from_key(config["PRIVATE_KEY"]).address
