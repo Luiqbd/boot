@@ -3,32 +3,46 @@
 import json
 import logging
 import time
-from typing import Dict, List, Optional, Tuple
-from decimal import Decimal
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
-from web3 import Web3
 from eth_account import Account
+from web3 import Web3
+from web3.exceptions import BadFunctionCallOutput
 
 from config import config
 
 logger = logging.getLogger(__name__)
 
 
-def _is_empty_code(code: bytes) -> bool:
+def _codigo_vazio(codigo: bytes) -> bool:
     """Retorna True se não houver bytecode no endereço (contrato não implantado)."""
-    return code is None or len(code) == 0
+    return codigo is None or len(codigo) == 0
 
 
 class ExchangeClient:
     """
     Cliente para interagir com routers Uniswap/PancakeSwap (v2/v3).
-    Suporta approval de token, swaps ETH→token e token→ETH, controle de slippage
-    e dry-run para testes sem enviar transações reais.
+
+    Funcionalidades:
+      - swap exato ETH→token e token→ETH
+      - approval condicional de token
+      - cálculo de slippage (bps) e deadlines
+      - dry-run para testes (TX fake)
+      - cache interno de decimals e allowance
     """
 
+    _router_abi: Dict[str, Any] = {}
+    _erc20_abi: Dict[str, Any] = {}
+    _abis_carregados = False
+
     def __init__(self, router_address: str):
-        # Inicializa conexão Web3 e conta
+        # Conexão Web3
         self.web3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
+        if not self.web3.isConnected():
+            raise ConnectionError(f"Não conectado a {config['RPC_URL']}")
+
+        # Conta e carteira
         self.account = Account.from_key(config["PRIVATE_KEY"])
         self.wallet = self.account.address
 
@@ -37,118 +51,148 @@ class ExchangeClient:
         if env_wallet:
             chk = Web3.to_checksum_address(env_wallet)
             if chk != Web3.to_checksum_address(self.wallet):
-                raise ValueError("WALLET_ADDRESS difere da PRIVATE_KEY")
+                raise ValueError("WALLET_ADDRESS diferente da PRIVATE_KEY")
 
-        # Verifica implantação do router on-chain
+        # Endereço do router
         self.router_address = Web3.to_checksum_address(router_address)
         code = self.web3.eth.get_code(self.router_address)
-        if _is_empty_code(code):
+        if _codigo_vazio(code):
             raise ValueError(f"Router {self.router_address} não implantado nesta rede")
 
-        # Carrega ABIs
-        with open("abis/uniswap_router.json", "r") as f:
-            self.router_abi = json.load(f)
-        with open("abis/erc20.json", "r") as f:
-            self.erc20_abi = json.load(f)
+        # Carrega ABIs na primeira instância
+        if not ExchangeClient._abis_carregados:
+            base = Path(__file__).parent / "abis"
+            with open(base / "uniswap_router.json") as f:
+                ExchangeClient._router_abi = json.load(f)
+            with open(base / "erc20.json") as f:
+                ExchangeClient._erc20_abi = json.load(f)
+            ExchangeClient._abis_carregados = True
 
+        # Contrato do router
         self.router = self.web3.eth.contract(
             address=self.router_address,
-            abi=self.router_abi
+            abi=ExchangeClient._router_abi
         )
-        # Cache interno para decimals de tokens
-        self._decimals_cache: Dict[str, int] = {}
 
-    def _gas_params(self) -> Dict[str, int]:
-        base_fee = int(self.web3.eth.gas_price)
+        # Cache interno
+        self._decimals_cache: Dict[str, Tuple[int, float]] = {}
+        self._allowance_cache: Dict[Tuple[str, str], Tuple[int, float]] = {}
+        self._cache_ttl = int(config.get("CACHE_TTL_SEC", 300))
+
+    def _parametros_gas(self) -> Dict[str, int]:
+        """Calcula maxFeePerGas e maxPriorityFeePerGas."""
+        base_fee = self.web3.eth.gas_price
         return {
             "maxFeePerGas": int(base_fee * 2),
             "maxPriorityFeePerGas": int(base_fee * 0.1),
         }
 
     def _nonce(self) -> int:
+        """Retorna nonce pendente para a carteira."""
         return self.web3.eth.get_transaction_count(self.wallet, "pending")
 
-    def _build_tx(
+    def _construir_tx(
         self,
         fn_call,
-        tx_overrides: dict,
-        default_gas: int
-    ) -> dict:
+        overrides: Dict[str, Any],
+        gas_padrao: int
+    ) -> Dict[str, Any]:
         """
-        Constrói transação, estimando gas ou usando valor padrão.
+        Constrói e estima gas para a transação.
+        Usa gas_padrao se estimate_gas falhar.
         """
-        tx = fn_call.build_transaction(tx_overrides)
+        tx = fn_call.build_transaction(overrides)
         try:
-            estimated = self.web3.eth.estimate_gas(tx)
-            tx["gas"] = int(estimated * 1.2)
+            estimado = self.web3.eth.estimate_gas(tx)
+            tx["gas"] = int(estimado * 1.2)
         except Exception as e:
-            logger.warning(f"Estimativa de gas falhou, usando {default_gas}: {e}")
-            tx["gas"] = default_gas
+            logger.warning(f"Estimativa de gas falhou, usando {gas_padrao}: {e}")
+            tx["gas"] = gas_padrao
         return tx
 
-    def _sign_and_send(self, tx: dict) -> str:
+    def _assinar_enviar(self, tx: Dict[str, Any]) -> str:
+        """Assina e envia a transação, retorna tx_hash hex."""
         signed = self.web3.eth.account.sign_transaction(tx, self.account.key)
-        tx_hash = self.web3.eth.send_raw_transaction(signed.rawTransaction)
-        return self.web3.to_hex(tx_hash)
+        txh = self.web3.eth.send_raw_transaction(signed.rawTransaction)
+        return self.web3.to_hex(txh)
 
     def get_token_decimals(self, token_address: str) -> int:
         """
-        Retorna o número de decimais de um token ERC20, com cache interno.
+        Retorna decimais de um token ERC20, com cache TTL.
         """
-        token_address = Web3.to_checksum_address(token_address)
-        if token_address in self._decimals_cache:
-            return self._decimals_cache[token_address]
+        addr = Web3.to_checksum_address(token_address)
+        agora = time.time()
 
+        # Retorna cache se válido
+        if addr in self._decimals_cache:
+            dec, ts = self._decimals_cache[addr]
+            if agora - ts < self._cache_ttl:
+                return dec
+
+        # Consulta on-chain ou assume 18
         try:
-            token = self.web3.eth.contract(
-                address=token_address,
-                abi=self.erc20_abi
-            )
-            decimals = token.functions.decimals().call()
-        except Exception as e:
-            logger.warning(f"Não foi possível obter decimals de {token_address}; assumindo 18: {e}")
-            decimals = 18
+            token = self.web3.eth.contract(address=addr, abi=ExchangeClient._erc20_abi)
+            dec = token.functions.decimals().call()
+        except (BadFunctionCallOutput, Exception) as e:
+            logger.warning(f"Erro ao obter decimals de {addr}: {e}; assumindo 18")
+            dec = 18
 
-        self._decimals_cache[token_address] = int(decimals)
-        return int(decimals)
+        self._decimals_cache[addr] = (int(dec), agora)
+        return int(dec)
 
     def approve_token(self, token_address: str, amount: int) -> str:
         """
-        Envia transação de approve se a allowance for menor que o valor desejado.
+        Executa approve se allowance < amount.
+        Retorna tx_hash, '0xALLOWOK' se já aprovado ou fake se dry-run.
         """
-        token_address = Web3.to_checksum_address(token_address)
-
+        addr = Web3.to_checksum_address(token_address)
         if config.get("DRY_RUN"):
-            logger.info("[DRY_RUN] approve_token skip")
+            logger.info("[DRY_RUN] approve_token ignorado")
             return "0xDRYRUN"
 
-        token = self.web3.eth.contract(address=token_address, abi=self.erc20_abi)
-        allowance = token.functions.allowance(self.wallet, self.router_address).call()
-        if allowance >= amount:
+        agora = time.time()
+        key = (addr, self.router_address)
+
+        # Consulta allowance com cache
+        if key in self._allowance_cache:
+            allowance, ts = self._allowance_cache[key]
+            if agora - ts < self._cache_ttl:
+                current = allowance
+            else:
+                current = None
+        else:
+            current = None
+
+        if current is None:
+            token = self.web3.eth.contract(address=addr, abi=ExchangeClient._erc20_abi)
+            current = token.functions.allowance(self.wallet, self.router_address).call()
+            self._allowance_cache[key] = (current, agora)
+
+        if current >= amount:
             return "0xALLOWOK"
 
         fn = token.functions.approve(self.router_address, amount)
-        tx = self._build_tx(
+        tx = self._construir_tx(
             fn_call=fn,
-            tx_overrides={
+            overrides={
                 "from": self.wallet,
                 "chainId": int(config["CHAIN_ID"]),
-                **self._gas_params(),
+                **self._parametros_gas(),
                 "nonce": self._nonce(),
             },
-            default_gas=120_000
+            gas_padrao=120_000
         )
-        return self._sign_and_send(tx)
+        return self._assinar_enviar(tx)
 
-    def _amount_out_min(
+    def _calcular_amount_out_min(
         self,
         amount_in: int,
         path: List[str],
         slippage_bps: Optional[int]
     ) -> Tuple[int, int]:
         """
-        Consulta getAmountsOut e aplica slippage (bps) para definir amountOutMin.
-        Retorna (amountOutMin, expected).
+        Consulta getAmountsOut e aplica slippage.
+        Retorna (amountOutMin, expectedOut).
         """
         try:
             amounts = self.router.functions.getAmountsOut(amount_in, path).call()
@@ -171,36 +215,37 @@ class ExchangeClient:
         slippage_bps: Optional[int] = None
     ) -> str:
         """
-        Swap ETH → token. Se amount_out_min não informado, calcula com getAmountsOut.
+        Swap ETH → token. Calcula amountOutMin se não informado.
+        Retorna tx_hash ou fake se dry-run.
         """
-        path = [Web3.to_checksum_address(token_in_weth),
-                Web3.to_checksum_address(token_out)]
+        path = [
+            Web3.to_checksum_address(token_in_weth),
+            Web3.to_checksum_address(token_out),
+        ]
 
         if not amount_out_min or amount_out_min <= 0:
-            amount_out_min, _ = self._amount_out_min(amount_in_wei, path, slippage_bps)
+            amount_out_min, _ = self._calcular_amount_out_min(amount_in_wei, path, slippage_bps)
 
         if config.get("DRY_RUN"):
-            logger.info("[DRY_RUN] buy_token skip")
+            logger.info("[DRY_RUN] buy_token ignorado")
             return "0xDRYRUN"
 
-        deadline = int(self.web3.eth.get_block("latest")["timestamp"]) + \
-                   int(config.get("TX_DEADLINE_SEC", 300))
-
+        deadline = self.web3.eth.get_block("latest")["timestamp"] + int(config.get("TX_DEADLINE_SEC", 300))
         fn = self.router.functions.swapExactETHForTokens(
             amount_out_min, path, self.wallet, deadline
         )
-        tx = self._build_tx(
+        tx = self._construir_tx(
             fn_call=fn,
-            tx_overrides={
+            overrides={
                 "from": self.wallet,
                 "value": amount_in_wei,
                 "chainId": int(config["CHAIN_ID"]),
-                **self._gas_params(),
+                **self._parametros_gas(),
                 "nonce": self._nonce(),
             },
-            default_gas=350_000
+            gas_padrao=350_000
         )
-        return self._sign_and_send(tx)
+        return self._assinar_enviar(tx)
 
     def sell_token(
         self,
@@ -211,35 +256,36 @@ class ExchangeClient:
         slippage_bps: Optional[int] = None
     ) -> str:
         """
-        Swap token → ETH. Faz approve se necessário e calcula amountOutMin se não informado.
+        Swap token → ETH. Faz approve se necessário.
+        Retorna tx_hash ou fake se dry-run.
         """
-        path = [Web3.to_checksum_address(token_in),
-                Web3.to_checksum_address(token_out_weth)]
+        path = [
+            Web3.to_checksum_address(token_in),
+            Web3.to_checksum_address(token_out_weth),
+        ]
 
         if not amount_out_min or amount_out_min <= 0:
-            amount_out_min, _ = self._amount_out_min(amount_in, path, slippage_bps)
+            amount_out_min, _ = self._calcular_amount_out_min(amount_in, path, slippage_bps)
 
         if config.get("DRY_RUN"):
-            logger.info("[DRY_RUN] sell_token skip")
+            logger.info("[DRY_RUN] sell_token ignorado")
             return "0xDRYRUN"
 
-        # Garante aprovação
+        # Garantir approval antes de vender
         self.approve_token(token_in, amount_in)
 
-        deadline = int(self.web3.eth.get_block("latest")["timestamp"]) + \
-                   int(config.get("TX_DEADLINE_SEC", 300))
-
+        deadline = self.web3.eth.get_block("latest")["timestamp"] + int(config.get("TX_DEADLINE_SEC", 300))
         fn = self.router.functions.swapExactTokensForETH(
             amount_in, amount_out_min, path, self.wallet, deadline
         )
-        tx = self._build_tx(
+        tx = self._construir_tx(
             fn_call=fn,
-            tx_overrides={
+            overrides={
                 "from": self.wallet,
                 "chainId": int(config["CHAIN_ID"]),
-                **self._gas_params(),
+                **self._parametros_gas(),
                 "nonce": self._nonce(),
             },
-            default_gas=400_000
+            gas_padrao=400_000
         )
-        return self._sign_and_send(tx)
+        return self._assinar_enviar(tx)
