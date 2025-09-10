@@ -12,6 +12,7 @@ from web3.exceptions import BadFunctionCallOutput
 
 logger = logging.getLogger(__name__)
 
+# ABI mínimo para ler decimals de tokens ERC20
 ERC20_DECIMALS_ABI = [{
     "type": "function",
     "name": "decimals",
@@ -23,108 +24,106 @@ ERC20_DECIMALS_ABI = [{
 
 class TradeExecutor:
     """
-    Orquestra ordens de compra e venda com:
-    - deduplicação de chamadas
-    - validação de parâmetros (endereços, valores ETH/tokens)
-    - suporte a dry-run para testes (gera hash fake único)
+    Gerencia ordens de compra e venda:
+      - valida endereços e valores;
+      - previne duplicatas no curto prazo;
+      - cache de decimais de tokens;
+      - suporte a dry-run (TX fake).
     """
 
     def __init__(
         self,
-        exchange_client,
+        exchange_client: Any,
         dry_run: bool = False,
         dedupe_ttl_sec: int = 5,
         decimals_ttl_sec: int = 300
-    ) -> None:
+    ):
         self.client = exchange_client
         self.dry_run = dry_run
-
-        # Controle de duplicatas (side, token_in, token_out) -> timestamp
         self._lock = RLock()
         self._recent: Dict[Tuple[str, str, str], int] = {}
         self._dedupe_ttl = dedupe_ttl_sec
-
-        # Cache de decimais: token_address -> (decimals, last_fetched_ts)
-        self._decimals_cache: Dict[str, Tuple[int, int]] = {}
         self._decimals_ttl = decimals_ttl_sec
+        self._decimals_cache: Dict[str, Tuple[int, int]] = {}
 
-    def _now(self) -> int:
+    def _agora(self) -> int:
         return int(time.time())
 
-    def _cleanup_recent(self) -> None:
-        cutoff = self._now() - self._dedupe_ttl
+    def _limpar_duplicatas(self) -> None:
+        limite = self._agora() - self._dedupe_ttl
         with self._lock:
-            stale = [k for k, t in self._recent.items() if t < cutoff]
-            for k in stale:
+            chaves = [k for k, ts in self._recent.items() if ts < limite]
+            for k in chaves:
                 self._recent.pop(k, None)
 
-    def _normalize_addr(self, addr: str) -> str:
+    def _normalizar_endereco(self, addr: str) -> str:
         if not isinstance(addr, str):
-            raise ValueError(f"Endereço deve ser string, recebeu {type(addr)}")
+            raise ValueError(f"Endereço deve ser string, não {type(addr)}")
         if not Web3.is_address(addr):
             raise ValueError(f"Endereço inválido: {addr}")
         return Web3.to_checksum_address(addr)
 
-    def _make_key(self, side: str, token_in: str, token_out: str) -> Tuple[str, str, str]:
+    def _chave_duplicata(self, lado: str, token_in: str, token_out: str) -> Tuple[str, str, str]:
         return (
-            side,
-            self._normalize_addr(token_in),
-            self._normalize_addr(token_out)
+            lado,
+            self._normalizar_endereco(token_in),
+            self._normalizar_endereco(token_out)
         )
 
-    def _is_duplicate(self, side: str, token_in: str, token_out: str) -> bool:
-        self._cleanup_recent()
-        key = self._make_key(side, token_in, token_out)
-        now = self._now()
+    def _eh_duplicata(self, lado: str, token_in: str, token_out: str) -> bool:
+        self._limpar_duplicatas()
+        chave = self._chave_duplicata(lado, token_in, token_out)
+        agora = self._agora()
         with self._lock:
-            last = self._recent.get(key)
-            if last and (now - last) < self._dedupe_ttl:
+            ts = self._recent.get(chave)
+            if ts and (agora - ts) < self._dedupe_ttl:
                 return True
-            self._recent[key] = now
+            self._recent[chave] = agora
             return False
 
-    def _to_wei_eth(self, amount_eth: Union[str, float, Decimal]) -> int:
+    def _para_wei_eth(self, valor_eth: Union[str, float, Decimal]) -> int:
         try:
-            amt = Decimal(str(amount_eth))
+            amt = Decimal(str(valor_eth))
             if amt <= 0:
-                raise ValueError("deve ser > 0")
+                raise ValueError("Valor deve ser > 0")
             return self.client.web3.to_wei(amt, "ether")
         except (InvalidOperation, ValueError) as e:
-            raise ValueError(f"ETH inválido ({amount_eth}): {e}")
+            raise ValueError(f"ETH inválido ({valor_eth}): {e}")
 
-    def _fetch_decimals(self, token_address: str) -> int:
-        now = self._now()
-        addr = self._normalize_addr(token_address)
+    def _buscar_decimais(self, token_addr: str) -> int:
+        agora = self._agora()
+        addr_norm = self._normalizar_endereco(token_addr)
 
-        cached = self._decimals_cache.get(addr)
-        if cached:
-            dec, ts = cached
-            if now - ts < self._decimals_ttl:
+        # retorna cache se válido
+        if addr_norm in self._decimals_cache:
+            dec, ts = self._decimals_cache[addr_norm]
+            if agora - ts < self._decimals_ttl:
                 return dec
 
+        # busca via client ou ABI fallback
         if hasattr(self.client, "get_token_decimals"):
-            dec = int(self.client.get_token_decimals(addr))
+            dec = int(self.client.get_token_decimals(addr_norm))
         else:
-            contract = self.client.web3.eth.contract(address=addr, abi=ERC20_DECIMALS_ABI)
+            contrato = self.client.web3.eth.contract(address=addr_norm, abi=ERC20_DECIMALS_ABI)
             try:
-                dec = int(contract.functions.decimals().call())
+                dec = int(contrato.functions.decimals().call())
             except BadFunctionCallOutput as e:
-                raise ValueError(f"Falha ao ler decimals em {addr}: {e}")
+                raise ValueError(f"Falha ao ler decimals de {addr_norm}: {e}")
 
-        self._decimals_cache[addr] = (dec, now)
+        self._decimals_cache[addr_norm] = (dec, agora)
         return dec
 
-    def _to_base_units(self, amount_tokens: Union[str, float, Decimal], decimals: int) -> int:
+    def _para_unidade_base(self, tokens: Union[str, float, Decimal], decimais: int) -> int:
         try:
-            amt = Decimal(str(amount_tokens))
+            amt = Decimal(str(tokens))
             if amt <= 0:
-                raise ValueError("deve ser > 0")
-            scale = Decimal(10) ** decimals
-            return int(amt * scale)
+                raise ValueError("Tokens deve ser > 0")
+            escala = Decimal(10) ** decimais
+            return int(amt * escala)
         except (InvalidOperation, ValueError) as e:
-            raise ValueError(f"Tokens inválido ({amount_tokens}): {e}")
+            raise ValueError(f"Tokens inválido ({tokens}): {e}")
 
-    def buy(
+    def comprar(
         self,
         token_in: str,
         token_out: str,
@@ -132,54 +131,39 @@ class TradeExecutor:
         amount_out_min: Optional[int] = None
     ) -> Optional[str]:
         """
-        Executa ordem de compra de token_out usando WETH (token_in).
-        Retorna hash da tx (real ou fake) ou None em caso de duplicata/erro.
+        Compra token_out usando WETH (token_in).
+        Retorna tx_hash real ou fake (dry_run) ou None em caso de duplicata/erro.
         """
-        if self._is_duplicate("buy", token_in, token_out):
-            logger.warning(
-                "Compra duplicada — ignorada",
-                extra={"side": "buy", "in": token_in, "out": token_out}
-            )
+        if self._eh_duplicata("buy", token_in, token_out):
+            logger.warning(f"Compra duplicada ignorada: {token_in}->{token_out}")
             return None
 
         try:
-            amt_wei = self._to_wei_eth(amount_eth)
+            wei = self._para_wei_eth(amount_eth)
         except ValueError as e:
-            logger.error(
-                f"Falha validação ETH: {e}",
-                exc_info=True,
-                extra={"amount_eth": amount_eth}
-            )
+            logger.error(f"Falha validação ETH: {e}", exc_info=True)
             return None
 
         if self.dry_run:
-            fake_hash = f"0xDRY{uuid.uuid4().hex[:12]}"
-            logger.info(
-                f"[DRY_RUN] Simulando BUY {token_in}->{token_out}, ETH={amount_eth} → TX {fake_hash}"
-            )
-            return fake_hash
+            fake = f"0xDRY{uuid.uuid4().hex[:12]}"
+            logger.info(f"[DRY_RUN] BUY {token_in}->{token_out}, ETH={amount_eth} → TX {fake}")
+            return fake
 
         try:
             txh = self.client.buy_token(
                 token_in_weth=token_in,
                 token_out=token_out,
-                amount_in_wei=amt_wei,
+                amount_in_wei=wei,
                 amount_out_min=amount_out_min
             )
             tx_hex = txh.hex() if hasattr(txh, "hex") else str(txh)
-            logger.info(
-                f"Compra enviada {token_in}->{token_out}, ETH={amount_eth} → TX {tx_hex}"
-            )
+            logger.info(f"Compra enviada {token_in}->{token_out}, ETH={amount_eth} → TX {tx_hex}")
             return tx_hex
         except Exception as e:
-            logger.error(
-                "Erro ao comprar token",
-                exc_info=True,
-                extra={"pair": f"{token_in}->{token_out}"}
-            )
+            logger.error(f"Erro ao enviar compra {token_in}->{token_out}", exc_info=True)
             return None
 
-    def sell(
+    def vender(
         self,
         token_in: str,
         token_out: str,
@@ -187,50 +171,35 @@ class TradeExecutor:
         amount_out_min: Optional[int] = None
     ) -> Optional[str]:
         """
-        Executa ordem de venda de token_in para WETH (token_out).
-        Retorna hash da tx (real ou fake) ou None em caso de duplicata/erro.
+        Vende token_in para WETH (token_out).
+        Retorna tx_hash real ou fake (dry_run) ou None em caso de duplicata/erro.
         """
-        if self._is_duplicate("sell", token_in, token_out):
-            logger.warning(
-                "Venda duplicada — ignorada",
-                extra={"side": "sell", "in": token_in, "out": token_out}
-            )
+        if self._eh_duplicata("sell", token_in, token_out):
+            logger.warning(f"Venda duplicada ignorada: {token_in}->{token_out}")
             return None
 
         try:
-            decimals = self._fetch_decimals(token_in)
-            amt_base = self._to_base_units(amount_tokens, decimals)
+            dec = self._buscar_decimais(token_in)
+            base_units = self._para_unidade_base(amount_tokens, dec)
         except ValueError as e:
-            logger.error(
-                f"Falha preparação de venda: {e}",
-                exc_info=True,
-                extra={"amount_tokens": amount_tokens}
-            )
+            logger.error(f"Falha preparação venda: {e}", exc_info=True)
             return None
 
         if self.dry_run:
-            fake_hash = f"0xDRY{uuid.uuid4().hex[:12]}"
-            logger.info(
-                f"[DRY_RUN] Simulando SELL {token_in}->{token_out}, tokens={amount_tokens} → TX {fake_hash}"
-            )
-            return fake_hash
+            fake = f"0xDRY{uuid.uuid4().hex[:12]}"
+            logger.info(f"[DRY_RUN] SELL {token_in}->{token_out}, tokens={amount_tokens} → TX {fake}")
+            return fake
 
         try:
             txh = self.client.sell_token(
                 token_in=token_in,
                 token_out_weth=token_out,
-                amount_in_base_units=amt_base,
+                amount_in_base_units=base_units,
                 amount_out_min=amount_out_min
             )
             tx_hex = txh.hex() if hasattr(txh, "hex") else str(txh)
-            logger.info(
-                f"Venda enviada {token_in}->{token_out}, tokens={amount_tokens} → TX {tx_hex}"
-            )
+            logger.info(f"Venda enviada {token_in}->{token_out}, tokens={amount_tokens} → TX {tx_hex}")
             return tx_hex
         except Exception as e:
-            logger.error(
-                "Erro ao vender token",
-                exc_info=True,
-                extra={"pair": f"{token_in}->{token_out}"}
-            )
+            logger.error(f"Erro ao enviar venda {token_in}->{token_out}", exc_info=True)
             return None
