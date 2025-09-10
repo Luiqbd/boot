@@ -1,3 +1,5 @@
+# strategy_sniper.py
+
 import asyncio
 import logging
 import traceback
@@ -31,7 +33,10 @@ configure_rate_limiter_from_config(config)
 
 # Cliente Telegram (bot + alert) e chat ID
 BOT   = Bot(token=config["TELEGRAM_TOKEN"])
-ALERT = TelegramAlert(token=config["TELEGRAM_TOKEN"])
+ALERT = TelegramAlert(
+    bot=BOT,
+    chat_id=config["TELEGRAM_CHAT_ID"]
+)
 CHAT  = config["TELEGRAM_CHAT_ID"]
 
 # Intervalos para dedupe de pares e mensagens
@@ -45,7 +50,7 @@ _processed_pairs: dict[Tuple[str, str, str], float] = {}
 def _notify(texto: str, via_alert: bool = False):
     """
     Envia mensagem escapando MarkdownV2 e fazendo dedupe.
-    via_alert=True usa TelegramAlert, senão Bot.
+    via_alert=True usa TelegramAlert.send, senão Bot.send_message.
     """
     agora = time()
     chave = hash(texto)
@@ -55,9 +60,14 @@ def _notify(texto: str, via_alert: bool = False):
     last[chave] = agora
     _notify._last_msgs = last
 
-    alvo = ALERT if via_alert else BOT
+    if via_alert:
+        # TelegramAlert.send já faz escape e chunking
+        ALERT.send(texto)
+        return
+
+    # envio padrão com Bot
     txt = escape_md_v2(texto)
-    coro = alvo.send_message(chat_id=CHAT, text=txt, parse_mode="MarkdownV2")
+    coro = BOT.send_message(chat_id=CHAT, text=txt, parse_mode="MarkdownV2")
     try:
         loop = asyncio.get_running_loop()
         loop.create_task(coro)
@@ -89,7 +99,10 @@ class StrategySniper:
 
         # 1) pausa por rate limit
         if rate_limiter.is_paused():
-            risk_manager.record("pair_skipped", "API pausada", pair, None, nome, None, config["DRY_RUN"])
+            risk_manager.record(
+                "pair_skipped", "API pausada",
+                pair, None, nome, None, config["DRY_RUN"]
+            )
             _notify("⏸️ Sniper pausado por limite de API.", via_alert=True)
             return
 
@@ -101,7 +114,10 @@ class StrategySniper:
         _processed_pairs[key] = agora
 
         log.info(f"[NOVO PAR] {nome} {pair} {t0}/{t1}")
-        risk_manager.record("pair_detected", "Novo par detectado", pair, None, nome, None, config["DRY_RUN"])
+        risk_manager.record(
+            "pair_detected", "Novo par detectado",
+            pair, None, nome, None, config["DRY_RUN"]
+        )
 
         # 3) configuração inicial e filtros
         try:
@@ -110,12 +126,17 @@ class StrategySniper:
             versao = dex.detect_version(pair)
 
             # 3.1) liquidez
-            liq = (max(*dex._get_reserves(pair)) 
-                   if versao == DexVersion.V2 
-                   else dex._get_liquidity_v3(pair))
+            liq = (
+                max(*dex._get_reserves(pair))
+                if versao == DexVersion.V2
+                else dex._get_liquidity_v3(pair)
+            )
             if liq < self.min_liq:
                 msg = f"Liquidez {liq:.4f} < mínimo {self.min_liq}"
-                risk_manager.record("pair_skipped", msg, pair, target, "liq_check", None, config["DRY_RUN"])
+                risk_manager.record(
+                    "pair_skipped", msg,
+                    pair, target, "liq_check", None, config["DRY_RUN"]
+                )
                 _notify(f"⚠️ Skip liquidez: {msg}", via_alert=True)
                 return
 
@@ -142,34 +163,57 @@ class StrategySniper:
 
             # 3.4) taxa
             exch = ExchangeClient(router_address=dex_info.router)
-            if has_high_tax(exch, target, base, self.w3.toWei(self.trade_size, "ether"), self.max_tax_bps):
-                risk_manager.record("pair_skipped", "Taxa alta", pair, target, "tax_check", None, config["DRY_RUN"])
+            if has_high_tax(
+                exch, target, base,
+                self.w3.toWei(self.trade_size, "ether"),
+                self.max_tax_bps
+            ):
+                risk_manager.record(
+                    "pair_skipped", "Taxa alta",
+                    pair, target, "tax_check", None, config["DRY_RUN"]
+                )
                 _notify(f"⚠️ Skip taxa > {self.max_tax_bps/100:.1f}%", via_alert=True)
                 return
 
             # 3.5) contrato verificado
-            if config.get("BLOCK_UNVERIFIED", False) and not is_contract_verified(target, config["ETHERSCAN_API_KEY"]):
-                risk_manager.record("pair_skipped", "Contrato não verificado", pair, target, "verify_check", None, config["DRY_RUN"])
+            if config.get("BLOCK_UNVERIFIED", False) and not is_contract_verified(
+                target, config["ETHERSCAN_API_KEY"]
+            ):
+                risk_manager.record(
+                    "pair_skipped", "Contrato não verificado",
+                    pair, target, "verify_check", None, config["DRY_RUN"]
+                )
                 _notify("🚫 Skip contrato não verificado", via_alert=True)
                 return
 
             # 3.6) concentração de holders
-            if is_token_concentrated(target, self.top_holder_limit, config["ETHERSCAN_API_KEY"]):
+            if is_token_concentrated(
+                target, self.top_holder_limit, config["ETHERSCAN_API_KEY"]
+            ):
                 msg = f"Concentração > {self.top_holder_limit:.1f}%"
-                risk_manager.record("pair_skipped", msg, pair, target, "concentration_check", None, config["DRY_RUN"])
+                risk_manager.record(
+                    "pair_skipped", msg,
+                    pair, target, "concentration_check", None, config["DRY_RUN"]
+                )
                 _notify(f"🚫 Skip {msg}", via_alert=True)
                 return
 
         except Exception as e:
             tb = traceback.format_exc()
             log.error(f"Erro filtros iniciais: {e}", exc_info=True)
-            risk_manager.record("error", str(e), pair, target, "filter_setup", None, config["DRY_RUN"])
+            risk_manager.record(
+                "error", str(e),
+                pair, target, "filter_setup", None, config["DRY_RUN"]
+            )
             _notify(f"*❌ Erro filtros:* `{e}`\n```{tb}```", via_alert=True)
             return
 
         # 4) tentativa de compra
         try:
-            risk_manager.record("buy_attempt", "Tentativa de compra", pair, target, "buy_phase", None, config["DRY_RUN"])
+            risk_manager.record(
+                "buy_attempt", "Tentativa de compra",
+                pair, target, "buy_phase", None, config["DRY_RUN"]
+            )
             exch2 = ExchangeClient(router_address=dex_info.router)
             te   = TradeExecutor(exchange_client=exch2, dry_run=config["DRY_RUN"])
             safe = SafeTradeExecutor(executor=te, risk_manager=risk_manager)
@@ -185,18 +229,27 @@ class StrategySniper:
             )
             if not tx_hash:
                 motivo = risk_manager.last_block_reason or "Desconhecido"
-                risk_manager.record("buy_failed", motivo, pair, target, "buy_phase", None, config["DRY_RUN"])
+                risk_manager.record(
+                    "buy_failed", motivo,
+                    pair, target, "buy_phase", None, config["DRY_RUN"]
+                )
                 _notify(f"🚫 Compra falhou: {motivo}", via_alert=True)
                 return
 
-            risk_manager.record("buy_success", "Compra realizada", pair, target, "buy_phase", tx_hash, config["DRY_RUN"])
+            risk_manager.record(
+                "buy_success", "Compra realizada",
+                pair, target, "buy_phase", tx_hash, config["DRY_RUN"]
+            )
             risk_manager.register_trade(True, pair, "buy", int(time()))
             _notify(f"✅ Compra OK\nToken: `{target}`\nTX: `{tx_hash}`", via_alert=True)
 
         except Exception as e:
             tb = traceback.format_exc()
             log.error(f"Erro na compra: {e}", exc_info=True)
-            risk_manager.record("buy_failed", str(e), pair, target, "buy_phase", None, config["DRY_RUN"])
+            risk_manager.record(
+                "buy_failed", str(e),
+                pair, target, "buy_phase", None, config["DRY_RUN"]
+            )
             _notify(f"*🚫 Exceção compra:* `{e}`\n```{tb}```", via_alert=True)
             return
 
@@ -209,7 +262,14 @@ class StrategySniper:
         c1 = self.w3.toChecksumAddress(t1)
         return (self.weth, c1) if c0 == self.weth else (self.weth, c0)
 
-    async def _monitorar_venda(self, dex: DexClient, pair: str, base: str, target: str, entry: Decimal):
+    async def _monitorar_venda(
+        self,
+        dex: DexClient,
+        pair: str,
+        base: str,
+        target: str,
+        entry: Decimal
+    ):
         """
         Aguarda condições de take-profit/trailing/stop-loss e vende.
         """
@@ -229,15 +289,22 @@ class StrategySniper:
                 highest = preco_atual
                 stop_price = highest * (1 - self.trail_pct)
 
-            if preco_atual >= tp_price or preco_atual <= stop_price or preco_atual <= hard_stop:
-                bal = get_token_balance(ExchangeClient(router_address=dex.router), target)
+            if (
+                preco_atual >= tp_price
+                or preco_atual <= stop_price
+                or preco_atual <= hard_stop
+            ):
+                bal = get_token_balance(
+                    ExchangeClient(router_address=dex.router),
+                    target
+                )
                 if bal <= 0:
                     break
 
                 try:
                     exch3 = ExchangeClient(router_address=dex.router)
-                    te2  = TradeExecutor(exchange_client=exch3, dry_run=config["DRY_RUN"])
-                    safe2= SafeTradeExecutor(executor=te2, risk_manager=risk_manager)
+                    te2   = TradeExecutor(exchange_client=exch3, dry_run=config["DRY_RUN"])
+                    safe2 = SafeTradeExecutor(executor=te2, risk_manager=risk_manager)
 
                     tx_s = safe2.sell(
                         token_in=target,
@@ -247,18 +314,27 @@ class StrategySniper:
                         last_trade_price=entry
                     )
                     if tx_s:
-                        risk_manager.record("sell_success","Venda realizada",pair,target,"sell_phase",tx_s,config["DRY_RUN"])
+                        risk_manager.record(
+                            "sell_success", "Venda realizada",
+                            pair, target, "sell_phase", tx_s, config["DRY_RUN"]
+                        )
                         risk_manager.register_trade(True, pair, "sell", int(time()))
                         _notify(f"💰 Venda OK\nToken: `{target}`\nTX: `{tx_s}`", via_alert=True)
                         sold = True
                     else:
                         motivo = risk_manager.last_block_reason or "Desconhecido"
-                        risk_manager.record("sell_failed",motivo,pair,target,"sell_phase",None,config["DRY_RUN"])
+                        risk_manager.record(
+                            "sell_failed", motivo,
+                            pair, target, "sell_phase", None, config["DRY_RUN"]
+                        )
                         _notify(f"⚠️ Venda falhou: {motivo}", via_alert=True)
                 except Exception as e:
                     tb = traceback.format_exc()
                     log.error(f"Erro na venda: {e}", exc_info=True)
-                    risk_manager.record("sell_failed",str(e),pair,target,"sell_phase",None,config["DRY_RUN"])
+                    risk_manager.record(
+                        "sell_failed", str(e),
+                        pair, target, "sell_phase", None, config["DRY_RUN"]
+                    )
                     _notify(f"*⚠️ Exceção venda:* `{e}`\n```{tb}```", via_alert=True)
                 break
 
