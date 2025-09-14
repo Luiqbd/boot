@@ -21,7 +21,7 @@ class DexInfo:
     name: str
     factory: str
     router: str
-    type: str  # "v2" ou "v3"
+    type: str  # 'v2' ou 'v3'
 
 @dataclass
 class PairInfo:
@@ -31,10 +31,6 @@ class PairInfo:
     token1: str
 
 class SniperDiscovery:
-    """
-    Descobre novos pares em várias DEXes e dispara callback.
-    """
-
     def __init__(
         self,
         web3: Web3,
@@ -55,32 +51,26 @@ class SniperDiscovery:
         self._last_block: Dict[str, int] = {}
         self._start_ts = 0.0
 
-        self.SIG_V2 = Web3.to_hex(
-            Web3.keccak(text="PairCreated(address,address,address,uint256)")
-        )
-        self.SIG_V3 = Web3.to_hex(
-            Web3.keccak(text="PoolCreated(address,address,uint24,int24,address)")
-        )
+        self.SIG_V2 = Web3.to_hex(Web3.keccak(text="PairCreated(address,address,address,uint256)"))
+        self.SIG_V3 = Web3.to_hex(Web3.keccak(text="PoolCreated(address,address,uint24,int24,address)"))
 
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     def _decode_addr(self, topic: bytes) -> str:
         return Web3.to_checksum_address("0x" + topic.hex()[-40:])
 
-    def _init_blocks(self) -> None:
-        bloco_atual = self.web3.eth.block_number
+    def _init_blocks(self):
+        blk = self.web3.eth.block_number
         for dex in self.dexes:
-            self._last_block[dex.name] = bloco_atual
+            self._last_block[dex.name] = blk
 
-    def start(self) -> None:
+    def start(self):
         if self._start_ts:
             logger.warning("SniperDiscovery já está rodando")
             return
-
         self._start_ts = time.time()
         self._stop.clear()
         self._init_blocks()
-
         self._loop = asyncio.new_event_loop()
 
         def _run():
@@ -91,7 +81,7 @@ class SniperDiscovery:
         threading.Thread(target=_run, daemon=True).start()
         logger.info("Descoberta de pares iniciada")
 
-    def stop(self) -> None:
+    def stop(self):
         self._stop.set()
         if self._loop and self._loop.is_running():
             self._loop.call_soon_threadsafe(self._loop.stop)
@@ -100,66 +90,59 @@ class SniperDiscovery:
     def is_running(self) -> bool:
         return not self._stop.is_set()
 
-    async def _poll_loop(self) -> None:
+    async def _poll_loop(self):
         while not self._stop.is_set():
             try:
-                bloco_atual = self.web3.eth.block_number
+                latest = self.web3.eth.block_number
                 for dex in self.dexes:
-                    inicio = self._last_block[dex.name] + 1
-                    if bloco_atual < inicio:
+                    start_blk = self._last_block[dex.name] + 1
+                    if latest < start_blk:
                         continue
 
                     sig = self.SIG_V2 if dex.type == "v2" else self.SIG_V3
                     logs: List[LogReceipt] = self.web3.eth.get_logs({
-                        "fromBlock": inicio,
-                        "toBlock": bloco_atual,
+                        "fromBlock": start_blk,
+                        "toBlock": latest,
                         "address": dex.factory,
                         "topics": [sig],
                     })
-                    self._last_block[dex.name] = bloco_atual
+                    self._last_block[dex.name] = latest
 
-                    for log_tx in logs:
-                        pair = self._parse_log(dex, log_tx)
+                    for entry in logs:
+                        pair = self._parse_log(dex, entry)
                         if not pair:
                             continue
 
                         if not {pair.token0, pair.token1} & set(self.base_tokens):
                             continue
 
-                        # métrica de par descoberto
                         PAIRS_DISCOVERED.inc()
 
                         if not await self._has_min_liq(pair):
                             continue
 
                         try:
-                            coro = self.callback(
-                                pair.address,
-                                pair.token0,
-                                pair.token1,
-                                dex
-                            )
+                            coro = self.callback(pair.address, pair.token0, pair.token1, dex)
                             if asyncio.iscoroutine(coro):
                                 await coro
                         except Exception as e:
                             logger.error("Erro no callback de discovery: %s", e, exc_info=True)
-
             except Exception as e:
                 logger.error("Erro no loop de discovery: %s", e, exc_info=True)
 
             await asyncio.sleep(self.interval)
 
-    def _parse_log(self, dex: DexInfo, log_tx: LogReceipt) -> Optional[PairInfo]:
+    def _parse_log(self, dex: DexInfo, log: LogReceipt) -> Optional[PairInfo]:
         try:
-            t0 = self._decode_addr(log_tx["topics"][1])
-            t1 = self._decode_addr(log_tx["topics"][2])
-            raw = log_tx["data"].hex() if hasattr(log_tx["data"], "hex") else log_tx["data"]
-            data = raw[2:] if raw.startswith("0x") else raw
-            word = data[0:64] if dex.type == "v2" else data[-64:]
+            t0 = self._decode_addr(log["topics"][1])
+            t1 = self._decode_addr(log["topics"][2])
+            raw = log["data"].hex() if hasattr(log["data"], "hex") else log["data"]
+            body = raw[2:] if raw.startswith("0x") else raw
+            word = body[0:64] if dex.type == "v2" else body[-64:]
             addr = self._decode_addr(bytes.fromhex(word))
             return PairInfo(dex=dex, address=addr, token0=t0, token1=t1)
         except Exception as e:
-            logger.warning("Falha ao parsear log %s: %s", dex.name, e)
+            logger.warning(f"Falha ao parsear log {dex.name}: {e}")
             return None
 
     async def _has_min_liq(self, pair: PairInfo) -> bool:
@@ -183,9 +166,7 @@ class SniperDiscovery:
 # API de controle
 _discovery: Optional[SniperDiscovery] = None
 
-def subscribe_new_pairs(
-    callback: Callable[..., Awaitable[Any]]
-) -> None:
+def subscribe_new_pairs(callback: Callable[..., Awaitable[Any]]):
     global _discovery
     if _discovery and _discovery.is_running():
         logger.warning("Discovery já iniciado")
@@ -193,22 +174,15 @@ def subscribe_new_pairs(
 
     dexes_cfg = config["DEXES"]
     dexes = [DexInfo(**d) for d in dexes_cfg]
-    base_tokens = config.get("BASE_TOKENS", [])
+    base = [config["WETH"], config["USDC"]]
     min_liq = Decimal(str(config["MIN_LIQ_WETH"]))
-    interval = int(config["DISCOVERY_INTERVAL"])
+    interval = config["DISCOVERY_INTERVAL"]
 
-    web3_client = Web3(Web3.HTTPProvider(config["RPC_URL"]))
-    _discovery = SniperDiscovery(
-        web3=web3_client,
-        dexes=dexes,
-        base_tokens=base_tokens,
-        min_liq_weth=min_liq,
-        interval_sec=interval,
-        callback=callback
-    )
+    web3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
+    _discovery = SniperDiscovery(web3, dexes, base, min_liq, interval, callback)
     _discovery.start()
 
-def stop_discovery() -> None:
+def stop_discovery():
     if _discovery:
         _discovery.stop()
 
