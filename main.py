@@ -25,14 +25,22 @@ from web3 import Web3
 
 from config import config
 from utils import escape_md_v2
-from discovery import subscribe_new_pairs, stop_discovery, is_discovery_running
+from discovery import (
+    subscribe_new_pairs,
+    stop_discovery,
+    is_discovery_running
+)
 from pipeline import on_pair
 from exit_manager import check_exits
 from token_service import gerar_meu_token_externo
 from check_balance import get_wallet_status
 from risk_manager import risk_manager
+from metrics import init_metrics_server
 
-# ─── Configurações básicas ─────────────────────────────
+# ─── Inicia servidor de métricas Prometheus ─────────────────────────
+init_metrics_server(port=8000)
+
+# ─── Configurações básicas ───────────────────────────────────────────
 RPC_URL    = config["RPC_URL"]
 CHAIN_ID   = int(config["CHAIN_ID"])
 TELE_TOKEN = config["TELEGRAM_TOKEN"]
@@ -40,13 +48,14 @@ TELE_CHAT  = config["TELEGRAM_CHAT_ID"]
 WEBHOOK    = config.get("WEBHOOK_URL", "")
 PORT       = int(os.getenv("PORT", 10000))
 
+# ─── Logger ──────────────────────────────────────────────────────────
 logging.basicConfig(
     format="[%(asctime)s] %(levelname)s: %(message)s",
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# ─── Conexão Web3 & Validações ───────────────────────────
+# ─── Conexão Web3 & validações ───────────────────────────────────────
 w3 = Web3(Web3.HTTPProvider(RPC_URL))
 if not w3.is_connected():
     logger.error("Falha ao conectar no RPC %s", RPC_URL)
@@ -56,7 +65,7 @@ if not config.get("DEXES"):
     logger.error("Nenhuma DEX configurada (DEX_1_*).")
     sys.exit(1)
 
-# ─── Setup do Bot Telegram ────────────────────────────────
+# ─── Setup do Bot Telegram ────────────────────────────────────────────
 telegram_loop = asyncio.new_event_loop()
 asyncio.set_event_loop(telegram_loop)
 
@@ -75,7 +84,7 @@ def fetch_token() -> str:
 
 def log_cmd(cmd: str, update: Update):
     user = update.effective_user.username or update.effective_user.id
-    logger.info("🛎 Comando /%s de %s", cmd, user)
+    logger.info("🛎 Comando /%s por %s", cmd, user)
 
 def env_summary_text() -> str:
     addr = w3.eth.account.from_key(config["PRIVATE_KEY"]).address
@@ -83,20 +92,20 @@ def env_summary_text() -> str:
         f"🔑 {addr}\n"
         f"🌐 Chain ID: {CHAIN_ID}\n"
         f"🔗 RPC: {RPC_URL}\n"
-        f"⏱ Discovery-Interval: {config['DISCOVERY_INTERVAL']}s\n"
+        f"⏱ Discovery Interval: {config['DISCOVERY_INTERVAL']}s\n"
         f"🧪 Dry Run: {config['DRY_RUN']}"
     )
 
-# ─── Handlers do Telegram ────────────────────────────────
+# ─── Handlers Telegram ───────────────────────────────────────────────
 async def start_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     log_cmd("start", update)
     texto = (
         "🎯 Sniper Bot\n\n"
         "/snipe — iniciar descoberta e trading\n"
         "/stop — parar sniper\n"
-        "/sniperstatus — status\n"
+        "/sniperstatus — status do sniper\n"
         "/status — saldo ETH/WETH\n"
-        "/ping — alive check\n"
+        "/ping — checar alive\n"
         "/testnotify — notificação teste\n"
         "/relatorio — relatório de risco\n\n"
         "Config atual:\n"
@@ -109,14 +118,15 @@ async def snipe_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⚙️ Iniciando sniper (modo API)...")
     token = fetch_token()
     if not token:
-        await update.message.reply_text("❌ Falha ao obter token Auth0.")
+        await update.message.reply_text("❌ Falha ao obter token Auth0")
         return
     iniciar_sniper()
+    await update.message.reply_text("🟢 Sniper iniciado")
 
 async def stop_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     log_cmd("stop", update)
     parar_sniper()
-    await update.message.reply_text("🛑 Sniper interrompido.")
+    await update.message.reply_text("🛑 Sniper interrompido")
 
 async def sniper_status_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     log_cmd("sniperstatus", update)
@@ -126,8 +136,8 @@ async def sniper_status_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def status_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     log_cmd("status", update)
     addr = ctx.args[0] if ctx.args else None
-    bal = get_wallet_status(addr)
-    await update.message.reply_text(bal)
+    bal_text = get_wallet_status(addr)
+    await update.message.reply_text(bal_text)
 
 async def ping_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     log_cmd("ping", update)
@@ -176,27 +186,26 @@ if WEBHOOK:
 Thread(target=telegram_loop.run_forever, daemon=True).start()
 logger.info("🚀 Bot Telegram rodando em background")
 
-# ─── Controle do Sniper ────────────────────────────────────
+# ─── Controle do Sniper ───────────────────────────────────────────────
 def iniciar_sniper():
     if is_discovery_running():
         logger.info("⚠️ Sniper já está ativo")
         return
 
-    # usa pipeline.on_pair dentro do loop do Telegram
-    def _cb(pair_addr, t0, t1, dex_info):
+    def _cb(pair_addr, token0, token1, dex_info):
         asyncio.run_coroutine_threadsafe(
-            on_pair(pair_addr, t0, t1, dex_info),
+            on_pair(pair_addr, token0, token1, dex_info),
             telegram_loop
         )
 
     subscribe_new_pairs(callback=_cb)
-    logger.info("🟢 Sniper iniciado (modo API)")
+    logger.info("🟢 SniperDiscovery iniciado")
 
 def parar_sniper():
     stop_discovery()
-    logger.info("🔴 Sniper parado")
+    logger.info("🔴 SniperDiscovery parado")
 
-# ─── Flask API ─────────────────────────────────────────────
+# ─── Flask API ─────────────────────────────────────────────────────────
 app = Flask(__name__)
 
 @app.route("/api/token", methods=["GET"])
@@ -229,7 +238,7 @@ def api_webhook():
     asyncio.run_coroutine_threadsafe(application.process_update(upd), telegram_loop)
     return "ok", 200
 
-# ─── Shutdown gracioso ─────────────────────────────────────
+# ─── Shutdown gracioso ─────────────────────────────────────────────────
 def _shutdown(sig, frame):
     parar_sniper()
     asyncio.run(application.shutdown())
@@ -238,13 +247,13 @@ def _shutdown(sig, frame):
 for s in (signal.SIGINT, signal.SIGTERM):
     signal.signal(s, _shutdown)
 
-# ─── Entry Point ────────────────────────────────────────────
+# ─── Entry Point ───────────────────────────────────────────────────────
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--worker",
         action="store_true",
-        help="Executar modo worker (descoberta + trading)"
+        help="Executar modo worker (descoberta + trading + exit)"
     )
     args = parser.parse_args()
 
@@ -256,9 +265,9 @@ if __name__ == "__main__":
         sys.exit(1)
 
     if args.worker:
-        # Worker: pipeline de descoberta → compra
+        # Modo Worker: dispara discovery → pipeline e loop de exits
+        logger.info("▶️ Iniciando Worker Mode")
         subscribe_new_pairs(callback=on_pair)
-        # loop infinito de checagem de saídas
         while True:
             try:
                 coro = check_exits()
@@ -268,6 +277,6 @@ if __name__ == "__main__":
                 logger.exception("Erro no gerenciador de saídas")
             time.sleep(config["EXIT_POLL_INTERVAL"])
     else:
-        # API + Telegram + Flask
+        # Modo API + Telegram + Flask
         logger.info("🚀 Iniciando API Flask na porta %s", PORT)
         app.run(host="0.0.0.0", port=PORT, threaded=True)
