@@ -272,7 +272,11 @@ def api_webhook():
 # ─── Shutdown gracioso ─────────────────────────────────────────────────
 def _shutdown(sig, frame):
     parar_sniper()
-    asyncio.run(application.shutdown())
+
+    # Para o Telegram Application de forma síncrona
+    application.stop()
+    logger.info("🔴 Telegram Application parado")
+
     sys.exit(0)
 
 for s in (signal.SIGINT, signal.SIGTERM):
