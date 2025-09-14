@@ -1,7 +1,6 @@
 # exit_manager.py
 
 import asyncio
-import time
 from decimal import Decimal
 from web3 import Web3
 
@@ -9,16 +8,18 @@ from config import config
 from trading import sell
 from storage import get_all_positions, remove_position
 from dex_client import DexClient
+from metrics import SELL_SUCCESSES
 
 RPC_URL = config["RPC_URL"]
 WETH    = config["WETH"]
 
 async def check_exits() -> None:
     """
-    Percorre todas as posições salvas e, para cada uma:
-      - consulta preço atual on-chain
-      - aplica Take Profit e Stop Loss
-      - executa sell() e remove da storage
+    Verifica TP/SL para cada posição:
+      - lê preço on-chain
+      - executa sell()
+      - SELL_SUCCESSES
+      - remove_position()
     """
     tp_pct = Decimal(str(config["TAKE_PROFIT_PCT"]))
     sl_pct = Decimal(str(config["STOP_LOSS_PCT"]))
@@ -36,16 +37,17 @@ async def check_exits() -> None:
         # Take Profit
         if price_dec >= entry_dec * (1 + tp_pct):
             tx = await sell(amount, pair)
-            print(f"📈 TP atingido em {pair}, tx={tx}")
+            SELL_SUCCESSES.inc()
             remove_position(pair)
+            print(f"📈 TP atingido em {pair}, tx={tx}")
             continue
 
         # Stop Loss
         if price_dec <= entry_dec * (1 - sl_pct):
             tx = await sell(amount, pair)
-            print(f"📉 SL atingido em {pair}, tx={tx}")
+            SELL_SUCCESSES.inc()
             remove_position(pair)
+            print(f"📉 SL atingido em {pair}, tx={tx}")
             continue
 
-    # aguarda próximo ciclo
     await asyncio.sleep(config["EXIT_POLL_INTERVAL"])
