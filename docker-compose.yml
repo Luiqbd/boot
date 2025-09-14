@@ -1,27 +1,22 @@
 version: "3.8"
+
 services:
   sniper:
     build: .
     restart: unless-stopped
+    ports:
+      - "10000:10000"   # API Flask / Telegram Webhook
+      - "8000:8000"     # Métricas Prometheus
     environment:
-      # RPC e Chain
       - RPC_URL=${RPC_URL}
       - CHAIN_ID=${CHAIN_ID}
-
-      # Carteira
       - PRIVATE_KEY=${PRIVATE_KEY}
-
-      # Auth0
       - AUTH0_DOMAIN=${AUTH0_DOMAIN}
       - AUTH0_AUDIENCE=${AUTH0_AUDIENCE}
       - AUTH0_CLIENT_ID=${AUTH0_CLIENT_ID}
       - AUTH0_CLIENT_SECRET=${AUTH0_CLIENT_SECRET}
-
-      # Telegram
       - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
-
-      # Operação
       - DRY_RUN=${DRY_RUN}
       - DISCOVERY_INTERVAL=${DISCOVERY_INTERVAL}
       - TRADE_SIZE_ETH=${TRADE_SIZE_ETH}
@@ -29,20 +24,14 @@ services:
       - TAKE_PROFIT_PCT=${TAKE_PROFIT_PCT}
       - STOP_LOSS_PCT=${STOP_LOSS_PCT}
       - EXIT_POLL_INTERVAL=${EXIT_POLL_INTERVAL}
-
-      # DEXes (exemplo UniswapV2)
       - DEX_1_NAME=${DEX_1_NAME}
       - DEX_1_FACTORY=${DEX_1_FACTORY}
       - DEX_1_ROUTER=${DEX_1_ROUTER}
       - DEX_1_TYPE=${DEX_1_TYPE}
-
     volumes:
-      - ./positions.db:/app/positions.db       # persiste SQLite
-      - ./logs:/app/logs                       # opcional: logs em arquivo
-
-    # Liveness probe (recria container se travar)
+      - ./positions.db:/app/positions.db
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f 'main.py --worker' || exit 1"]
+      test: ["CMD-SHELL","curl -fs http://localhost:8000/metrics || exit 1"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
