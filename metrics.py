@@ -1,10 +1,37 @@
+# metrics.py
+
 from prometheus_client import Counter, Gauge, start_http_server
 
-# Métricas principais
-sniper_pairs_detected = Counter("sniper_pairs_detected_total", "Total de pares detectados")
-sniper_liquidity_skipped = Counter("sniper_liquidity_skipped_total", "Pares ignorados por liquidez insuficiente")
-sniper_runtime = Gauge("sniper_runtime_seconds", "Tempo de execução do sniper em segundos")
-sniper_active = Gauge("sniper_active", "Estado atual do sniper (1=ativo, 0=inativo)")
-
-def start_metrics_server(port=8000):
+def init_metrics_server(port: int = 8000):
+    """
+    Inicia servidor HTTP para Prometheus no porto especificado.
+    """
     start_http_server(port)
+
+# Contadores de eventos
+PAIRS_DISCOVERED = Counter(
+    "sniper_pairs_discovered_total",
+    "Total de pares novos detectados"
+)
+BUY_ATTEMPTS = Counter(
+    "sniper_buy_attempts_total",
+    "Total de tentativas de compra efetuadas"
+)
+BUY_SUCCESSES = Counter(
+    "sniper_buy_success_total",
+    "Total de compras bem-sucedidas"
+)
+SELL_SUCCESSES = Counter(
+    "sniper_sell_success_total",
+    "Total de vendas bem-sucedidas"
+)
+ERRORS = Counter(
+    "sniper_errors_total",
+    "Total de erros não tratados no pipeline"
+)
+
+# Gauge para posições abertas
+OPEN_POSITIONS = Gauge(
+    "sniper_open_positions",
+    "Número de posições abertas no momento"
+)
