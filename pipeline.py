@@ -7,49 +7,40 @@ from web3 import Web3
 from config import config
 from classifier import should_buy
 from trading import buy
-from exit_manager import _positions
+from storage import add_position
 from dex_client import DexClient
 
-async def on_pair(
-    pair_addr: str,
-    token0: str,
-    token1: str,
-    dex_info: dict
-):
+RPC_URL = config["RPC_URL"]
+WETH    = config["WETH"]
+
+async def on_pair(pair: str, token0: str, token1: str, dex_info: dict) -> None:
     """
     Chamado a cada par novo:
-      1) classifica com should_buy
-      2) compra via buy()
-      3) armazena posição para exit_manager
+      1) should_buy → True/False
+      2) buy() se aprovado
+      3) obtem preço e add_position
     """
-    # 1) decide se vale a pena
-    if not await should_buy(pair_addr, token0, token1, dex_info):
+    # 1) classificação
+    ok = await should_buy(pair, token0, token1, dex_info)
+    if not ok:
         return
 
-    # 2) define tamanho do trade e converte para wei
-    tamanho_eth = Decimal(str(config["TRADE_SIZE_ETH"]))
-    amount_wei = int(tamanho_eth * Decimal(10**18))
+    # 2) define quantidade e executa compra
+    trade_size = Decimal(str(config["TRADE_SIZE_ETH"]))
+    amount_wei = int(trade_size * Decimal(10**18))
 
-    # 3) identifica qual token não é WETH
-    weth = config["WETH"].lower()
-    target = token1 if token0.lower() == weth else token0
+    # escolhe token alvo
+    target = token1 if token0.lower() == WETH.lower() else token0
 
-    # 4) executa a compra
     tx_hash = await buy(amount_in_wei=amount_wei, token_out=target)
     if not tx_hash:
-        print(f"🚫 Falha ao comprar {target} no par {pair_addr}")
+        print(f"🚫 Falha na compra de {target} no par {pair}")
         return
 
-    # 5) obtem preço de entrada on-chain
-    web3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
+    # 3) obtém preço de entrada on-chain
+    web3 = Web3(Web3.HTTPProvider(RPC_URL))
     dex = DexClient(web3, dex_info["router"])
-    preco = dex.get_token_price(token_address=target, weth_address=config["WETH"])
-    preco = preco or 0.0
+    price = dex.get_token_price(token_address=target, weth_address=WETH) or 0.0
 
-    # 6) registra posição para exit_manager
-    _positions[pair_addr] = {
-        "amount": amount_wei,
-        "avg_price": preco,
-        "current_price": preco
-    }
-    print(f"✅ Comprado {target} no par {pair_addr}  TX={tx_hash}  PreçoEntrada={preco:.6f} WETH")
+    add_position(pair=target, amount=amount_wei, avg_price=price)
+    print(f"✅ Comprado {target} | Par={pair} | TX={tx_hash} | PreçoEntrada={price:.6f}")
