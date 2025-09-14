@@ -74,6 +74,9 @@ bot = application.bot
 application.bot_data["start_time"] = time.time()
 
 def fetch_token() -> str:
+    """
+    Obtém token Auth0 para autorizar chamadas à API.
+    """
     try:
         token = gerar_meu_token_externo()
         logger.info("✅ Token Auth0 obtido")
@@ -97,7 +100,9 @@ def env_summary_text() -> str:
     )
 
 # ─── Handlers Telegram ───────────────────────────────────────────────
+
 async def start_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Exibe o menu principal do Sniper Bot."""
     log_cmd("start", update)
     texto = (
         "🎯 Sniper Bot\n\n"
@@ -114,6 +119,7 @@ async def start_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(texto)
 
 async def snipe_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Inicia a descoberta de pares e execução de trades."""
     log_cmd("snipe", update)
     await update.message.reply_text("⚙️ Iniciando sniper (modo API)...")
     token = fetch_token()
@@ -124,27 +130,32 @@ async def snipe_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🟢 Sniper iniciado")
 
 async def stop_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Para o Sniper Bot."""
     log_cmd("stop", update)
     parar_sniper()
     await update.message.reply_text("🛑 Sniper interrompido")
 
 async def sniper_status_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Exibe status do Sniper (ativo/parado)."""
     log_cmd("sniperstatus", update)
     status = "🟢 Ativo" if is_discovery_running() else "🔴 Parado"
     await update.message.reply_text(status)
 
 async def status_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Consulta saldo ETH/WETH da carteira."""
     log_cmd("status", update)
     addr = ctx.args[0] if ctx.args else None
     bal_text = get_wallet_status(addr)
     await update.message.reply_text(bal_text)
 
 async def ping_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Checa se o Bot está vivo e mostra uptime."""
     log_cmd("ping", update)
     up = int(time.time() - ctx.bot_data["start_time"])
     await update.message.reply_text(f"pong 🏓\nUptime: {datetime.timedelta(seconds=up)}")
 
 async def testnotify_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Envia notificação de teste no Telegram."""
     log_cmd("testnotify", update)
     ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     uid = uuid.uuid4().hex[:6]
@@ -153,14 +164,17 @@ async def testnotify_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Enviado (ID={uid})")
 
 async def relatorio_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Gera relatório de risco e PnL."""
     log_cmd("relatorio", update)
     report = risk_manager.gerar_relatorio()
     await update.message.reply_text(report)
 
 async def echo_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Ecoa mensagens de texto simples."""
     txt = escape_md_v2(update.message.text)
     await update.message.reply_text(f"Você disse: {txt}")
 
+# Lista de handlers e descrições de comando
 handlers = [
     ("start", start_cmd),
     ("menu",  start_cmd),
@@ -172,17 +186,34 @@ handlers = [
     ("testnotify",   testnotify_cmd),
     ("relatorio",    relatorio_cmd),
 ]
-for nome, fn in handlers:
-    application.add_handler(CommandHandler(nome, fn))
+
+command_descriptions = [
+    ("start",        "Exibe o menu principal do Sniper Bot"),
+    ("menu",         "Exibe o menu principal"),
+    ("snipe",        "Inicia descoberta e execução de trades"),
+    ("stop",         "Para o Sniper Bot"),
+    ("sniperstatus","Exibe status do Sniper (ativo/parado)"),
+    ("status",       "Consulta saldo ETH/WETH"),
+    ("ping",         "Checa alive e mostra uptime"),
+    ("testnotify",   "Envia notificação de teste"),
+    ("relatorio",    "Gera relatório de risco e PnL"),
+]
+
+# Adiciona os handlers
+for name, fn in handlers:
+    application.add_handler(CommandHandler(name, fn))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo_cmd))
 
-cmds = [BotCommand(n, fn.__doc__ or "") for n, fn in handlers]
+# Registra comandos no Telegram com descrições não vazias
+cmds = [BotCommand(name, desc) for name, desc in command_descriptions]
 telegram_loop.run_until_complete(application.initialize())
 telegram_loop.run_until_complete(application.start())
 telegram_loop.run_until_complete(bot.set_my_commands(cmds))
+
 if WEBHOOK:
     telegram_loop.run_until_complete(bot.set_webhook(url=WEBHOOK))
     logger.info("✅ Webhook configurado em %s", WEBHOOK)
+
 Thread(target=telegram_loop.run_forever, daemon=True).start()
 logger.info("🚀 Bot Telegram rodando em background")
 
@@ -265,7 +296,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     if args.worker:
-        # Modo Worker: dispara discovery → pipeline e loop de exits
+        # Modo Worker: discovery → pipeline e loop de exits
         logger.info("▶️ Iniciando Worker Mode")
         subscribe_new_pairs(callback=on_pair)
         while True:
