@@ -2,7 +2,6 @@ import os
 import logging
 from dataclasses import dataclass
 from decimal import Decimal
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from dotenv import load_dotenv
@@ -11,14 +10,7 @@ from web3 import Web3
 logger = logging.getLogger(__name__)
 load_dotenv()
 
-# ---------------------------------------------------
-# Helpers de leitura e validação de variáveis de ambiente
-# ---------------------------------------------------
-
 def str_to_bool(val: Union[str, bool]) -> bool:
-    """
-    Converte valores string ('true', '1', 'yes') em booleanos.
-    """
     if isinstance(val, bool):
         return val
     return str(val).strip().lower() in {"1", "true", "t", "yes", "y"}
@@ -29,10 +21,6 @@ def get_env(
     cast: Any = str,
     required: bool = False
 ) -> Any:
-    """
-    Lê uma variável de ambiente. Converte usando 'cast'.
-    Se required=True e valor não definido, lança RuntimeError.
-    """
     raw = os.getenv(key, None)
     if raw is None or (isinstance(raw, str) and raw.strip() == ""):
         if required and default is None:
@@ -44,9 +32,6 @@ def get_env(
         raise RuntimeError(f"Falha ao converter '{key}'={raw}: {e}")
 
 def normalize_private_key(pk: str) -> str:
-    """
-    Valida PRIVATE_KEY hex (com ou sem '0x') e retorna sem prefixo.
-    """
     if not pk:
         raise ValueError("PRIVATE_KEY vazia")
     key = pk.lower().removeprefix("0x")
@@ -55,9 +40,6 @@ def normalize_private_key(pk: str) -> str:
     return key
 
 def to_checksum(addr: str, nome: str) -> str:
-    """
-    Valida e converte endereço Ethereum para EIP-55 checksum.
-    """
     if not Web3.is_address(addr):
         raise ValueError(f"Endereço '{nome}' inválido: {addr}")
     return Web3.to_checksum_address(addr)
@@ -70,10 +52,6 @@ class DexConfig:
     type: str  # 'v2' ou 'v3'
 
 def load_dexes() -> List[DexConfig]:
-    """
-    Carrega e valida DEXes a partir de variáveis:
-      DEX_1_NAME, DEX_1_FACTORY, DEX_1_ROUTER, DEX_1_TYPE, etc.
-    """
     dexes: List[DexConfig] = []
     idx = 1
     while True:
@@ -81,109 +59,47 @@ def load_dexes() -> List[DexConfig]:
         nome = os.getenv(prefix + "NAME")
         if not nome:
             break
-        factory = to_checksum(
-            get_env(prefix + "FACTORY", required=True),
-            f"{nome} factory"
-        )
-        router = to_checksum(
-            get_env(prefix + "ROUTER", required=True),
-            f"{nome} router"
-        )
-        dtype = get_env(prefix + "TYPE", default="v2").lower()
+        factory = to_checksum(get_env(prefix + "FACTORY", required=True), f"{nome} factory")
+        router  = to_checksum(get_env(prefix + "ROUTER",  required=True), f"{nome} router")
+        dtype   = get_env(prefix + "TYPE", default="v2").lower()
         if dtype not in ("v2", "v3"):
             raise ValueError(f"Tipo inválido para {nome}: {dtype}")
         dexes.append(DexConfig(name=nome, factory=factory, router=router, type=dtype))
         idx += 1
-
     if not dexes:
-        logger.warning("Nenhuma DEX configurada. Verifique variáveis DEX_1_…")
+        logger.warning("Nenhuma DEX configurada. Verifique DEX_1_* no .env")
     return dexes
 
-# ---------------------------------------------------
-# Carregamento principal de parâmetros
-# ---------------------------------------------------
+# ────────────────────────────────────────────────────────────────────
 
-# RPC e Chain
-RPC_URL  = get_env("RPC_URL", default="https://mainnet.base.org")
-CHAIN_ID = get_env("CHAIN_ID", default=8453, cast=int)
+RPC_URL    = get_env("RPC_URL", default="https://mainnet.base.org")
+CHAIN_ID   = get_env("CHAIN_ID", default=8453, cast=int)
 
-# Chave privada e carteira
 PRIVATE_KEY = normalize_private_key(get_env("PRIVATE_KEY", required=True))
 WALLET      = get_env("WALLET_ADDRESS", default=None)
 if WALLET:
     WALLET = to_checksum(WALLET, "WALLET_ADDRESS")
 
-# Tokens padrão
-WETH = to_checksum(
-    get_env("WETH", default="0x4200000000000000000000000000000000000006"),
-    "WETH"
-)
-USDC = to_checksum(
-    get_env("USDC", default="0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"),
-    "USDC"
-)
+WETH = to_checksum(get_env("WETH", default="0x4200000000000000000000000000000000000006"), "WETH")
+USDC = to_checksum(get_env("USDC", default="0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"), "USDC")
 
-# Auth0
 AUTH0_DOMAIN        = get_env("AUTH0_DOMAIN",        required=True)
 AUTH0_AUDIENCE      = get_env("AUTH0_AUDIENCE",      required=True)
 AUTH0_CLIENT_ID     = get_env("AUTH0_CLIENT_ID",     required=True)
 AUTH0_CLIENT_SECRET = get_env("AUTH0_CLIENT_SECRET", required=True)
 
-# Telegram
 TELEGRAM_TOKEN = get_env("TELEGRAM_TOKEN", required=True)
 TELEGRAM_CHAT  = get_env("TELEGRAM_CHAT_ID", cast=int, default=0)
 
-# Operação básica
 DRY_RUN            = str_to_bool(get_env("DRY_RUN", default="true"))
-INTERVAL           = get_env("INTERVAL", default=3, cast=int)
-DEFAULT_SLIPPAGE   = get_env("SLIPPAGE_BPS", default=50, cast=int)
-TX_DEADLINE_SEC    = get_env("TX_DEADLINE_SEC", default=300, cast=int)
-MIN_LIQ_WETH       = get_env("MIN_LIQ_WETH", default=Decimal("0.5"), cast=Decimal)
 DISCOVERY_INTERVAL = get_env("DISCOVERY_INTERVAL", default=3, cast=int)
-PAIR_DUP_INTERVAL  = get_env("PAIR_DUP_INTERVAL", default=5, cast=int)
-ETHERSCAN_API_KEY  = get_env("ETHERSCAN_API_KEY", default="")
+TRADE_SIZE_ETH     = get_env("TRADE_SIZE_ETH", default=0.1, cast=float)
+MIN_LIQ_WETH       = get_env("MIN_LIQ_WETH", default=Decimal("0.5"), cast=Decimal)
+TAKE_PROFIT_PCT    = get_env("TAKE_PROFIT_PCT", default=0.2, cast=float)
+STOP_LOSS_PCT      = get_env("STOP_LOSS_PCT", default=0.05, cast=float)
+EXIT_POLL_INTERVAL = get_env("EXIT_POLL_INTERVAL", default=15, cast=int)
 
-# Lista de DEXes
 DEXES = load_dexes()
-
-# ---------------------------------------------------
-# Configurações do pipeline de Sniper
-# ---------------------------------------------------
-
-TRADE_SIZE_ETH     = get_env("TRADE_SIZE_ETH",     default=0.1,  cast=float)
-MAX_TAX_PCT        = get_env("MAX_TAX_PCT",        default=10.0, cast=float)
-TOP_HOLDER_LIMIT   = get_env("TOP_HOLDER_LIMIT",   default=30.0, cast=float)
-TAKE_PROFIT_PCT    = get_env("TAKE_PROFIT_PCT",    default=0.15, cast=float)
-STOP_LOSS_PCT      = get_env("STOP_LOSS_PCT",      default=0.05, cast=float)
-TRAIL_PCT          = get_env("TRAIL_PCT",          default=0.05, cast=float)
-EXIT_POLL_INTERVAL = get_env("EXIT_POLL_INTERVAL", default=15,   cast=int)
-
-# ---------------------------------------------------
-# Validação final de sanidade
-# ---------------------------------------------------
-
-def validate_cfg() -> None:
-    assert RPC_URL.startswith("http"), "RPC_URL deve ser uma URL válida"
-    assert CHAIN_ID > 0, "CHAIN_ID deve ser inteiro > 0"
-    Web3.to_checksum_address(WETH)
-    Web3.to_checksum_address(USDC)
-    for dex in DEXES:
-        Web3.to_checksum_address(dex.factory)
-        Web3.to_checksum_address(dex.router)
-    if not AUTH0_DOMAIN:
-        raise ValueError("AUTH0_DOMAIN inválido")
-    if not AUTH0_AUDIENCE:
-        raise ValueError("AUTH0_AUDIENCE inválido")
-    if not AUTH0_CLIENT_ID:
-        raise ValueError("AUTH0_CLIENT_ID inválido")
-    if not AUTH0_CLIENT_SECRET:
-        raise ValueError("AUTH0_CLIENT_SECRET inválido")
-
-validate_cfg()
-
-# ---------------------------------------------------
-# Dicionário de configuração final
-# ---------------------------------------------------
 
 config: Dict[str, Any] = {
     "RPC_URL":             RPC_URL,
@@ -199,23 +115,11 @@ config: Dict[str, Any] = {
     "TELEGRAM_TOKEN":      TELEGRAM_TOKEN,
     "TELEGRAM_CHAT_ID":    TELEGRAM_CHAT,
     "DRY_RUN":             DRY_RUN,
-    "INTERVAL":            INTERVAL,
-    "DEFAULT_SLIPPAGE_BPS": DEFAULT_SLIPPAGE,
-    "TX_DEADLINE_SEC":     TX_DEADLINE_SEC,
-    "MIN_LIQ_WETH":        MIN_LIQ_WETH,
     "DISCOVERY_INTERVAL":  DISCOVERY_INTERVAL,
-    "PAIR_DUP_INTERVAL":   PAIR_DUP_INTERVAL,
-    "ETHERSCAN_API_KEY":   ETHERSCAN_API_KEY,
-    "DEXES":               DEXES,
     "TRADE_SIZE_ETH":      TRADE_SIZE_ETH,
-    "MAX_TAX_PCT":         MAX_TAX_PCT,
-    "TOP_HOLDER_LIMIT":    TOP_HOLDER_LIMIT,
+    "MIN_LIQ_WETH":        MIN_LIQ_WETH,
     "TAKE_PROFIT_PCT":     TAKE_PROFIT_PCT,
     "STOP_LOSS_PCT":       STOP_LOSS_PCT,
-    "TRAIL_PCT":           TRAIL_PCT,
     "EXIT_POLL_INTERVAL":  EXIT_POLL_INTERVAL,
+    "DEXES":               DEXES,
 }
-
-# Debug opcional
-if str_to_bool(get_env("DEBUG_CONFIG", default="false")):
-    logger.debug("Config carregada: %s", config)
