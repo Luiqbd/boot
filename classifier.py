@@ -4,7 +4,9 @@ import asyncio
 from config import config
 from exchange_client import ExchangeClient
 
-_client = ExchangeClient(config["DEXES"][0]["router"])
+# Pega o primeiro DexConfig e usa .router
+primeiro_dex = config["DEXES"][0]
+_client = ExchangeClient(primeiro_dex.router)
 
 async def is_honeypot(token: str) -> bool:
     try:
@@ -20,9 +22,13 @@ async def is_honeypot(token: str) -> bool:
     except Exception:
         return True
 
-async def should_buy(pair: str, t0: str, t1: str, dex_info: dict) -> bool:
-    token = t1 if t0.lower() == config["WETH"].lower() else t0
+async def should_buy(
+    pair_addr: str,
+    token0: str,
+    token1: str,
+    dex_info: Any
+) -> bool:
+    token = token1 if token0.lower() == config["WETH"].lower() else token0
     if await is_honeypot(token):
-        print(f"🚫 Token honeypot: {token}")
         return False
     return True
