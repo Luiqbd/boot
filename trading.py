@@ -1,12 +1,18 @@
 # trading.py
 
 import asyncio
-from exchange_client import ExchangeClient
 from config import config
+from exchange_client import ExchangeClient
 
-_client = ExchangeClient(config["DEXES"][0]["router"])
+# Pega o primeiro DexConfig e usa .router
+primeiro_dex = config["DEXES"][0]
+_client = ExchangeClient(primeiro_dex.router)
 
-async def buy(amount_in_wei: int, token_out: str, slippage_bps: int = None) -> str:
+async def buy(
+    amount_in_wei: int,
+    token_out: str,
+    slippage_bps: int = None
+) -> str:
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         None,
@@ -18,7 +24,11 @@ async def buy(amount_in_wei: int, token_out: str, slippage_bps: int = None) -> s
         )
     )
 
-async def sell(amount: int, token_in: str, slippage_bps: int = None) -> str:
+async def sell(
+    amount: int,
+    token_in: str,
+    slippage_bps: int = None
+) -> str:
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         None,
