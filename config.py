@@ -12,17 +12,16 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 # ---------------------------------------------------
-# Helpers de leitura e validação de ambiente
+# Helpers de leitura e validação de variáveis de ambiente
 # ---------------------------------------------------
 
 def str_to_bool(val: Union[str, bool]) -> bool:
     """
-    Converte string True/False, '1', 'y', 'yes' em boolean.
+    Converte valores string ('true', '1', 'yes') em booleanos.
     """
     if isinstance(val, bool):
         return val
     return str(val).strip().lower() in {"1", "true", "t", "yes", "y"}
-
 
 def get_env(
     key: str,
@@ -31,8 +30,8 @@ def get_env(
     required: bool = False
 ) -> Any:
     """
-    Lê variável de ambiente, converte via 'cast' e aplica valor default.
-    Se required=True e valor vazio, dispara RuntimeError.
+    Lê uma variável de ambiente. Converte usando 'cast'.
+    Se required=True e valor não definido, lança RuntimeError.
     """
     raw = os.getenv(key, None)
     if raw is None or (isinstance(raw, str) and raw.strip() == ""):
@@ -44,10 +43,9 @@ def get_env(
     except Exception as e:
         raise RuntimeError(f"Falha ao converter '{key}'={raw}: {e}")
 
-
 def normalize_private_key(pk: str) -> str:
     """
-    Valida PRIVATE_KEY no formato hex sem '0x' ou com. Retorna sem prefixo.
+    Valida PRIVATE_KEY hex (com ou sem '0x') e retorna sem prefixo.
     """
     if not pk:
         raise ValueError("PRIVATE_KEY vazia")
@@ -56,19 +54,13 @@ def normalize_private_key(pk: str) -> str:
         raise ValueError("PRIVATE_KEY inválida")
     return key
 
-
-def to_checksum(addr: str, name: str) -> str:
+def to_checksum(addr: str, nome: str) -> str:
     """
-    Valida e converte endereço Ethereum a EIP-55 checksum.
+    Valida e converte endereço Ethereum para EIP-55 checksum.
     """
     if not Web3.is_address(addr):
-        raise ValueError(f"Endereço '{name}' inválido: {addr}")
+        raise ValueError(f"Endereço '{nome}' inválido: {addr}")
     return Web3.to_checksum_address(addr)
-
-
-# ---------------------------------------------------
-# Configurações de DEXes
-# ---------------------------------------------------
 
 @dataclass(frozen=True)
 class DexConfig:
@@ -77,47 +69,45 @@ class DexConfig:
     router: str
     type: str  # 'v2' ou 'v3'
 
-
 def load_dexes() -> List[DexConfig]:
     """
-    Carrega e valida DEXes a partir de variáveis de ambiente.
-    Cada entrada deve seguir o padrão:
-      DEX_{N}_NAME, DEX_{N}_FACTORY, DEX_{N}_ROUTER, DEX_{N}_TYPE
+    Carrega e valida DEXes a partir de variáveis:
+      DEX_1_NAME, DEX_1_FACTORY, DEX_1_ROUTER, DEX_1_TYPE, etc.
     """
     dexes: List[DexConfig] = []
     idx = 1
     while True:
         prefix = f"DEX_{idx}_"
-        name = os.getenv(prefix + "NAME")
-        if not name:
+        nome = os.getenv(prefix + "NAME")
+        if not nome:
             break
         factory = to_checksum(
             get_env(prefix + "FACTORY", required=True),
-            f"{name} factory"
+            f"{nome} factory"
         )
         router = to_checksum(
             get_env(prefix + "ROUTER", required=True),
-            f"{name} router"
+            f"{nome} router"
         )
         dtype = get_env(prefix + "TYPE", default="v2").lower()
         if dtype not in ("v2", "v3"):
-            raise ValueError(f"Tipo inválido para {name}: {dtype}")
-        dexes.append(DexConfig(name=name, factory=factory, router=router, type=dtype))
+            raise ValueError(f"Tipo inválido para {nome}: {dtype}")
+        dexes.append(DexConfig(name=nome, factory=factory, router=router, type=dtype))
         idx += 1
+
     if not dexes:
         logger.warning("Nenhuma DEX configurada. Verifique variáveis DEX_1_…")
     return dexes
-
 
 # ---------------------------------------------------
 # Carregamento principal de parâmetros
 # ---------------------------------------------------
 
 # RPC e Chain
-RPC_URL    = get_env("RPC_URL", default="https://mainnet.base.org")
-CHAIN_ID   = get_env("CHAIN_ID", default=8453, cast=int)
+RPC_URL  = get_env("RPC_URL", default="https://mainnet.base.org")
+CHAIN_ID = get_env("CHAIN_ID", default=8453, cast=int)
 
-# Carteira e chaves
+# Chave privada e carteira
 PRIVATE_KEY = normalize_private_key(get_env("PRIVATE_KEY", required=True))
 WALLET      = get_env("WALLET_ADDRESS", default=None)
 if WALLET:
@@ -143,7 +133,7 @@ AUTH0_CLIENT_SECRET = get_env("AUTH0_CLIENT_SECRET", required=True)
 TELEGRAM_TOKEN = get_env("TELEGRAM_TOKEN", required=True)
 TELEGRAM_CHAT  = get_env("TELEGRAM_CHAT_ID", cast=int, default=0)
 
-# Operação
+# Operação básica
 DRY_RUN            = str_to_bool(get_env("DRY_RUN", default="true"))
 INTERVAL           = get_env("INTERVAL", default=3, cast=int)
 DEFAULT_SLIPPAGE   = get_env("SLIPPAGE_BPS", default=50, cast=int)
@@ -151,27 +141,35 @@ TX_DEADLINE_SEC    = get_env("TX_DEADLINE_SEC", default=300, cast=int)
 MIN_LIQ_WETH       = get_env("MIN_LIQ_WETH", default=Decimal("0.5"), cast=Decimal)
 DISCOVERY_INTERVAL = get_env("DISCOVERY_INTERVAL", default=3, cast=int)
 PAIR_DUP_INTERVAL  = get_env("PAIR_DUP_INTERVAL", default=5, cast=int)
-
-# APIs externas
-ETHERSCAN_API_KEY = get_env("ETHERSCAN_API_KEY", default="")
+ETHERSCAN_API_KEY  = get_env("ETHERSCAN_API_KEY", default="")
 
 # Lista de DEXes
 DEXES = load_dexes()
 
+# ---------------------------------------------------
+# Configurações do pipeline de Sniper
+# ---------------------------------------------------
+
+TRADE_SIZE_ETH     = get_env("TRADE_SIZE_ETH",     default=0.1,  cast=float)
+MAX_TAX_PCT        = get_env("MAX_TAX_PCT",        default=10.0, cast=float)
+TOP_HOLDER_LIMIT   = get_env("TOP_HOLDER_LIMIT",   default=30.0, cast=float)
+TAKE_PROFIT_PCT    = get_env("TAKE_PROFIT_PCT",    default=0.15, cast=float)
+STOP_LOSS_PCT      = get_env("STOP_LOSS_PCT",      default=0.05, cast=float)
+TRAIL_PCT          = get_env("TRAIL_PCT",          default=0.05, cast=float)
+EXIT_POLL_INTERVAL = get_env("EXIT_POLL_INTERVAL", default=15,   cast=int)
 
 # ---------------------------------------------------
 # Validação final de sanidade
 # ---------------------------------------------------
 
 def validate_cfg() -> None:
-    assert RPC_URL.startswith("http"), "RPC_URL deve ser URL válida"
+    assert RPC_URL.startswith("http"), "RPC_URL deve ser uma URL válida"
     assert CHAIN_ID > 0, "CHAIN_ID deve ser inteiro > 0"
     Web3.to_checksum_address(WETH)
     Web3.to_checksum_address(USDC)
     for dex in DEXES:
         Web3.to_checksum_address(dex.factory)
         Web3.to_checksum_address(dex.router)
-    # Auth0 sanity check
     if not AUTH0_DOMAIN:
         raise ValueError("AUTH0_DOMAIN inválido")
     if not AUTH0_AUDIENCE:
@@ -183,9 +181,8 @@ def validate_cfg() -> None:
 
 validate_cfg()
 
-
 # ---------------------------------------------------
-# Exposição do dicionário de config
+# Dicionário de configuração final
 # ---------------------------------------------------
 
 config: Dict[str, Any] = {
@@ -210,6 +207,13 @@ config: Dict[str, Any] = {
     "PAIR_DUP_INTERVAL":   PAIR_DUP_INTERVAL,
     "ETHERSCAN_API_KEY":   ETHERSCAN_API_KEY,
     "DEXES":               DEXES,
+    "TRADE_SIZE_ETH":      TRADE_SIZE_ETH,
+    "MAX_TAX_PCT":         MAX_TAX_PCT,
+    "TOP_HOLDER_LIMIT":    TOP_HOLDER_LIMIT,
+    "TAKE_PROFIT_PCT":     TAKE_PROFIT_PCT,
+    "STOP_LOSS_PCT":       STOP_LOSS_PCT,
+    "TRAIL_PCT":           TRAIL_PCT,
+    "EXIT_POLL_INTERVAL":  EXIT_POLL_INTERVAL,
 }
 
 # Debug opcional
