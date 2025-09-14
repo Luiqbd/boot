@@ -1,64 +1,31 @@
-# storage.py
+# metrics.py
 
-import sqlite3
-from threading import Lock
-from typing import List, Tuple
+from prometheus_client import Counter, Gauge, start_http_server
 
-from metrics import OPEN_POSITIONS
+def init_metrics_server(port: int = 8000):
+    start_http_server(port)
 
-DB_PATH = "positions.db"
-
-_schema_sql = """
-CREATE TABLE IF NOT EXISTS positions (
-    pair       TEXT PRIMARY KEY,
-    amount     INTEGER NOT NULL,
-    avg_price  REAL NOT NULL
-);
-"""
-
-_lock = Lock()
-
-def _get_conn():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.execute(_schema_sql)
-    return conn
-
-def add_position(pair: str, amount: int, avg_price: float) -> None:
-    """
-    Insere ou atualiza uma posição no banco e ajusta a métrica de posições abertas.
-    """
-    with _lock, _get_conn() as conn:
-        conn.execute(
-            "REPLACE INTO positions(pair, amount, avg_price) VALUES (?, ?, ?)",
-            (pair, amount, avg_price)
-        )
-    # atualiza Gauge
-    from storage import get_all_positions
-    OPEN_POSITIONS.set(len(get_all_positions()))
-
-def get_all_positions() -> List[Tuple[str, int, float]]:
-    """
-    Retorna lista de todas as posições: (pair, amount, avg_price).
-    """
-    with _lock, _get_conn() as conn:
-        rows = conn.execute(
-            "SELECT pair, amount, avg_price FROM positions"
-        ).fetchall()
-    return rows
-
-def remove_position(pair: str) -> None:
-    """
-    Remove uma posição e atualiza a métrica de posições abertas.
-    """
-    with _lock, _get_conn() as conn:
-        conn.execute("DELETE FROM positions WHERE pair = ?", (pair,))
-    from storage import get_all_positions
-    OPEN_POSITIONS.set(len(get_all_positions()))
-
-def clear_all_positions() -> None:
-    """
-    Limpa todas as posições.
-    """
-    with _lock, _get_conn() as conn:
-        conn.execute("DELETE FROM positions")
-    OPEN_POSITIONS.set(0)
+PAIRS_DISCOVERED = Counter(
+    "sniper_pairs_discovered_total",
+    "Total de pares novos detectados"
+)
+BUY_ATTEMPTS = Counter(
+    "sniper_buy_attempts_total",
+    "Total de tentativas de compra efetuadas"
+)
+BUY_SUCCESSES = Counter(
+    "sniper_buy_success_total",
+    "Total de compras bem-sucedidas"
+)
+SELL_SUCCESSES = Counter(
+    "sniper_sell_success_total",
+    "Total de vendas bem-sucedidas"
+)
+ERRORS = Counter(
+    "sniper_errors_total",
+    "Total de erros não tratados no pipeline"
+)
+OPEN_POSITIONS = Gauge(
+    "sniper_open_positions",
+    "Número de posições abertas"
+)
