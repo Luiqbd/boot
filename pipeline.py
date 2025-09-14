@@ -2,45 +2,59 @@
 
 import asyncio
 from decimal import Decimal
-from web3 import Web3
 
 from config import config
 from classifier import should_buy
 from trading import buy
 from storage import add_position
 from dex_client import DexClient
+from web3 import Web3
+
+from metrics import BUY_ATTEMPTS, BUY_SUCCESSES, ERRORS
 
 RPC_URL = config["RPC_URL"]
 WETH    = config["WETH"]
 
-async def on_pair(pair: str, token0: str, token1: str, dex_info: dict) -> None:
+async def on_pair(
+    pair_addr: str,
+    token0: str,
+    token1: str,
+    dex_info: dict
+) -> None:
     """
-    Chamado a cada par novo:
-      1) should_buy → True/False
-      2) buy() se aprovado
-      3) obtem preço e add_position
+    Pipeline para cada par novo:
+      1) BUY_ATTEMPTS
+      2) should_buy()
+      3) buy()
+      4) BUY_SUCCESSES
+      5) add_position()
     """
-    # 1) classificação
-    ok = await should_buy(pair, token0, token1, dex_info)
-    if not ok:
-        return
+    try:
+        BUY_ATTEMPTS.inc()
 
-    # 2) define quantidade e executa compra
-    trade_size = Decimal(str(config["TRADE_SIZE_ETH"]))
-    amount_wei = int(trade_size * Decimal(10**18))
+        ok = await should_buy(pair_addr, token0, token1, dex_info)
+        if not ok:
+            return
 
-    # escolhe token alvo
-    target = token1 if token0.lower() == WETH.lower() else token0
+        tamanho_eth = Decimal(str(config["TRADE_SIZE_ETH"]))
+        amount_wei = int(tamanho_eth * Decimal(10**18))
 
-    tx_hash = await buy(amount_in_wei=amount_wei, token_out=target)
-    if not tx_hash:
-        print(f"🚫 Falha na compra de {target} no par {pair}")
-        return
+        target = token1 if token0.lower() == WETH.lower() else token0
 
-    # 3) obtém preço de entrada on-chain
-    web3 = Web3(Web3.HTTPProvider(RPC_URL))
-    dex = DexClient(web3, dex_info["router"])
-    price = dex.get_token_price(token_address=target, weth_address=WETH) or 0.0
+        tx_hash = await buy(amount_in_wei=amount_wei, token_out=target)
+        if not tx_hash:
+            return
 
-    add_position(pair=target, amount=amount_wei, avg_price=price)
-    print(f"✅ Comprado {target} | Par={pair} | TX={tx_hash} | PreçoEntrada={price:.6f}")
+        BUY_SUCCESSES.inc()
+
+        # captura preço on-chain
+        web3 = Web3(Web3.HTTPProvider(RPC_URL))
+        dex = DexClient(web3, dex_info["router"])
+        price = dex.get_token_price(token_address=target, weth_address=WETH) or 0.0
+
+        add_position(pair=target, amount=amount_wei, avg_price=price)
+        print(f"✅ Comprado {target} | Par={pair_addr} | TX={tx_hash} | Entrada={price:.6f}")
+
+    except Exception as e:
+        ERRORS.inc()
+        raise
