@@ -90,9 +90,10 @@ class SniperDiscovery:
         self._filters: List[Dict[str, Any]] = []
 
         for dex in self.dexes:
-            factory = self.web3.eth.contract(address=dex.factory, abi=FACTORY_ABI)
-            event   = factory.events.PoolCreated
-            filt    = event.create_filter(fromBlock="latest")
+            factory_contract = self.web3.eth.contract(address=dex.factory, abi=FACTORY_ABI)
+            event = factory_contract.events.PoolCreated
+            # use `from_block` (snake_case) instead of `fromBlock`
+            filt = event.create_filter(from_block="latest")
             self._filters.append({"dex": dex, "filter": filt})
             logger.info("🟢 Subscribed to PoolCreated on %s (factory %s)", dex.name, dex.factory)
 
@@ -136,7 +137,7 @@ class SniperDiscovery:
 
         while self._running:
             for entry in self._filters:
-                dex  = entry["dex"]
+                dex = entry["dex"]
                 filt = entry["filter"]
                 try:
                     logs = filt.get_new_entries()
@@ -195,15 +196,15 @@ def subscribe_new_pairs(callback: Callable[..., Awaitable[Any]]):
 
     dexes_cfg = config["DEXES"]
     dexes = [DexInfo(d.name, d.factory, d.router, d.type) for d in dexes_cfg]
-    base  = config["BASE_TOKENS"]
-    min_l = config["MIN_LIQ_WETH"]
+    base_tokens = config["BASE_TOKENS"]
+    min_liq = config["MIN_LIQ_WETH"]
     interval = config["DISCOVERY_INTERVAL"]
 
     _discovery = SniperDiscovery(
         web3=Web3(Web3.HTTPProvider(config["RPC_URL"])),
         dexes=dexes,
-        base_tokens=base,
-        min_liq_weth=Decimal(str(min_l)),
+        base_tokens=base_tokens,
+        min_liq_weth=Decimal(str(min_liq)),
         interval_sec=interval,
         callback=callback
     )
