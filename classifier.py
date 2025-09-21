@@ -6,19 +6,17 @@ from typing import Any
 from config import config
 from exchange_client import ExchangeClient
 
-# Usa o primeiro DexConfig para criar o client
-primeiro_dex = config["DEXES"][0]
-_client = ExchangeClient(primeiro_dex.router)
-
-async def is_honeypot(token: str) -> bool:
+async def is_honeypot(token: str, router: str) -> bool:
     """
-    Tenta simular swap token → WETH para detectar honeypot.
+    Simula swap token→WETH para detectar honeypot.
     """
+    client = ExchangeClient(router)
+    loop = asyncio.get_event_loop()
     try:
-        await asyncio.get_event_loop().run_in_executor(
+        await loop.run_in_executor(
             None,
-            lambda: _client._calcular_amount_out_min(
-                amount_in=1_000,
+            lambda: client._calc_amounts(
+                amount_in=10**6,  # pequena amostra
                 path=[token, config["WETH"]],
                 slippage_bps=0
             )
@@ -33,11 +31,7 @@ async def should_buy(
     token1: str,
     dex_info: Any
 ) -> bool:
-    """
-    Decide se deve comprar baseado em filtros (atualmente só honeypot).
-    """
     token = token1 if token0.lower() == config["WETH"].lower() else token0
-    if await is_honeypot(token):
-        print(f"🚫 Token honeypot detectado: {token}")
+    if await is_honeypot(token, dex_info.router):
         return False
     return True
