@@ -9,6 +9,15 @@ PAIRS_DISCOVERED = Counter(
     "sniper_pairs_discovered_total",
     "Total de pares novos detectados"
 )
+PAIRS_SKIPPED_NO_BASE = Counter(
+    "sniper_pairs_skipped_no_base_total",
+    "Total de pools pulados por não conter token base"
+)
+PAIRS_SKIPPED_LOW_LIQ = Counter(
+    "sniper_pairs_skipped_low_liq_total",
+    "Total de pools pulados por liquidez abaixo do mínimo"
+)
+
 BUY_ATTEMPTS = Counter(
     "sniper_buy_attempts_total",
     "Total de tentativas de compra efetuadas"
