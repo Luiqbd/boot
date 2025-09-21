@@ -1,47 +1,43 @@
-from config import config
-from web3 import Web3
-import logging, os, time
+# check_balance.py
 
-log = logging.getLogger("balance")
+import logging
+import time
+from web3 import Web3
+
+from config import config
+
+logger = logging.getLogger("balance")
 
 w3 = Web3(Web3.HTTPProvider(config["RPC_URL"]))
-default_address = Web3.to_checksum_address(
-    w3.eth.account.from_key(config["PRIVATE_KEY"]).address
-)
-WETH_ADDRESS = Web3.to_checksum_address(config["WETH"])
+DEFAULT_WALLET = config["WALLET"]
+WETH_ADDR = config["WETH"]
 
-def get_token_balance(token_address, wallet, retries=3, delay=0.5):
+def get_token_balance(token_address: str, wallet: str, retries: int = 3, delay: float = 0.5) -> float:
     abi = [{
         "name": "balanceOf", "type": "function", "stateMutability": "view",
-        "inputs": [{"name": "owner", "type": "address"}],
-        "outputs": [{"type": "uint256"}]
+        "inputs": [{"name":"owner","type":"address"}],
+        "outputs":[{"type":"uint256"}]
     }]
-    token_address = Web3.to_checksum_address(token_address)
-    wallet = Web3.to_checksum_address(wallet)
     token = w3.eth.contract(address=token_address, abi=abi)
-
-    for attempt in range(1, retries+1):
+    for i in range(retries):
         try:
-            return token.functions.balanceOf(wallet).call()
+            raw = token.functions.balanceOf(wallet).call()
+            return raw / 1e18
         except Exception as e:
-            log.error(f"[{attempt}/{retries}] Erro ao consultar saldo de token {token_address} para {wallet}: {e}")
+            logger.error(f"[{i+1}/{retries}] Erro balanceOf: {e}")
             time.sleep(delay)
-    return 0
+    return 0.0
 
-def get_wallet_status(wallet_address=None):
-    wallet = Web3.to_checksum_address(wallet_address or default_address)
+def get_wallet_status(wallet_address: str = None) -> str:
+    wallet = wallet_address or DEFAULT_WALLET
     try:
-        eth_balance = w3.eth.get_balance(wallet) / 1e18
+        eth = w3.eth.get_balance(wallet) / 1e18
     except Exception as e:
-        log.error(f"Erro ao consultar ETH de {wallet}: {e}")
-        eth_balance = 0
-    weth_balance = get_token_balance(WETH_ADDRESS, wallet) / 1e18
-
+        logger.error(f"Erro ETH balance: {e}")
+        eth = 0.0
+    weth = get_token_balance(WETH_ADDR, wallet)
     return (
         f"📍 Carteira: {wallet}\n"
-        f"💰 ETH:  {eth_balance:.6f}\n"
-        f"💰 WETH: {weth_balance:.6f}"
+        f"💰 ETH:  {eth:.6f}\n"
+        f"💰 WETH: {weth:.6f}"
     )
-
-if __name__ == "__main__":
-    print(get_wallet_status())
