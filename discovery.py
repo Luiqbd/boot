@@ -6,7 +6,7 @@ import threading
 import time
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, Awaitable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from web3 import Web3
 from web3.types import LogReceipt
