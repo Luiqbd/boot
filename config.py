@@ -10,12 +10,10 @@ from web3 import Web3
 logger = logging.getLogger(__name__)
 load_dotenv()
 
-
 def str_to_bool(val: Union[str, bool]) -> bool:
     if isinstance(val, bool):
         return val
     return str(val).strip().lower() in {"1", "true", "t", "yes", "y"}
-
 
 def get_env(
     key: str,
@@ -33,7 +31,6 @@ def get_env(
     except Exception as e:
         raise RuntimeError(f"Falha ao converter '{key}'={raw}: {e}")
 
-
 def normalize_private_key(pk: str) -> str:
     if not pk:
         raise ValueError("PRIVATE_KEY vazia")
@@ -42,12 +39,10 @@ def normalize_private_key(pk: str) -> str:
         raise ValueError("PRIVATE_KEY inválida")
     return key
 
-
 def to_checksum(addr: str, nome: str) -> str:
     if not Web3.is_address(addr):
         raise ValueError(f"Endereço '{nome}' inválido: {addr}")
     return Web3.to_checksum_address(addr)
-
 
 @dataclass(frozen=True)
 class DexConfig:
@@ -55,7 +50,6 @@ class DexConfig:
     factory: str
     router: str
     type: str  # 'v2' ou 'v3'
-
 
 def load_dexes() -> List[DexConfig]:
     dexes: List[DexConfig] = []
@@ -76,7 +70,6 @@ def load_dexes() -> List[DexConfig]:
         logger.warning("Nenhuma DEX configurada. Verifique DEX_1_* no .env")
     return dexes
 
-
 # ─── Core settings ────────────────────────────────────────────────────
 RPC_URL    = get_env("RPC_URL", default="https://mainnet.base.org")
 CHAIN_ID   = get_env("CHAIN_ID", default=8453, cast=int)
@@ -85,6 +78,9 @@ PRIVATE_KEY = normalize_private_key(get_env("PRIVATE_KEY", required=True))
 WALLET      = get_env("WALLET_ADDRESS", default=None)
 if WALLET:
     WALLET = to_checksum(WALLET, "WALLET_ADDRESS")
+else:
+    # carrega a partir da chave privada
+    WALLET = Web3.to_checksum_address(Web3(Web3.HTTPProvider(RPC_URL)).eth.account.from_key(PRIVATE_KEY).address)
 
 WETH = to_checksum(get_env("WETH", default="0x4200000000000000000000000000000000000006"), "WETH")
 USDC = to_checksum(get_env("USDC", default="0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"), "USDC")
@@ -120,6 +116,7 @@ config: Dict[str, Any] = {
     "CHAIN_ID":           CHAIN_ID,
     "PRIVATE_KEY":        PRIVATE_KEY,
     "WALLET":             WALLET,
+    "WALLET_ADDRESS":     WALLET,
     "WETH":               WETH,
     "USDC":               USDC,
     "AUTH0_DOMAIN":       AUTH0_DOMAIN,
@@ -137,6 +134,7 @@ config: Dict[str, Any] = {
     "EXIT_POLL_INTERVAL": EXIT_POLL_INTERVAL,
     "BASE_TOKENS":        BASE_TOKENS,
     "SLIPPAGE_BPS":       SLIPPAGE_BPS,
+    "DEFAULT_SLIPPAGE_BPS": SLIPPAGE_BPS,
     "TRAIL_PCT":          TRAIL_PCT,
     "TX_DEADLINE_SEC":    TX_DEADLINE_SEC,
     "DEXES":              DEXES,
