@@ -6,7 +6,7 @@ import threading
 import time
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Dict, List, Optional
 
 from web3 import Web3
 from web3.types import LogReceipt
@@ -88,10 +88,13 @@ class SniperDiscovery:
         self.interval = interval_sec
         self.callback = callback
 
-        # controle de blocos
+        # guarda o último bloco processado
         self._last_block = self.web3.eth.block_number
-        # topic PoolCreated
-        self._topic = self.web3.keccak(text="PoolCreated(address,address,address,uint24)").hex()
+
+        # topic PoolCreated com prefixo "0x"
+        self._topic = self.web3.to_hex(
+            self.web3.keccak(text="PoolCreated(address,address,address,uint24)")
+        )
 
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -111,8 +114,8 @@ class SniperDiscovery:
 
             tok_ct = self.web3.eth.contract(address=token_addr, abi=ERC20_DECIMALS_ABI)
             dec = tok_ct.functions.decimals().call()
-            norm = amt / Decimal(10**dec)
-            return norm >= self.min_liq_weth
+            normalized = amt / Decimal(10 ** dec)
+            return normalized >= self.min_liq_weth
         except Exception as e:
             logger.error("❌ Erro checando liquidez em %s: %s", pair.address, e, exc_info=True)
             return False
@@ -136,9 +139,9 @@ class SniperDiscovery:
                     try:
                         logs = self.web3.eth.get_logs({
                             "fromBlock": self._last_block + 1,
-                            "toBlock": current_block,
-                            "address": dex.factory,
-                            "topics": [self._topic]
+                            "toBlock":   current_block,
+                            "address":   dex.factory,
+                            "topics":    [self._topic]
                         })
                     except Exception as e:
                         logger.error("❌ get_logs falhou para %s: %s", dex.name, e)
@@ -188,7 +191,7 @@ class SniperDiscovery:
         logger.info("🔴 SniperDiscovery parado")
 
 
-# controle no módulo
+# controle de instância no módulo
 _discovery: Optional[SniperDiscovery] = None
 
 def subscribe_new_pairs(callback: Callable[..., Awaitable[Any]]):
@@ -198,14 +201,14 @@ def subscribe_new_pairs(callback: Callable[..., Awaitable[Any]]):
         return
 
     dexes = [DexInfo(d.name, d.factory, d.router, d.type) for d in config["DEXES"]]
-    base = config["BASE_TOKENS"]
+    base_tokens = config["BASE_TOKENS"]
     min_liq = config["MIN_LIQ_WETH"]
     interval = config["DISCOVERY_INTERVAL"]
 
     _discovery = SniperDiscovery(
         web3=Web3(Web3.HTTPProvider(config["RPC_URL"])),
         dexes=dexes,
-        base_tokens=base,
+        base_tokens=base_tokens,
         min_liq_weth=Decimal(str(min_liq)),
         interval_sec=interval,
         callback=callback
