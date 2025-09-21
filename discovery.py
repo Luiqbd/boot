@@ -14,7 +14,7 @@ from web3.types import LogReceipt
 from config import config
 from metrics import (
     PAIRS_DISCOVERED,
-    PAIRS_SKIPPED_BASE_FILTER,
+    PAIRS_SKIPPED_NO_BASE,
     PAIRS_SKIPPED_LOW_LIQ
 )
 from notifier import send
@@ -120,7 +120,7 @@ class SniperDiscovery:
             dec = tok_ct.functions.decimals().call()
             normalized = amt / Decimal(10 ** dec)
             logger.debug(
-                "Liquidez for token %s: %s (mínima %s)",
+                "Liquidez para token %s: %s (mínima %s)",
                 token_addr, normalized, self.min_liq_weth
             )
             return normalized >= self.min_liq_weth
@@ -171,7 +171,7 @@ class SniperDiscovery:
 
                         t0, t1 = pair.token0.lower(), pair.token1.lower()
                         if self.base_tokens and not (t0 in self.base_tokens or t1 in self.base_tokens):
-                            PAIRS_SKIPPED_BASE_FILTER.inc()
+                            PAIRS_SKIPPED_NO_BASE.inc()
                             logger.debug(
                                 "Pulando par %s/%s (nenhum token base)",
                                 pair.token0, pair.token1
