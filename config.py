@@ -10,10 +10,12 @@ from web3 import Web3
 logger = logging.getLogger(__name__)
 load_dotenv()
 
+
 def str_to_bool(val: Union[str, bool]) -> bool:
     if isinstance(val, bool):
         return val
     return str(val).strip().lower() in {"1", "true", "t", "yes", "y"}
+
 
 def get_env(
     key: str,
@@ -31,6 +33,7 @@ def get_env(
     except Exception as e:
         raise RuntimeError(f"Falha ao converter '{key}'={raw}: {e}")
 
+
 def normalize_private_key(pk: str) -> str:
     if not pk:
         raise ValueError("PRIVATE_KEY vazia")
@@ -39,10 +42,12 @@ def normalize_private_key(pk: str) -> str:
         raise ValueError("PRIVATE_KEY inválida")
     return key
 
+
 def to_checksum(addr: str, nome: str) -> str:
     if not Web3.is_address(addr):
         raise ValueError(f"Endereço '{nome}' inválido: {addr}")
     return Web3.to_checksum_address(addr)
+
 
 @dataclass(frozen=True)
 class DexConfig:
@@ -50,6 +55,7 @@ class DexConfig:
     factory: str
     router: str
     type: str  # 'v2' ou 'v3'
+
 
 def load_dexes() -> List[DexConfig]:
     dexes: List[DexConfig] = []
@@ -70,8 +76,8 @@ def load_dexes() -> List[DexConfig]:
         logger.warning("Nenhuma DEX configurada. Verifique DEX_1_* no .env")
     return dexes
 
-# ────────────────────────────────────────────────────────────────────
 
+# ─── Core settings ────────────────────────────────────────────────────
 RPC_URL    = get_env("RPC_URL", default="https://mainnet.base.org")
 CHAIN_ID   = get_env("CHAIN_ID", default=8453, cast=int)
 
@@ -99,27 +105,39 @@ TAKE_PROFIT_PCT    = get_env("TAKE_PROFIT_PCT", default=0.2, cast=float)
 STOP_LOSS_PCT      = get_env("STOP_LOSS_PCT", default=0.05, cast=float)
 EXIT_POLL_INTERVAL = get_env("EXIT_POLL_INTERVAL", default=15, cast=int)
 
+# ─── Newly added vars ──────────────────────────────────────────────────
+BASE_TOKENS_RAW   = get_env("BASE_TOKENS", default="", cast=str)
+BASE_TOKENS       = [t.strip().lower() for t in BASE_TOKENS_RAW.split(",") if t.strip()]
+
+SLIPPAGE_BPS      = get_env("SLIPPAGE_BPS", default=250, cast=int)
+TRAIL_PCT         = get_env("TRAIL_PCT", default=0.08, cast=float)
+TX_DEADLINE_SEC   = get_env("TX_DEADLINE_SEC", default=60, cast=int)
+
 DEXES = load_dexes()
 
 config: Dict[str, Any] = {
-    "RPC_URL":             RPC_URL,
-    "CHAIN_ID":            CHAIN_ID,
-    "PRIVATE_KEY":         PRIVATE_KEY,
-    "WALLET":              WALLET,
-    "WETH":                WETH,
-    "USDC":                USDC,
-    "AUTH0_DOMAIN":        AUTH0_DOMAIN,
-    "AUTH0_AUDIENCE":      AUTH0_AUDIENCE,
-    "AUTH0_CLIENT_ID":     AUTH0_CLIENT_ID,
-    "AUTH0_CLIENT_SECRET": AUTH0_CLIENT_SECRET,
-    "TELEGRAM_TOKEN":      TELEGRAM_TOKEN,
-    "TELEGRAM_CHAT_ID":    TELEGRAM_CHAT,
-    "DRY_RUN":             DRY_RUN,
-    "DISCOVERY_INTERVAL":  DISCOVERY_INTERVAL,
-    "TRADE_SIZE_ETH":      TRADE_SIZE_ETH,
-    "MIN_LIQ_WETH":        MIN_LIQ_WETH,
-    "TAKE_PROFIT_PCT":     TAKE_PROFIT_PCT,
-    "STOP_LOSS_PCT":       STOP_LOSS_PCT,
-    "EXIT_POLL_INTERVAL":  EXIT_POLL_INTERVAL,
-    "DEXES":               DEXES,
+    "RPC_URL":            RPC_URL,
+    "CHAIN_ID":           CHAIN_ID,
+    "PRIVATE_KEY":        PRIVATE_KEY,
+    "WALLET":             WALLET,
+    "WETH":               WETH,
+    "USDC":               USDC,
+    "AUTH0_DOMAIN":       AUTH0_DOMAIN,
+    "AUTH0_AUDIENCE":     AUTH0_AUDIENCE,
+    "AUTH0_CLIENT_ID":    AUTH0_CLIENT_ID,
+    "AUTH0_CLIENT_SECRET":AUTH0_CLIENT_SECRET,
+    "TELEGRAM_TOKEN":     TELEGRAM_TOKEN,
+    "TELEGRAM_CHAT_ID":   TELEGRAM_CHAT,
+    "DRY_RUN":            DRY_RUN,
+    "DISCOVERY_INTERVAL": DISCOVERY_INTERVAL,
+    "TRADE_SIZE_ETH":     TRADE_SIZE_ETH,
+    "MIN_LIQ_WETH":       MIN_LIQ_WETH,
+    "TAKE_PROFIT_PCT":    TAKE_PROFIT_PCT,
+    "STOP_LOSS_PCT":      STOP_LOSS_PCT,
+    "EXIT_POLL_INTERVAL": EXIT_POLL_INTERVAL,
+    "BASE_TOKENS":        BASE_TOKENS,
+    "SLIPPAGE_BPS":       SLIPPAGE_BPS,
+    "TRAIL_PCT":          TRAIL_PCT,
+    "TX_DEADLINE_SEC":    TX_DEADLINE_SEC,
+    "DEXES":              DEXES,
 }
