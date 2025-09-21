@@ -6,13 +6,17 @@ import threading
 import time
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Dict, List, Optional, Callable
 
 from web3 import Web3
 from web3.types import LogReceipt
 
 from config import config
-from metrics import PAIRS_DISCOVERED
+from metrics import (
+    PAIRS_DISCOVERED,
+    PAIRS_SKIPPED_BASE_FILTER,
+    PAIRS_SKIPPED_LOW_LIQ
+)
 from notifier import send
 
 logger = logging.getLogger(__name__)
@@ -88,10 +92,10 @@ class SniperDiscovery:
         self.interval = interval_sec
         self.callback = callback
 
-        # guarda o último bloco processado
+        # último bloco que varremos
         self._last_block = self.web3.eth.block_number
 
-        # topic PoolCreated com prefixo "0x"
+        # tópico PoolCreated já com "0x" na frente
         self._topic = self.web3.to_hex(
             self.web3.keccak(text="PoolCreated(address,address,address,uint24)")
         )
@@ -115,6 +119,10 @@ class SniperDiscovery:
             tok_ct = self.web3.eth.contract(address=token_addr, abi=ERC20_DECIMALS_ABI)
             dec = tok_ct.functions.decimals().call()
             normalized = amt / Decimal(10 ** dec)
+            logger.debug(
+                "Liquidez for token %s: %s (mínima %s)",
+                token_addr, normalized, self.min_liq_weth
+            )
             return normalized >= self.min_liq_weth
         except Exception as e:
             logger.error("❌ Erro checando liquidez em %s: %s", pair.address, e, exc_info=True)
@@ -134,6 +142,8 @@ class SniperDiscovery:
         self._running = True
         while self._running:
             current_block = self.web3.eth.block_number
+            logger.debug("Scaneando blocos %d → %d", self._last_block + 1, current_block)
+
             if current_block > self._last_block:
                 for dex in self.dexes:
                     try:
@@ -154,11 +164,22 @@ class SniperDiscovery:
                             logger.error("❌ parse_log falhou: %s", e, exc_info=True)
                             continue
 
+                        logger.debug(
+                            "PoolCreated em %s → tokens: %s / %s",
+                            dex.name, pair.token0, pair.token1
+                        )
+
                         t0, t1 = pair.token0.lower(), pair.token1.lower()
                         if self.base_tokens and not (t0 in self.base_tokens or t1 in self.base_tokens):
+                            PAIRS_SKIPPED_BASE_FILTER.inc()
+                            logger.debug(
+                                "Pulando par %s/%s (nenhum token base)",
+                                pair.token0, pair.token1
+                            )
                             continue
 
                         if not asyncio.run(self._has_min_liq(pair)):
+                            PAIRS_SKIPPED_LOW_LIQ.inc()
                             continue
 
                         PAIRS_DISCOVERED.inc()
@@ -191,7 +212,7 @@ class SniperDiscovery:
         logger.info("🔴 SniperDiscovery parado")
 
 
-# controle de instância no módulo
+# módulo-level control
 _discovery: Optional[SniperDiscovery] = None
 
 def subscribe_new_pairs(callback: Callable[..., Awaitable[Any]]):
