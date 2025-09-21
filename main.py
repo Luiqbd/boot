@@ -176,10 +176,10 @@ async def echo_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # Lista de handlers e descrições de comando
 handlers = [
-    ("start", start_cmd),
-    ("menu",  start_cmd),
-    ("snipe", snipe_cmd),
-    ("stop",  stop_cmd),
+    ("start",        start_cmd),
+    ("menu",         start_cmd),
+    ("snipe",        snipe_cmd),
+    ("stop",         stop_cmd),
     ("sniperstatus", sniper_status_cmd),
     ("status",       status_cmd),
     ("ping",         ping_cmd),
@@ -271,12 +271,17 @@ def api_webhook():
 
 # ─── Shutdown gracioso ─────────────────────────────────────────────────
 def _shutdown(sig, frame):
+    # Para descoberta de pares
     parar_sniper()
 
-    # Para o Telegram Application de forma síncrona
-    application.stop()
-    logger.info("🔴 Telegram Application parado")
+    # Agendando shutdown do Application no telegram_loop
+    future = asyncio.run_coroutine_threadsafe(application.shutdown(), telegram_loop)
+    try:
+        future.result(timeout=10)
+    except Exception as e:
+        logger.error("Erro ao parar Telegram Application: %s", e, exc_info=True)
 
+    logger.info("🔴 Telegram Application parado")
     sys.exit(0)
 
 for s in (signal.SIGINT, signal.SIGTERM):
