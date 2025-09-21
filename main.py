@@ -123,7 +123,10 @@ async def start_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "🎯 *Sniper Bot*\n\n"
         "Use os botões abaixo para controlar o bot:\n"
     )
-    await update.message.reply_markdown_v2(text, reply_markup=build_main_menu())
+    await update.message.reply_markdown_v2(
+        text,
+        reply_markup=build_main_menu()
+    )
 
 
 async def menu_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -149,7 +152,8 @@ async def menu_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif cmd == "menu_status":
         status = "🟢 Ativo" if is_discovery_running() else "🔴 Parado"
         await query.message.reply_text(
-            f"📊 Status Sniper: *{status}*", parse_mode="MarkdownV2"
+            f"📊 Status Sniper: *{status}*",
+            parse_mode="MarkdownV2"
         )
 
     elif cmd == "menu_balance":
@@ -158,7 +162,9 @@ async def menu_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     elif cmd == "menu_ping":
         up = int(time.time() - ctx.bot_data["start_time"])
-        await query.message.reply_text(f"pong 🏓\nUptime: {datetime.timedelta(seconds=up)}")
+        await query.message.reply_text(
+            f"pong 🏓\nUptime: {datetime.timedelta(seconds=up)}"
+        )
 
     elif cmd == "menu_testnotify":
         ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -171,29 +177,44 @@ async def menu_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         report = risk_manager.gerar_relatorio()
         await query.message.reply_text(f"📑 Relatório de risco:\n{report}")
 
-    # Reexibe o menu
-    await query.message.reply_text(
-        "🎯 Menu Principal:", reply_markup=build_main_menu()
+    # atualiza a própria mensagem para manter apenas um menu
+    menu_text = (
+        "🎯 *Sniper Bot*\n\n"
+        "Use os botões abaixo para controlar o bot:\n"
     )
+    try:
+        await query.message.edit_markdown_v2(
+            menu_text,
+            reply_markup=build_main_menu()
+        )
+    except Exception:
+        # fallback: envia um novo menu se edição falhar
+        await query.message.reply_markdown_v2(
+            menu_text,
+            reply_markup=build_main_menu()
+        )
 
 
-# Registra handlers
+# registra handlers
 application.add_handler(CommandHandler("start", start_cmd))
 application.add_handler(CallbackQueryHandler(menu_handler))
 
-# Fallback echo
+# fallback echo
 application.add_handler(
-    MessageHandler(filters.TEXT & ~filters.COMMAND,
-                   lambda u, c: u.message.reply_text("Use /start para abrir o menu"))
+    MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        lambda u, c: u.message.reply_text("Use /start para abrir o menu")
+    )
 )
 
-# Registra comandos no Telegram para UX
-commands = [BotCommand("start", "Abrir menu principal do Sniper Bot")]
+# registra comando /start no Telegram
 telegram_loop.run_until_complete(application.initialize())
 telegram_loop.run_until_complete(application.start())
-telegram_loop.run_until_complete(bot.set_my_commands(commands))
+telegram_loop.run_until_complete(
+    bot.set_my_commands([BotCommand("start", "Abrir menu principal do Sniper Bot")])
+)
 
-# Ajusta e configura webhook
+# configura webhook corretamente
 if WEBHOOK:
     url = WEBHOOK.rstrip("/")
     if not url.endswith("/webhook"):
@@ -204,7 +225,7 @@ if WEBHOOK:
 Thread(target=telegram_loop.run_forever, daemon=True).start()
 logger.info("🚀 Bot Telegram rodando em background")
 
-# ─── Controle do Sniper ───────────────────────────────────────────────
+
 def iniciar_sniper():
     if is_discovery_running():
         logger.info("⚠️ Sniper já está ativo")
@@ -223,6 +244,7 @@ def iniciar_sniper():
 def parar_sniper():
     stop_discovery()
     logger.info("🔴 SniperDiscovery parado")
+
 
 # ─── Flask API ─────────────────────────────────────────────────────────
 app = Flask(__name__)
@@ -251,10 +273,8 @@ def api_status():
 @app.route("/webhook", methods=["POST"])
 def api_webhook():
     data = request.get_json(silent=True)
-    # aceita tanto mensagens quanto cliques em botões
     if not data or not ("message" in data or "callback_query" in data):
         return "ignored", 200
-
     logger.info("🔄 Update recebido via webhook: %s", list(data.keys()))
     upd = Update.de_json(data, bot)
     asyncio.run_coroutine_threadsafe(
@@ -262,6 +282,7 @@ def api_webhook():
         telegram_loop
     )
     return "ok", 200
+
 
 # ─── Shutdown gracioso ─────────────────────────────────────────────────
 def _shutdown(sig, frame):
@@ -278,6 +299,7 @@ def _shutdown(sig, frame):
 
 for s in (signal.SIGINT, signal.SIGTERM):
     signal.signal(s, _shutdown)
+
 
 # ─── Entry Point ───────────────────────────────────────────────────────
 if __name__ == "__main__":
