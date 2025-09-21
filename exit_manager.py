@@ -1,3 +1,5 @@
+# exit_manager.py
+
 import asyncio
 from decimal import Decimal
 from web3 import Web3
@@ -13,13 +15,13 @@ RPC_URL = config["RPC_URL"]
 WETH    = config["WETH"]
 
 async def check_exits() -> None:
-    tp_pct = Decimal(str(config["TAKE_PROFIT_PCT"]))
-    sl_pct = Decimal(str(config["STOP_LOSS_PCT"]))
+    tp = Decimal(str(config["TAKE_PROFIT_PCT"]))
+    sl = Decimal(str(config["STOP_LOSS_PCT"]))
     web3 = Web3(Web3.HTTPProvider(RPC_URL))
-    primeiro_dex = config["DEXES"][0]
+    dex_router = config["DEXES"][0].router
 
     for pair, amount, avg_price in get_all_positions():
-        price = DexClient(web3, primeiro_dex.router) \
+        price = DexClient(web3, dex_router) \
             .get_token_price(token_address=pair, weth_address=WETH)
         if price is None:
             continue
@@ -27,8 +29,14 @@ async def check_exits() -> None:
         price_dec = Decimal(str(price))
         entry_dec = Decimal(str(avg_price))
 
-        if price_dec >= entry_dec * (1 + tp_pct):
-            tx = await sell(amount, pair)
+        # Take Profit
+        if price_dec >= entry_dec * (1 + tp):
+            tx = await sell(
+                amount=amount,
+                token_in=pair,
+                dex_router=dex_router,
+                slippage_bps=config["SLIPPAGE_BPS"]
+            )
             SELL_SUCCESSES.inc()
             remove_position(pair)
             OPEN_POSITIONS.dec()
@@ -36,12 +44,18 @@ async def check_exits() -> None:
                 "📈 TAKE PROFIT atingido:\n"
                 f"• Token: {pair}\n"
                 f"• TX: {tx}\n"
-                f"• Lucro: +{tp_pct*100:.1f}%"
+                f"• Lucro: +{tp*100:.1f}%"
             )
             continue
 
-        if price_dec <= entry_dec * (1 - sl_pct):
-            tx = await sell(amount, pair)
+        # Stop Loss
+        if price_dec <= entry_dec * (1 - sl):
+            tx = await sell(
+                amount=amount,
+                token_in=pair,
+                dex_router=dex_router,
+                slippage_bps=config["SLIPPAGE_BPS"]
+            )
             SELL_SUCCESSES.inc()
             remove_position(pair)
             OPEN_POSITIONS.dec()
@@ -49,7 +63,7 @@ async def check_exits() -> None:
                 "📉 STOP LOSS atingido:\n"
                 f"• Token: {pair}\n"
                 f"• TX: {tx}\n"
-                f"• Perda: –{sl_pct*100:.1f}%"
+                f"• Perda: –{sl*100:.1f}%"
             )
             continue
 
