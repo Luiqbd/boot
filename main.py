@@ -9,23 +9,18 @@ import time
 import datetime
 import uuid
 import argparse
-from functools import wraps
 from threading import Thread
+from functools import wraps
 
 from flask import Flask, request, jsonify, abort
 from telegram import (
-    Update,
-    BotCommand,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
+    Update, BotCommand,
+    InlineKeyboardButton, InlineKeyboardMarkup
 )
 from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    CallbackQueryHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
+    ApplicationBuilder, CommandHandler,
+    CallbackQueryHandler, MessageHandler,
+    ContextTypes, filters
 )
 from web3 import Web3
 
@@ -39,294 +34,158 @@ from check_balance import get_wallet_status
 from risk_manager import risk_manager
 from metrics import init_metrics_server
 
-# ─── Inicia servidor de métricas Prometheus ─────────────────────────
-init_metrics_server(port=8000)
+# Métricas Prometheus
+init_metrics_server(8000)
 
-# ─── Config Básicas ─────────────────────────────────────────────────
-RPC_URL    = config["RPC_URL"]
-CHAIN_ID   = int(config["CHAIN_ID"])
-TELE_TOKEN = config["TELEGRAM_TOKEN"]
-WEBHOOK    = config.get("WEBHOOK_URL", "")
-PORT       = int(os.getenv("PORT", 10000))
+RPC_URL     = config["RPC_URL"]
+TELE_TOKEN  = config["TELEGRAM_TOKEN"]
+WEBHOOK_URL = config.get("WEBHOOK_URL", "")
+PORT        = int(os.getenv("PORT", 10000))
 
-# ─── Logger ─────────────────────────────────────────────────────────
-logging.basicConfig(
-    format="[%(asctime)s] %(levelname)s: %(message)s",
-    level=logging.INFO
-)
+# Logger
+logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
-# ─── Conexão Web3 & Validações ───────────────────────────────────────
+# Web3
 w3 = Web3(Web3.HTTPProvider(RPC_URL))
 if not w3.is_connected():
-    logger.error("Falha ao conectar no RPC %s", RPC_URL)
+    logger.error("RPC inacessível")
     sys.exit(1)
 
-if not config.get("DEXES"):
-    logger.error("Nenhuma DEX configurada (DEX_1_*).")
-    sys.exit(1)
+# Telegram Bot
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
 
-# ─── Setup do Bot Telegram ────────────────────────────────────────────
-telegram_loop = asyncio.new_event_loop()
-asyncio.set_event_loop(telegram_loop)
+app_bot = ApplicationBuilder().token(TELE_TOKEN).build()
+bot = app_bot.bot
+app_bot.bot_data["start_time"] = time.time()
 
-application = ApplicationBuilder().token(TELE_TOKEN).build()
-bot = application.bot
-application.bot_data["start_time"] = time.time()
-
-
-def fetch_token() -> str:
-    try:
-        token = gerar_meu_token_externo()
-        logger.info("✅ Token Auth0 obtido")
-        return token
-    except Exception as e:
-        logger.error("❌ Falha ao obter token Auth0: %s", e, exc_info=True)
-        return ""
-
-
-def env_summary_text() -> str:
-    addr = w3.eth.account.from_key(config["PRIVATE_KEY"]).address
-    return (
-        f"🔑 Endereço: {addr}\n"
-        f"🌐 Chain ID: {CHAIN_ID}\n"
-        f"🔗 RPC: {RPC_URL}\n"
-        f"⏱ Discovery Interval: {config['DISCOVERY_INTERVAL']}s\n"
-        f"🧪 Dry Run: {config['DRY_RUN']}"
-    )
-
-
-def build_main_menu() -> InlineKeyboardMarkup:
-    keyboard = [
-        [
-            InlineKeyboardButton("▶️ Iniciar Sniper", callback_data="menu_snipe"),
-            InlineKeyboardButton("⏹️ Parar Sniper",   callback_data="menu_stop"),
-        ],
-        [
-            InlineKeyboardButton("📊 Status Sniper",  callback_data="menu_status"),
-            InlineKeyboardButton("💰 Saldo ETH/WETH", callback_data="menu_balance"),
-        ],
-        [
-            InlineKeyboardButton("🏓 Ping",           callback_data="menu_ping"),
-            InlineKeyboardButton("🛎️ Teste Notif.",  callback_data="menu_testnotify"),
-        ],
-        [
-            InlineKeyboardButton("📑 Relatório Risco", callback_data="menu_report"),
-        ]
+def build_menu():
+    kb = [
+        [InlineKeyboardButton("▶ Iniciar Sniper", "menu_snipe"),
+         InlineKeyboardButton("⏹ Parar Sniper",   "menu_stop")],
+        [InlineKeyboardButton("📊 Status",       "menu_status"),
+         InlineKeyboardButton("💰 Saldo",        "menu_balance")],
+        [InlineKeyboardButton("🏓 Ping",         "menu_ping"),
+         InlineKeyboardButton("🔔 TesteNotif",   "menu_testnotify")],
+        [InlineKeyboardButton("📑 Relatório",    "menu_report")]
     ]
-    return InlineKeyboardMarkup(keyboard)
-
+    return InlineKeyboardMarkup(kb)
 
 async def start_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Exibe menu principal com botões."""
-    text = (
-        "🎯 *Sniper Bot*\n\n"
-        "Use os botões abaixo para controlar o bot:\n"
-    )
     await update.message.reply_markdown_v2(
-        text,
-        reply_markup=build_main_menu()
+        "🎯 *Sniper Bot*\nUse os botões abaixo:",
+        reply_markup=build_menu()
     )
-
 
 async def menu_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Handle button presses from the main menu."""
-    query = update.callback_query
-    await query.answer()
-    logger.info("🔘 CallbackQuery recebido: %s", query.data)
-    cmd = query.data
-
+    q = update.callback_query
+    await q.answer()
+    cmd = q.data
     if cmd == "menu_snipe":
-        await query.message.reply_text("⚙️ Iniciando sniper...")
-        token = fetch_token()
+        token = gerar_meu_token_externo()
         if not token:
-            await query.message.reply_text("❌ Falha ao obter token Auth0")
+            await q.message.reply_text("❌ Auth0 falhou")
         else:
-            iniciar_sniper()
-            await query.message.reply_text("🟢 Sniper iniciado")
+            subscribe_new_pairs(on_pair, loop)
+            await q.message.reply_text("🟢 Sniper iniciado")
 
     elif cmd == "menu_stop":
-        parar_sniper()
-        await query.message.reply_text("🛑 Sniper interrompido")
+        stop_discovery()
+        await q.message.reply_text("🔴 Sniper parado")
 
     elif cmd == "menu_status":
         status = "🟢 Ativo" if is_discovery_running() else "🔴 Parado"
-        await query.message.reply_text(
-            f"📊 Status Sniper: *{status}*",
-            parse_mode="MarkdownV2"
-        )
+        await q.message.reply_text(f"*Status:* {status}", parse_mode="MarkdownV2")
 
     elif cmd == "menu_balance":
-        bal_text = get_wallet_status(None)
-        await query.message.reply_text(f"💰 {bal_text}")
+        await q.message.reply_text(get_wallet_status())
 
     elif cmd == "menu_ping":
-        up = int(time.time() - ctx.bot_data["start_time"])
-        await query.message.reply_text(
-            f"pong 🏓\nUptime: {datetime.timedelta(seconds=up)}"
-        )
+        up = int(time.time() - app_bot.bot_data["start_time"])
+        await q.message.reply_text(f"pong 🏓\nUptime: {datetime.timedelta(seconds=up)}")
 
     elif cmd == "menu_testnotify":
         ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         uid = uuid.uuid4().hex[:6]
-        texto = f"✅ Teste {ts}\nID: {uid}"
-        await bot.send_message(chat_id=config["TELEGRAM_CHAT_ID"], text=texto)
-        await query.message.reply_text(f"🛎️ Notificação enviada (ID={uid})")
+        await bot.send_message(chat_id=config["TELEGRAM_CHAT_ID"], text=f"✅ Teste {ts}\nID:{uid}")
+        await q.message.reply_text(f"🔔 Enviado (ID={uid})")
 
     elif cmd == "menu_report":
-        report = risk_manager.gerar_relatorio()
-        await query.message.reply_text(f"📑 Relatório de risco:\n{report}")
+        await q.message.reply_text(risk_manager.gerar_relatorio())
 
-    # atualiza a própria mensagem para manter apenas um menu
-    menu_text = (
-        "🎯 *Sniper Bot*\n\n"
-        "Use os botões abaixo para controlar o bot:\n"
-    )
+    # reexibe menu
     try:
-        await query.message.edit_markdown_v2(
-            menu_text,
-            reply_markup=build_main_menu()
+        await q.message.edit_markdown_v2(
+            "🎯 *Sniper Bot*\nUse os botões abaixo:",
+            reply_markup=build_menu()
         )
-    except Exception:
-        # fallback: envia um novo menu se edição falhar
-        await query.message.reply_markdown_v2(
-            menu_text,
-            reply_markup=build_main_menu()
+    except:
+        await q.message.reply_markdown_v2(
+            "🎯 *Sniper Bot*\nUse os botões abaixo:",
+            reply_markup=build_menu()
         )
 
-
-# registra handlers
-application.add_handler(CommandHandler("start", start_cmd))
-application.add_handler(CallbackQueryHandler(menu_handler))
-
-# fallback echo
-application.add_handler(
-    MessageHandler(
-        filters.TEXT & ~filters.COMMAND,
-        lambda u, c: u.message.reply_text("Use /start para abrir o menu")
-    )
+# Registrar handlers
+app_bot.add_handler(CommandHandler("start", start_cmd))
+app_bot.add_handler(CallbackQueryHandler(menu_handler))
+app_bot.add_handler(
+    MessageHandler(filters.TEXT & ~filters.COMMAND,
+                   lambda u,c: u.message.reply_text("Use /start"))
 )
 
-# registra comando /start no Telegram
-telegram_loop.run_until_complete(application.initialize())
-telegram_loop.run_until_complete(application.start())
-telegram_loop.run_until_complete(
-    bot.set_my_commands([BotCommand("start", "Abrir menu principal do Sniper Bot")])
-)
+# Comandos
+loop.run_until_complete(app_bot.initialize())
+loop.run_until_complete(app_bot.start())
+loop.run_until_complete(bot.set_my_commands([BotCommand("start","Abrir menu")]))
+if WEBHOOK_URL:
+    url = WEBHOOK_URL.rstrip("/") + "/webhook"
+    loop.run_until_complete(bot.set_webhook(url=url))
 
-# configura webhook corretamente
-if WEBHOOK:
-    url = WEBHOOK.rstrip("/")
-    if not url.endswith("/webhook"):
-        url += "/webhook"
-    telegram_loop.run_until_complete(bot.set_webhook(url=url))
-    logger.info("✅ Webhook configurado em %s", url)
+Thread(target=loop.run_forever, daemon=True).start()
+logger.info("🤖 Bot running")
 
-Thread(target=telegram_loop.run_forever, daemon=True).start()
-logger.info("🚀 Bot Telegram rodando em background")
+# Flask API
+api = Flask(__name__)
 
-
-def iniciar_sniper():
-    if is_discovery_running():
-        logger.info("⚠️ Sniper já está ativo")
-        return
-
-    def _cb(pair_addr, token0, token1, dex_info):
-        asyncio.run_coroutine_threadsafe(
-            on_pair(pair_addr, token0, token1, dex_info),
-            telegram_loop
-        )
-
-    subscribe_new_pairs(callback=_cb)
-    logger.info("🟢 SniperDiscovery iniciado")
-
-
-def parar_sniper():
-    stop_discovery()
-    logger.info("🔴 SniperDiscovery parado")
-
-
-# ─── Flask API ─────────────────────────────────────────────────────────
-app = Flask(__name__)
-
-@app.route("/api/token", methods=["GET"])
+@api.route("/api/token")
 def api_token():
-    token = fetch_token()
-    if not token:
-        return jsonify({"error": "Auth0 falhou"}), 502
-    return jsonify({"token": token})
+    tok = gerar_meu_token_externo()
+    return jsonify({"token":tok}) if tok else ("{}",502)
 
-def require_auth(f):
-    @wraps(f)
-    def wrapper(*args, **kwargs):
-        hdr = request.headers.get("Authorization", "")
-        if not hdr.lower().startswith("bearer "):
-            abort(401)
-        return f(*args, **kwargs)
-    return wrapper
-
-@app.route("/api/status", methods=["GET"])
-@require_auth
+@api.route("/api/status")
 def api_status():
-    return jsonify({"sniper_active": is_discovery_running()})
+    return jsonify({"active": is_discovery_running()})
 
-@app.route("/webhook", methods=["POST"])
+@api.route("/webhook", methods=["POST"])
 def api_webhook():
     data = request.get_json(silent=True)
     if not data or not ("message" in data or "callback_query" in data):
-        return "ignored", 200
-    logger.info("🔄 Update recebido via webhook: %s", list(data.keys()))
+        return "ignored",200
     upd = Update.de_json(data, bot)
-    asyncio.run_coroutine_threadsafe(
-        application.process_update(upd),
-        telegram_loop
-    )
-    return "ok", 200
+    loop.call_soon_threadsafe(asyncio.create_task, app_bot.process_update(upd))
+    return "ok",200
 
-
-# ─── Shutdown gracioso ─────────────────────────────────────────────────
-def _shutdown(sig, frame):
-    parar_sniper()
-    future = asyncio.run_coroutine_threadsafe(
-        application.shutdown(), telegram_loop
-    )
-    try:
-        future.result(timeout=10)
-    except Exception as e:
-        logger.error("Erro ao parar Telegram Application: %s", e, exc_info=True)
-    logger.info("🔴 Telegram Application parado")
+# Graceful shutdown
+def shutdown(sig, frame):
+    stop_discovery()
+    fut = asyncio.run_coroutine_threadsafe(app_bot.shutdown(), loop)
+    try: fut.result(10)
+    except: pass
     sys.exit(0)
 
 for s in (signal.SIGINT, signal.SIGTERM):
-    signal.signal(s, _shutdown)
+    signal.signal(s, shutdown)
 
-
-# ─── Entry Point ───────────────────────────────────────────────────────
+# Entry point
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--worker", action="store_true",
-        help="Executar modo worker (descoberta + trading + exit)"
-    )
+    parser.add_argument("--worker", action="store_true")
     args = parser.parse_args()
 
-    try:
-        _ = w3.eth.account.from_key(config["PRIVATE_KEY"]).address
-    except Exception as e:
-        logger.error("PRIVATE_KEY inválida: %s", e)
-        sys.exit(1)
-
     if args.worker:
-        logger.info("▶️ Iniciando Worker Mode")
-        subscribe_new_pairs(callback=on_pair)
+        subscribe_new_pairs(on_pair, loop)
         while True:
-            try:
-                coro = check_exits()
-                if asyncio.iscoroutine(coro):
-                    asyncio.get_event_loop().run_until_complete(coro)
-            except Exception:
-                logger.exception("Erro no gerenciador de saídas")
-            time.sleep(config["EXIT_POLL_INTERVAL"])
+            asyncio.get_event_loop().run_until_complete(check_exits())
     else:
-        logger.info("🚀 Iniciando API Flask na porta %s", PORT)
-        app.run(host="0.0.0.0", port=PORT, threaded=True)
+        api.run("0.0.0.0", PORT, threaded=True)
