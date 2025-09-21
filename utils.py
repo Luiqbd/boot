@@ -1,3 +1,5 @@
+# utils.py
+
 import re
 import logging
 import requests
@@ -15,12 +17,14 @@ logger = logging.getLogger(__name__)
 
 def escape_md_v2(text: str) -> str:
     """
-    Escapa caracteres especiais para MarkdownV2.
+    Escapa caracteres especiais para Telegram MarkdownV2.
+    Caracteres escapados: _ * [ ] ( ) ~ ` > # + - = | { } . !
     """
-    return re.sub(r'([._\\\-\\*\
+    pattern = r'([\_\*
 
-\[\\]
+\[\]
 
-\\(\\)~`>#+=|{}.!])', r'\\\1', text)
+\(\)\~\`\>\#\+\-\=\|\{\}\.\!])'
+    return re.sub(pattern, r'\\\1', text)
 
-# Ratelimiter e Etherscan omitted para brevidade
+# Ratelimiter e Etherscan omitidos para brevidade...
