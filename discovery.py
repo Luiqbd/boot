@@ -1,3 +1,5 @@
+# discovery.py
+
 import asyncio
 import logging
 import threading
@@ -90,7 +92,7 @@ class SniperDiscovery:
         for dex in self.dexes:
             factory = self.web3.eth.contract(address=dex.factory, abi=FACTORY_ABI)
             event   = factory.events.PoolCreated
-            filt    = event.createFilter(fromBlock="latest")
+            filt    = event.create_filter(fromBlock="latest")
             self._filters.append({"dex": dex, "filter": filt})
             logger.info("🟢 Subscribed to PoolCreated on %s (factory %s)", dex.name, dex.factory)
 
@@ -111,16 +113,16 @@ class SniperDiscovery:
         if pair.dex.type.lower() != "v2":
             return True
         try:
-            pool = self.web3.eth.contract(address=pair.address, abi=PAIR_V2_ABI)
-            r0, r1, _ = pool.functions.getReserves().call()
+            pool_contract = self.web3.eth.contract(address=pair.address, abi=PAIR_V2_ABI)
+            r0, r1, _ = pool_contract.functions.getReserves().call()
             if pair.token0.lower() in self.base_tokens:
-                amt, token = Decimal(r0), pair.token0
+                amt, token_addr = Decimal(r0), pair.token0
             elif pair.token1.lower() in self.base_tokens:
-                amt, token = Decimal(r1), pair.token1
+                amt, token_addr = Decimal(r1), pair.token1
             else:
                 return False
-            erc = self.web3.eth.contract(address=token, abi=ERC20_ABI)
-            dec = erc.functions.decimals().call()
+            token_contract = self.web3.eth.contract(address=token_addr, abi=ERC20_ABI)
+            dec = token_contract.functions.decimals().call()
             norm = amt / Decimal(10 ** dec)
             return norm >= self.min_liq_weth
         except Exception as e:
@@ -165,7 +167,7 @@ class SniperDiscovery:
                         pair.address, pair.token0, pair.token1, dex
                     ))
 
-            time.sleep(int(config["DISCOVERY_INTERVAL"]))
+            time.sleep(self.interval)
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -188,11 +190,11 @@ _discovery: Optional[SniperDiscovery] = None
 def subscribe_new_pairs(callback: Callable[..., Awaitable[Any]]):
     global _discovery
     if _discovery and _discovery._running:
-        logger.warning("⚠️ Discovery já ativo")
+        logger.warning("⚠️ Discovery já ativo, ignorando nova subscription")
         return
 
-    dexes_raw = config["DEXES"]
-    dexes = [DexInfo(d.name, d.factory, d.router, d.type) for d in dexes_raw]
+    dexes_cfg = config["DEXES"]
+    dexes = [DexInfo(d.name, d.factory, d.router, d.type) for d in dexes_cfg]
     base  = config["BASE_TOKENS"]
     min_l = config["MIN_LIQ_WETH"]
     interval = config["DISCOVERY_INTERVAL"]
