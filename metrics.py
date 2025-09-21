@@ -1,5 +1,3 @@
-# metrics.py
-
 from prometheus_client import Counter, Gauge, start_http_server
 
 def init_metrics_server(port: int = 8000):
