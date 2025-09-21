@@ -123,16 +123,14 @@ async def start_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "🎯 *Sniper Bot*\n\n"
         "Use os botões abaixo para controlar o bot:\n"
     )
-    await update.message.reply_markdown_v2(
-        text, 
-        reply_markup=build_main_menu()
-    )
+    await update.message.reply_markdown_v2(text, reply_markup=build_main_menu())
 
 
 async def menu_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Handle button presses from the main menu."""
     query = update.callback_query
     await query.answer()
+    logger.info("🔘 CallbackQuery recebido: %s", query.data)
     cmd = query.data
 
     if cmd == "menu_snipe":
@@ -150,7 +148,9 @@ async def menu_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     elif cmd == "menu_status":
         status = "🟢 Ativo" if is_discovery_running() else "🔴 Parado"
-        await query.message.reply_text(f"📊 Status Sniper: *{status}*", parse_mode="MarkdownV2")
+        await query.message.reply_text(
+            f"📊 Status Sniper: *{status}*", parse_mode="MarkdownV2"
+        )
 
     elif cmd == "menu_balance":
         bal_text = get_wallet_status(None)
@@ -171,38 +171,38 @@ async def menu_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         report = risk_manager.gerar_relatorio()
         await query.message.reply_text(f"📑 Relatório de risco:\n{report}")
 
-    # re-exibe o menu
+    # Reexibe o menu
     await query.message.reply_text(
-        "🎯 Menu Principal:",
-        reply_markup=build_main_menu()
+        "🎯 Menu Principal:", reply_markup=build_main_menu()
     )
 
 
-# registra handlers
+# Registra handlers
 application.add_handler(CommandHandler("start", start_cmd))
 application.add_handler(CallbackQueryHandler(menu_handler))
 
-# fallback echo
+# Fallback echo
 application.add_handler(
-    MessageHandler(filters.TEXT & ~filters.COMMAND, 
+    MessageHandler(filters.TEXT & ~filters.COMMAND,
                    lambda u, c: u.message.reply_text("Use /start para abrir o menu"))
 )
 
-# registra comandos no Telegram para UX
-commands = [
-    BotCommand("start", "Abrir menu principal do Sniper Bot"),
-]
+# Registra comandos no Telegram para UX
+commands = [BotCommand("start", "Abrir menu principal do Sniper Bot")]
 telegram_loop.run_until_complete(application.initialize())
 telegram_loop.run_until_complete(application.start())
 telegram_loop.run_until_complete(bot.set_my_commands(commands))
 
+# Ajusta e configura webhook
 if WEBHOOK:
-    telegram_loop.run_until_complete(bot.set_webhook(url=WEBHOOK))
-    logger.info("✅ Webhook configurado em %s", WEBHOOK)
+    url = WEBHOOK.rstrip("/")
+    if not url.endswith("/webhook"):
+        url += "/webhook"
+    telegram_loop.run_until_complete(bot.set_webhook(url=url))
+    logger.info("✅ Webhook configurado em %s", url)
 
 Thread(target=telegram_loop.run_forever, daemon=True).start()
 logger.info("🚀 Bot Telegram rodando em background")
-
 
 # ─── Controle do Sniper ───────────────────────────────────────────────
 def iniciar_sniper():
@@ -223,7 +223,6 @@ def iniciar_sniper():
 def parar_sniper():
     stop_discovery()
     logger.info("🔴 SniperDiscovery parado")
-
 
 # ─── Flask API ─────────────────────────────────────────────────────────
 app = Flask(__name__)
@@ -252,17 +251,24 @@ def api_status():
 @app.route("/webhook", methods=["POST"])
 def api_webhook():
     data = request.get_json(silent=True)
-    if not data or "message" not in data:
+    # aceita tanto mensagens quanto cliques em botões
+    if not data or not ("message" in data or "callback_query" in data):
         return "ignored", 200
-    upd = Update.de_json(data, bot)
-    asyncio.run_coroutine_threadsafe(application.process_update(upd), telegram_loop)
-    return "ok", 200
 
+    logger.info("🔄 Update recebido via webhook: %s", list(data.keys()))
+    upd = Update.de_json(data, bot)
+    asyncio.run_coroutine_threadsafe(
+        application.process_update(upd),
+        telegram_loop
+    )
+    return "ok", 200
 
 # ─── Shutdown gracioso ─────────────────────────────────────────────────
 def _shutdown(sig, frame):
     parar_sniper()
-    future = asyncio.run_coroutine_threadsafe(application.shutdown(), telegram_loop)
+    future = asyncio.run_coroutine_threadsafe(
+        application.shutdown(), telegram_loop
+    )
     try:
         future.result(timeout=10)
     except Exception as e:
@@ -272,7 +278,6 @@ def _shutdown(sig, frame):
 
 for s in (signal.SIGINT, signal.SIGTERM):
     signal.signal(s, _shutdown)
-
 
 # ─── Entry Point ───────────────────────────────────────────────────────
 if __name__ == "__main__":
