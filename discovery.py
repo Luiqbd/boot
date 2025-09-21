@@ -17,33 +17,35 @@ from notifier import send
 
 logger = logging.getLogger(__name__)
 
-# Minimal ABI for PoolCreated event
+# ABI mínima para o evento PoolCreated
 FACTORY_ABI = [{
     "anonymous": False,
     "inputs": [
-        {"indexed": True, "internalType": "address", "name": "token0", "type": "address"},
-        {"indexed": True, "internalType": "address", "name": "token1", "type": "address"},
-        {"indexed": False, "internalType": "address", "name": "pool",  "type": "address"},
-        {"indexed": False, "internalType": "uint24",  "name": "fee",   "type": "uint24"}
+        {"indexed": True,  "internalType": "address", "name": "token0", "type": "address"},
+        {"indexed": True,  "internalType": "address", "name": "token1", "type": "address"},
+        {"indexed": False, "internalType": "address", "name": "pool",   "type": "address"},
+        {"indexed": False, "internalType": "uint24",   "name": "fee",    "type": "uint24"},
     ],
     "name": "PoolCreated",
     "type": "event"
 }]
 
-PAIR_V2_ABI = [{
+# ABI mínima para getReserves (Uniswap V2)
+RESERVES_V2_ABI = [{
     "constant": True,
     "inputs": [],
     "name": "getReserves",
     "outputs": [
-        {"internalType": "uint112", "name": "reserve0", "type": "uint112"},
-        {"internalType": "uint112", "name": "reserve1", "type": "uint112"},
-        {"internalType": "uint32",  "name": "blockTimestampLast", "type": "uint32"}
+        {"internalType": "uint112", "name": "reserve0",           "type": "uint112"},
+        {"internalType": "uint112", "name": "reserve1",           "type": "uint112"},
+        {"internalType": "uint32",  "name": "blockTimestampLast", "type": "uint32"},
     ],
     "stateMutability": "view",
     "type": "function"
 }]
 
-ERC20_ABI = [{
+# ABI mínima para decimals (ERC20)
+ERC20_DECIMALS_ABI = [{
     "constant": True,
     "inputs": [],
     "name": "decimals",
@@ -58,7 +60,7 @@ class DexInfo:
     name: str
     factory: str
     router: str
-    type: str
+    type: str  # "v2" ou "v3"
 
 
 @dataclass
@@ -81,92 +83,93 @@ class SniperDiscovery:
     ):
         self.web3 = web3
         self.dexes = dexes
-        self.base_tokens = base_tokens
+        self.base_tokens = [t.lower() for t in base_tokens]
         self.min_liq_weth = min_liq_weth
         self.interval = interval_sec
         self.callback = callback
+
+        # controle de blocos
+        self._last_block = self.web3.eth.block_number
+        # topic PoolCreated
+        self._topic = self.web3.keccak(text="PoolCreated(address,address,address,uint24)").hex()
+
         self._running = False
         self._thread: Optional[threading.Thread] = None
-        self._filters: List[Dict[str, Any]] = []
-
-        for dex in self.dexes:
-            factory_contract = self.web3.eth.contract(address=dex.factory, abi=FACTORY_ABI)
-            event = factory_contract.events.PoolCreated
-            # use `from_block` (snake_case) instead of `fromBlock`
-            filt = event.create_filter(from_block="latest")
-            self._filters.append({"dex": dex, "filter": filt})
-            logger.info("🟢 Subscribed to PoolCreated on %s (factory %s)", dex.name, dex.factory)
-
-    def _parse_log(self, dex: DexInfo, log_tx: LogReceipt) -> Optional[PairInfo]:
-        try:
-            args = log_tx["args"]
-            return PairInfo(
-                dex=dex,
-                address=args["pool"],
-                token0=args["token0"],
-                token1=args["token1"]
-            )
-        except Exception as e:
-            logger.error("❌ Falha ao parsear log em %s: %s", dex.name, e, exc_info=True)
-            return None
 
     async def _has_min_liq(self, pair: PairInfo) -> bool:
         if pair.dex.type.lower() != "v2":
             return True
         try:
-            pool_contract = self.web3.eth.contract(address=pair.address, abi=PAIR_V2_ABI)
-            r0, r1, _ = pool_contract.functions.getReserves().call()
+            pool_ct = self.web3.eth.contract(address=pair.address, abi=RESERVES_V2_ABI)
+            r0, r1, _ = pool_ct.functions.getReserves().call()
             if pair.token0.lower() in self.base_tokens:
                 amt, token_addr = Decimal(r0), pair.token0
             elif pair.token1.lower() in self.base_tokens:
                 amt, token_addr = Decimal(r1), pair.token1
             else:
                 return False
-            token_contract = self.web3.eth.contract(address=token_addr, abi=ERC20_ABI)
-            dec = token_contract.functions.decimals().call()
-            norm = amt / Decimal(10 ** dec)
+
+            tok_ct = self.web3.eth.contract(address=token_addr, abi=ERC20_DECIMALS_ABI)
+            dec = tok_ct.functions.decimals().call()
+            norm = amt / Decimal(10**dec)
             return norm >= self.min_liq_weth
         except Exception as e:
             logger.error("❌ Erro checando liquidez em %s: %s", pair.address, e, exc_info=True)
             return False
 
+    def _parse_log(self, dex: DexInfo, raw: Dict[str, Any]) -> PairInfo:
+        event_abi = FACTORY_ABI[0]
+        decoded = self.web3.codec.decode_event_log(event_abi, raw["data"], raw["topics"])
+        return PairInfo(
+            dex=dex,
+            address=decoded["pool"],
+            token0=decoded["token0"],
+            token1=decoded["token1"],
+        )
+
     def _run_loop(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
         self._running = True
-
         while self._running:
-            for entry in self._filters:
-                dex = entry["dex"]
-                filt = entry["filter"]
-                try:
-                    logs = filt.get_new_entries()
-                except Exception as e:
-                    logger.error("❌ Falha ao buscar logs para %s: %s", dex.name, e)
-                    continue
-
-                for log in logs:
-                    pair = self._parse_log(dex, log)
-                    if not pair:
+            current_block = self.web3.eth.block_number
+            if current_block > self._last_block:
+                for dex in self.dexes:
+                    try:
+                        logs = self.web3.eth.get_logs({
+                            "fromBlock": self._last_block + 1,
+                            "toBlock": current_block,
+                            "address": dex.factory,
+                            "topics": [self._topic]
+                        })
+                    except Exception as e:
+                        logger.error("❌ get_logs falhou para %s: %s", dex.name, e)
                         continue
 
-                    t0, t1 = pair.token0.lower(), pair.token1.lower()
-                    if self.base_tokens and not (t0 in self.base_tokens or t1 in self.base_tokens):
-                        continue
+                    for raw in logs:
+                        try:
+                            pair = self._parse_log(dex, raw)
+                        except Exception as e:
+                            logger.error("❌ parse_log falhou: %s", e, exc_info=True)
+                            continue
 
-                    if not loop.run_until_complete(self._has_min_liq(pair)):
-                        continue
+                        t0, t1 = pair.token0.lower(), pair.token1.lower()
+                        if self.base_tokens and not (t0 in self.base_tokens or t1 in self.base_tokens):
+                            continue
 
-                    PAIRS_DISCOVERED.inc()
-                    send(
-                        f"🔍 Novo par descoberto:\n"
-                        f"• DEX: {dex.name}\n"
-                        f"• Par: {pair.address}\n"
-                        f"• Tokens: {pair.token0} / {pair.token1}"
-                    )
-                    loop.create_task(self.callback(
-                        pair.address, pair.token0, pair.token1, dex
-                    ))
+                        if not asyncio.run(self._has_min_liq(pair)):
+                            continue
+
+                        PAIRS_DISCOVERED.inc()
+                        send(
+                            f"🔍 Novo par descoberto:\n"
+                            f"• DEX: {dex.name}\n"
+                            f"• Pool: {pair.address}\n"
+                            f"• Tokens: {pair.token0} / {pair.token1}"
+                        )
+                        asyncio.create_task(self.callback(
+                            pair.address, pair.token0, pair.token1, dex
+                        ))
+
+                self._last_block = current_block
 
             time.sleep(self.interval)
 
@@ -176,7 +179,7 @@ class SniperDiscovery:
             return
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
-        logger.info("▶️ SniperDiscovery thread iniciada")
+        logger.info("▶️ SniperDiscovery iniciado")
 
     def stop(self):
         self._running = False
@@ -185,25 +188,24 @@ class SniperDiscovery:
         logger.info("🔴 SniperDiscovery parado")
 
 
-# module-level control
+# controle no módulo
 _discovery: Optional[SniperDiscovery] = None
 
 def subscribe_new_pairs(callback: Callable[..., Awaitable[Any]]):
     global _discovery
     if _discovery and _discovery._running:
-        logger.warning("⚠️ Discovery já ativo, ignorando nova subscription")
+        logger.warning("⚠️ Discovery já ativo")
         return
 
-    dexes_cfg = config["DEXES"]
-    dexes = [DexInfo(d.name, d.factory, d.router, d.type) for d in dexes_cfg]
-    base_tokens = config["BASE_TOKENS"]
+    dexes = [DexInfo(d.name, d.factory, d.router, d.type) for d in config["DEXES"]]
+    base = config["BASE_TOKENS"]
     min_liq = config["MIN_LIQ_WETH"]
     interval = config["DISCOVERY_INTERVAL"]
 
     _discovery = SniperDiscovery(
         web3=Web3(Web3.HTTPProvider(config["RPC_URL"])),
         dexes=dexes,
-        base_tokens=base_tokens,
+        base_tokens=base,
         min_liq_weth=Decimal(str(min_liq)),
         interval_sec=interval,
         callback=callback
