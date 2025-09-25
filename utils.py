@@ -45,13 +45,7 @@ def escape_md_v2(text: str) -> str:
     _ * [ ] ( ) ~ ` > # + - = | { } . ! \
     """
     # Inclui o backslash no padrão para escapá-lo também
-    pattern = r'([_\*
-
-\[\]
-
-\(\)\~\`\>\#\+\-\=\|\{\}\.\!\\]
-
-)'
+    pattern = r'([_\*\[\]\(\)\~\`\>\#\+\-\=\|\{\}\.\!\\])'
     return re.sub(pattern, r'\\\1', text)
 
 
