@@ -103,24 +103,37 @@ else:
     bot = None
     logger.warning("Telegram não disponível - bot não inicializado")
 
+def escape_markdown_v2(text):
+    """Escapa caracteres especiais para MarkdownV2"""
+    if not text:
+        return ""
+    # Caracteres que precisam ser escapados no MarkdownV2
+    special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    for char in special_chars:
+        text = text.replace(char, f'\\{char}')
+    return text
+
 def build_menu():
+    if not TELEGRAM_AVAILABLE:
+        return None
+        
     kb = [
-        [InlineKeyboardButton("▶ Iniciar Sniper", "menu_snipe"),
-         InlineKeyboardButton("⏹ Parar Sniper",   "menu_stop")],
-        [InlineKeyboardButton("📊 Status",       "menu_status"),
-         InlineKeyboardButton("💰 Saldo",        "menu_balance")],
-        [InlineKeyboardButton("⚙️ Configurações", "menu_config"),
-         InlineKeyboardButton("📈 Performance",   "menu_performance")],
-        [InlineKeyboardButton("🎯 Posições Ativas", "menu_positions"),
-         InlineKeyboardButton("📋 Histórico",     "menu_history")],
-        [InlineKeyboardButton("🔍 Análise Token", "menu_analyze"),
-         InlineKeyboardButton("⚡ Modo Turbo",    "menu_turbo")],
-        [InlineKeyboardButton("🚫 Blacklist",    "menu_blacklist"),
-         InlineKeyboardButton("✅ Whitelist",     "menu_whitelist")],
-        [InlineKeyboardButton("🏓 Ping",         "menu_ping"),
-         InlineKeyboardButton("🔔 TesteNotif",   "menu_testnotify")],
-        [InlineKeyboardButton("📑 Relatório",    "menu_report"),
-         InlineKeyboardButton("🆘 Ajuda",        "menu_help")]
+        [InlineKeyboardButton("▶ Iniciar Sniper", callback_data="menu_snipe"),
+         InlineKeyboardButton("⏹ Parar Sniper",   callback_data="menu_stop")],
+        [InlineKeyboardButton("📊 Status",       callback_data="menu_status"),
+         InlineKeyboardButton("💰 Saldo",        callback_data="menu_balance")],
+        [InlineKeyboardButton("⚙️ Configurações", callback_data="menu_config"),
+         InlineKeyboardButton("📈 Performance",   callback_data="menu_performance")],
+        [InlineKeyboardButton("🎯 Posições Ativas", callback_data="menu_positions"),
+         InlineKeyboardButton("📋 Histórico",     callback_data="menu_history")],
+        [InlineKeyboardButton("🔍 Análise Token", callback_data="menu_analyze"),
+         InlineKeyboardButton("⚡ Modo Turbo",    callback_data="menu_turbo")],
+        [InlineKeyboardButton("🚫 Blacklist",    callback_data="menu_blacklist"),
+         InlineKeyboardButton("✅ Whitelist",     callback_data="menu_whitelist")],
+        [InlineKeyboardButton("🏓 Ping",         callback_data="menu_ping"),
+         InlineKeyboardButton("🔔 TesteNotif",   callback_data="menu_testnotify")],
+        [InlineKeyboardButton("📑 Relatório",    callback_data="menu_report"),
+         InlineKeyboardButton("🆘 Ajuda",        callback_data="menu_help")]
     ]
     return InlineKeyboardMarkup(kb)
 
@@ -151,8 +164,12 @@ def build_analysis_menu():
     return InlineKeyboardMarkup(kb)
 
 async def start_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_markdown_v2(
-        "🎯 *Sniper Bot*\nUse os botões abaixo:",
+    if not TELEGRAM_AVAILABLE:
+        return
+        
+    text = "🎯 SNIPER BOT ATIVO\n\nUse os botões abaixo para controlar o bot:"
+    await update.message.reply_text(
+        text,
         reply_markup=build_menu()
     )
 
@@ -178,20 +195,21 @@ async def menu_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         status = "🟢 Ativo" if is_discovery_running() else "🔴 Parado"
         stats = advanced_sniper.get_performance_stats()
         status_msg = (
-            f"*Status:* {status}\n"
-            f"*Posições Ativas:* {stats['active_positions']}/{stats['max_positions']}\n"
-            f"*Total Trades:* {stats['total_trades']}\n"
-            f"*Taxa de Acerto:* {stats['win_rate']:.1f}%\n"
-            f"*Lucro Total:* {stats['total_profit']:.4f} ETH"
+            f"📊 STATUS DO SNIPER\n\n"
+            f"Status: {status}\n"
+            f"Posições Ativas: {stats['active_positions']}/{stats['max_positions']}\n"
+            f"Total Trades: {stats['total_trades']}\n"
+            f"Taxa de Acerto: {stats['win_rate']:.1f}%\n"
+            f"Lucro Total: {stats['total_profit']:.4f} ETH"
         )
-        await q.message.reply_text(status_msg, parse_mode="MarkdownV2")
+        await q.message.reply_text(status_msg)
 
     elif cmd == "menu_balance":
         await q.message.reply_text(get_wallet_status())
 
     elif cmd == "menu_config":
-        await q.message.edit_markdown_v2(
-            "⚙️ *Configurações*\nEscolha uma opção:",
+        await q.message.edit_text(
+            "⚙️ CONFIGURAÇÕES\nEscolha uma opção:",
             reply_markup=build_config_menu()
         )
         return
@@ -199,15 +217,15 @@ async def menu_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif cmd == "menu_performance":
         stats = advanced_sniper.get_performance_stats()
         perf_msg = (
-            f"📈 *Performance do Bot*\n\n"
-            f"• Total de Trades: `{stats['total_trades']}`\n"
-            f"• Trades Vencedores: `{stats['winning_trades']}`\n"
-            f"• Taxa de Acerto: `{stats['win_rate']:.1f}%`\n"
-            f"• Lucro Total: `{stats['total_profit']:.4f}` ETH\n"
-            f"• Posições Ativas: `{stats['active_positions']}`\n"
-            f"• Máx. Posições: `{stats['max_positions']}`"
+            f"📈 PERFORMANCE DO BOT\n\n"
+            f"• Total de Trades: {stats['total_trades']}\n"
+            f"• Trades Vencedores: {stats['winning_trades']}\n"
+            f"• Taxa de Acerto: {stats['win_rate']:.1f}%\n"
+            f"• Lucro Total: {stats['total_profit']:.4f} ETH\n"
+            f"• Posições Ativas: {stats['active_positions']}\n"
+            f"• Máx. Posições: {stats['max_positions']}"
         )
-        await q.message.reply_text(perf_msg, parse_mode="MarkdownV2")
+        await q.message.reply_text(perf_msg)
 
     elif cmd == "menu_positions":
         positions = advanced_sniper.active_positions

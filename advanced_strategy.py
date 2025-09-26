@@ -295,26 +295,117 @@ class AdvancedSniperStrategy:
         else:
             return SignalStrength.VERY_WEAK
     
-    async def should_enter_position(self, indicators: TechnicalIndicators) -> bool:
+    def _is_memecoin_candidate(self, token: str, pair_data: dict) -> bool:
+        """Detecta se um token é um candidato a memecoin promissor"""
+        try:
+            # Verificar configurações de memecoin
+            min_liquidity = float(config.get('MEMECOIN_MIN_LIQUIDITY', 0.05))
+            max_age_hours = int(config.get('MEMECOIN_MAX_AGE_HOURS', 24))
+            min_holders = int(config.get('MEMECOIN_MIN_HOLDERS', 10))
+            max_supply = int(config.get('MEMECOIN_MAX_SUPPLY', 1000000000))
+            
+            # Verificar blacklist de palavras
+            blacklist = config.get('BLACKLIST_KEYWORDS', '').lower().split(',')
+            token_name = pair_data.get('name', '').lower()
+            token_symbol = pair_data.get('symbol', '').lower()
+            
+            for keyword in blacklist:
+                if keyword.strip() and (keyword.strip() in token_name or keyword.strip() in token_symbol):
+                    log.info(f"Token {token} rejeitado por blacklist: {keyword}")
+                    return False
+            
+            # Verificar whitelist de padrões (bonus points)
+            whitelist = config.get('WHITELIST_PATTERNS', '').lower().split(',')
+            has_memecoin_pattern = False
+            for pattern in whitelist:
+                if pattern.strip() and (pattern.strip() in token_name or pattern.strip() in token_symbol):
+                    has_memecoin_pattern = True
+                    break
+            
+            # Verificar liquidez mínima
+            liquidity_eth = pair_data.get('liquidity_eth', 0)
+            if liquidity_eth < min_liquidity:
+                log.debug(f"Token {token} rejeitado por baixa liquidez: {liquidity_eth}")
+                return False
+            
+            # Verificar idade do token (se disponível)
+            token_age_hours = pair_data.get('age_hours', 0)
+            if token_age_hours > max_age_hours:
+                log.debug(f"Token {token} rejeitado por idade: {token_age_hours}h")
+                return False
+            
+            # Verificar supply máximo
+            total_supply = pair_data.get('total_supply', 0)
+            if total_supply > max_supply:
+                log.debug(f"Token {token} rejeitado por supply alto: {total_supply}")
+                return False
+            
+            # Verificar número mínimo de holders
+            holder_count = pair_data.get('holder_count', 0)
+            if holder_count < min_holders:
+                log.debug(f"Token {token} rejeitado por poucos holders: {holder_count}")
+                return False
+            
+            # Bonus para tokens com padrões de memecoin
+            if has_memecoin_pattern:
+                log.info(f"Token {token} tem padrão de memecoin: {token_name} / {token_symbol}")
+                return True
+            
+            # Verificar volume 24h mínimo
+            volume_24h = pair_data.get('volume_24h_usd', 0)
+            min_volume = float(config.get('MIN_VOLUME_24H', 1000))
+            if volume_24h < min_volume:
+                log.debug(f"Token {token} rejeitado por baixo volume: ${volume_24h}")
+                return False
+            
+            # Verificar market cap máximo
+            market_cap = pair_data.get('market_cap_usd', 0)
+            max_market_cap = float(config.get('MAX_MARKET_CAP', 10000000))
+            if market_cap > max_market_cap:
+                log.debug(f"Token {token} rejeitado por market cap alto: ${market_cap}")
+                return False
+            
+            log.info(f"Token {token} passou nos filtros de memecoin")
+            return True
+            
+        except Exception as e:
+            log.error(f"Erro ao verificar memecoin {token}: {e}")
+            return False
+    
+    async def should_enter_position(self, indicators: TechnicalIndicators, token: str = None, pair_data: dict = None) -> bool:
         """Determine if we should enter a position based on indicators"""
         # Check if we have room for more positions
-        if len(self.active_positions) >= self.config.max_positions:
+        max_positions = int(config.get('MAX_POSITIONS', 3))
+        if len(self.active_positions) >= max_positions:
+            log.debug(f"Máximo de posições atingido: {len(self.active_positions)}/{max_positions}")
             return False
+        
+        # Verificar se é um candidato a memecoin promissor
+        if token and pair_data:
+            if not self._is_memecoin_candidate(token, pair_data):
+                log.debug(f"Token {token} não passou nos filtros de memecoin")
+                return False
+            log.info(f"Token {token} é um candidato a memecoin promissor!")
         
         # Check signal strength
         if indicators.signal_strength.value < self.config.min_signal_strength.value:
+            log.debug(f"Sinal fraco: {indicators.signal_strength.value} < {self.config.min_signal_strength.value}")
             return False
         
         # Check individual indicators
         checks = [
             indicators.volume_spike >= self.config.min_volume_spike,
             indicators.price_momentum >= self.config.min_momentum_score,
-            indicators.overall_score >= 0.6,
+            indicators.overall_score >= 0.5,  # Reduzido para memecoins
             indicators.rsi >= self.config.min_rsi_oversold,
             indicators.rsi <= self.config.max_rsi_overbought
         ]
         
-        return sum(checks) >= 4  # At least 4 out of 5 checks must pass
+        passed_checks = sum(checks)
+        log.info(f"Verificações passadas: {passed_checks}/5 para token {token}")
+        
+        # Para memecoins, ser mais flexível (3 de 5 checks)
+        return passed_checks >= 3
     
     async def execute_smart_buy(self, dex: DexClient, pair: str, base: str, 
                               target: str, indicators: TechnicalIndicators) -> Optional[str]:
