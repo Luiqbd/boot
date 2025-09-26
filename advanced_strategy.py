@@ -10,8 +10,17 @@ from typing import Tuple, Dict, List, Optional
 from dataclasses import dataclass
 from enum import Enum
 
-from web3 import Web3
-from telegram import Bot
+try:
+    from web3 import Web3
+    WEB3_AVAILABLE = True
+except ImportError:
+    WEB3_AVAILABLE = False
+
+try:
+    from telegram import Bot
+    TELEGRAM_AVAILABLE = True
+except ImportError:
+    TELEGRAM_AVAILABLE = False
 
 from config import config
 from telegram_alert import TelegramAlert
@@ -69,16 +78,26 @@ class SniperConfig:
 class AdvancedSniperStrategy:
     def __init__(self):
         # Web3 setup
-        prov = Web3.HTTPProvider(config["RPC_URL"])
-        self.w3 = Web3(prov)
-        self.weth = Web3.to_checksum_address(config["WETH"])
+        if WEB3_AVAILABLE:
+            prov = Web3.HTTPProvider(config["RPC_URL"])
+            self.w3 = Web3(prov)
+            self.weth = Web3.to_checksum_address(config["WETH"])
+        else:
+            self.w3 = None
+            self.weth = None
+            log.warning("Web3 não disponível - funcionalidades blockchain limitadas")
         
         # Telegram setup
-        self.bot = Bot(token=config["TELEGRAM_TOKEN"])
-        self.alert = TelegramAlert(
-            bot=self.bot,
-            chat_id=config["TELEGRAM_CHAT_ID"]
-        )
+        if TELEGRAM_AVAILABLE and config.get("TELEGRAM_TOKEN"):
+            self.bot = Bot(token=config["TELEGRAM_TOKEN"])
+            self.alert = TelegramAlert(
+                bot=self.bot,
+                chat_id=config["TELEGRAM_CHAT_ID"]
+            )
+        else:
+            self.bot = None
+            self.alert = None
+            log.warning("Telegram não disponível - alertas limitados")
         self.chat_id = config["TELEGRAM_CHAT_ID"]
         
         # Advanced configuration
@@ -552,5 +571,5 @@ class AdvancedSniperStrategy:
             'max_positions': self.config.max_positions
         }
 
-# Global instance
-advanced_sniper = AdvancedSniperStrategy()
+# Global instance (comentado para evitar inicialização automática)
+# advanced_sniper = AdvancedSniperStrategy()

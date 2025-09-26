@@ -1,6 +1,12 @@
 # dex_client.py
 
-from web3 import Web3
+try:
+    from web3 import Web3
+    WEB3_AVAILABLE = True
+except ImportError:
+    WEB3_AVAILABLE = False
+    Web3 = None
+
 from typing import Optional
 
 ROUTER_ABI = [

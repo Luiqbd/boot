@@ -13,16 +13,40 @@ from threading import Thread
 from functools import wraps
 
 from flask import Flask, request, jsonify, abort
-from telegram import (
-    Update, BotCommand,
-    InlineKeyboardButton, InlineKeyboardMarkup
-)
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler,
-    CallbackQueryHandler, MessageHandler,
-    ContextTypes, filters
-)
-from web3 import Web3
+try:
+    from telegram import (
+        Update, BotCommand,
+        InlineKeyboardButton, InlineKeyboardMarkup
+    )
+    from telegram.ext import (
+        ApplicationBuilder, CommandHandler,
+        CallbackQueryHandler, MessageHandler,
+        ContextTypes, filters
+    )
+    TELEGRAM_AVAILABLE = True
+except ImportError:
+    TELEGRAM_AVAILABLE = False
+    # Mock classes
+    Update = None
+    BotCommand = None
+    InlineKeyboardButton = None
+    InlineKeyboardMarkup = None
+    ApplicationBuilder = None
+    CommandHandler = None
+    CallbackQueryHandler = None
+    MessageHandler = None
+    filters = None
+    
+    # Mock ContextTypes
+    class MockContextTypes:
+        DEFAULT_TYPE = None
+    ContextTypes = MockContextTypes()
+try:
+    from web3 import Web3
+    WEB3_AVAILABLE = True
+except ImportError:
+    WEB3_AVAILABLE = False
+    Web3 = None
 
 from config import config
 from utils import escape_md_v2
@@ -33,7 +57,7 @@ from token_service import gerar_meu_token_externo
 from check_balance import get_wallet_status
 from risk_manager import risk_manager
 from metrics import init_metrics_server
-from advanced_strategy import advanced_sniper
+from advanced_strategy import AdvancedSniperStrategy
 
 # Métricas Prometheus
 init_metrics_server(8000)
@@ -48,18 +72,36 @@ logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(m
 logger = logging.getLogger(__name__)
 
 # Web3
-w3 = Web3(Web3.HTTPProvider(RPC_URL))
-if not w3.is_connected():
-    logger.error("RPC inacessível")
-    sys.exit(1)
+if WEB3_AVAILABLE:
+    w3 = Web3(Web3.HTTPProvider(RPC_URL))
+    if not w3.is_connected():
+        logger.error("RPC inacessível")
+        # sys.exit(1)  # Não sair, apenas avisar
+        w3 = None
+else:
+    w3 = None
+    logger.warning("Web3 não disponível - funcionalidades blockchain limitadas")
+
+# Advanced Strategy
+try:
+    advanced_sniper = AdvancedSniperStrategy()
+    logger.info("✅ AdvancedSniperStrategy inicializada")
+except Exception as e:
+    logger.error(f"❌ Erro ao inicializar AdvancedSniperStrategy: {e}")
+    advanced_sniper = None
 
 # Telegram Bot
-loop = asyncio.new_event_loop()
-asyncio.set_event_loop(loop)
+if TELEGRAM_AVAILABLE and TELE_TOKEN:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
-app_bot = ApplicationBuilder().token(TELE_TOKEN).build()
-bot = app_bot.bot
-app_bot.bot_data["start_time"] = time.time()
+    app_bot = ApplicationBuilder().token(TELE_TOKEN).build()
+    bot = app_bot.bot
+    app_bot.bot_data["start_time"] = time.time()
+else:
+    app_bot = None
+    bot = None
+    logger.warning("Telegram não disponível - bot não inicializado")
 
 def build_menu():
     kb = [
@@ -446,23 +488,27 @@ async def handle_analysis_menu(q, cmd):
         await q.message.reply_text(msg, parse_mode="MarkdownV2")
 
 # Registrar handlers
-app_bot.add_handler(CommandHandler("start", start_cmd))
-app_bot.add_handler(CallbackQueryHandler(menu_handler))
-app_bot.add_handler(
-    MessageHandler(filters.TEXT & ~filters.COMMAND,
-                   lambda u,c: u.message.reply_text("Use /start"))
-)
+if TELEGRAM_AVAILABLE and app_bot:
+    app_bot.add_handler(CommandHandler("start", start_cmd))
+    app_bot.add_handler(CallbackQueryHandler(menu_handler))
+    app_bot.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND,
+                       lambda u,c: u.message.reply_text("Use /start"))
+    )
 
-# Comandos
-loop.run_until_complete(app_bot.initialize())
-loop.run_until_complete(app_bot.start())
-loop.run_until_complete(bot.set_my_commands([BotCommand("start","Abrir menu")]))
-if WEBHOOK_URL:
-    url = WEBHOOK_URL.rstrip("/") + "/webhook"
-    loop.run_until_complete(bot.set_webhook(url=url))
+    # Comandos
+    loop.run_until_complete(app_bot.initialize())
+    loop.run_until_complete(app_bot.start())
+    loop.run_until_complete(bot.set_my_commands([BotCommand("start","Abrir menu")]))
+    if WEBHOOK_URL:
+        url = WEBHOOK_URL.rstrip("/") + "/webhook"
+        loop.run_until_complete(bot.set_webhook(url=url))
 
-Thread(target=loop.run_forever, daemon=True).start()
-logger.info("🤖 Bot running")
+if TELEGRAM_AVAILABLE and app_bot:
+    Thread(target=loop.run_forever, daemon=True).start()
+    logger.info("🤖 Bot running")
+else:
+    logger.info("🤖 Bot não disponível - apenas API Flask")
 
 # Flask API
 api = Flask(__name__)

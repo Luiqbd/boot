@@ -5,8 +5,14 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Awaitable, Dict, List, Optional, Callable
 
-from web3 import Web3
-from web3.types import LogReceipt
+try:
+    from web3 import Web3
+    from web3.types import LogReceipt
+    WEB3_AVAILABLE = True
+except ImportError:
+    WEB3_AVAILABLE = False
+    Web3 = None
+    LogReceipt = None
 from config import config
 from metrics import (
     PAIRS_DISCOVERED,

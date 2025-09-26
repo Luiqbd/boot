@@ -2,7 +2,12 @@
 
 import asyncio
 from decimal import Decimal
-from web3 import Web3
+try:
+    from web3 import Web3
+    WEB3_AVAILABLE = True
+except ImportError:
+    WEB3_AVAILABLE = False
+    Web3 = None
 
 from config import config
 from trading import sell

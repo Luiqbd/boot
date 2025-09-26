@@ -1,5 +1,10 @@
 import os
-from web3 import Web3
+try:
+    from web3 import Web3
+    WEB3_AVAILABLE = True
+except ImportError:
+    WEB3_AVAILABLE = False
+    Web3 = None
 import requests
 
 # Lê variáveis de ambiente

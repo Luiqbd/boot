@@ -7,7 +7,12 @@ from decimal import Decimal
 from time import time
 from typing import Tuple
 
-from web3 import Web3
+try:
+    from web3 import Web3
+    WEB3_AVAILABLE = True
+except ImportError:
+    WEB3_AVAILABLE = False
+    Web3 = None
 from telegram import Bot
 
 from config import config

@@ -6,7 +6,12 @@ import asyncio
 import logging
 from datetime import datetime
 from typing import Optional
-from web3 import Web3
+try:
+    from web3 import Web3
+    WEB3_AVAILABLE = True
+except ImportError:
+    WEB3_AVAILABLE = False
+    Web3 = None
 from config import config
 
 logger = logging.getLogger(__name__)

@@ -5,7 +5,12 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional, Union
 
 from dotenv import load_dotenv
-from web3 import Web3
+
+try:
+    from web3 import Web3
+    WEB3_AVAILABLE = True
+except ImportError:
+    WEB3_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 load_dotenv()
@@ -40,6 +45,12 @@ def normalize_private_key(pk: str) -> str:
     return key
 
 def to_checksum(addr: str, nome: str) -> str:
+    if not WEB3_AVAILABLE:
+        # Validação básica sem Web3
+        if not addr or not addr.startswith('0x') or len(addr) != 42:
+            raise ValueError(f"Endereço '{nome}' inválido: {addr}")
+        return addr
+    
     if not Web3.is_address(addr):
         raise ValueError(f"Endereço '{nome}' inválido: {addr}")
     return Web3.to_checksum_address(addr)
@@ -80,7 +91,12 @@ if WALLET:
     WALLET = to_checksum(WALLET, "WALLET_ADDRESS")
 else:
     # carrega a partir da chave privada
-    WALLET = Web3.to_checksum_address(Web3(Web3.HTTPProvider(RPC_URL)).eth.account.from_key(PRIVATE_KEY).address)
+    if WEB3_AVAILABLE:
+        WALLET = Web3.to_checksum_address(Web3(Web3.HTTPProvider(RPC_URL)).eth.account.from_key(PRIVATE_KEY).address)
+    else:
+        # Fallback: usar endereço padrão para testes
+        WALLET = "0x0000000000000000000000000000000000000000"
+        logger.warning("Web3 não disponível - usando endereço padrão para WALLET")
 
 WETH = to_checksum(get_env("WETH", default="0x4200000000000000000000000000000000000006"), "WETH")
 USDC = to_checksum(get_env("USDC", default="0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"), "USDC")

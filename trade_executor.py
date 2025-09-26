@@ -7,8 +7,14 @@ from decimal import Decimal, InvalidOperation
 from threading import RLock
 from typing import Any, Optional, Tuple, Union, Dict
 
-from web3 import Web3
-from web3.exceptions import BadFunctionCallOutput
+try:
+    from web3 import Web3
+    from web3.exceptions import BadFunctionCallOutput
+    WEB3_AVAILABLE = True
+except ImportError:
+    WEB3_AVAILABLE = False
+    Web3 = None
+    BadFunctionCallOutput = Exception
 
 logger = logging.getLogger(__name__)
 

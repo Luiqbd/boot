@@ -8,9 +8,18 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Dict, List, Tuple, Union
 
-from web3 import Web3
-from web3.contract import Contract
-from web3.exceptions import BadFunctionCallOutput, ABIFunctionNotFound, ContractLogicError
+try:
+    from web3 import Web3
+    from web3.contract import Contract
+    from web3.exceptions import BadFunctionCallOutput, ABIFunctionNotFound, ContractLogicError
+    WEB3_AVAILABLE = True
+except ImportError:
+    WEB3_AVAILABLE = False
+    Web3 = None
+    Contract = None
+    BadFunctionCallOutput = Exception
+    ABIFunctionNotFound = Exception
+    ContractLogicError = Exception
 
 from config import config
 

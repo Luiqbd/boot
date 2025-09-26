@@ -1,4 +1,9 @@
-from web3 import Web3
+try:
+    from web3 import Web3
+    WEB3_AVAILABLE = True
+except ImportError:
+    WEB3_AVAILABLE = False
+    Web3 = None
 from eth_account import Account
 from dotenv import load_dotenv
 import os

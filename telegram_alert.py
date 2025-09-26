@@ -3,8 +3,14 @@ import logging
 import random
 from typing import Optional, List
 
-from telegram import Bot
-from telegram.error import TelegramError
+try:
+    from telegram import Bot
+    from telegram.error import TelegramError
+    TELEGRAM_AVAILABLE = True
+except ImportError:
+    TELEGRAM_AVAILABLE = False
+    Bot = None
+    TelegramError = Exception
 
 from utils import escape_md_v2
 
@@ -24,7 +30,7 @@ class TelegramAlert:
 
     def __init__(
         self,
-        bot: Bot,
+        bot: Optional[Bot],
         chat_id: int,
         *,
         loop: Optional[asyncio.AbstractEventLoop] = None,
@@ -100,6 +106,10 @@ class TelegramAlert:
         while attempt <= self.max_retries:
             attempt += 1
             try:
+                if not self.bot or not TELEGRAM_AVAILABLE:
+                    logger.warning(f"Telegram não disponível - simulando envio: {text[:50]}...")
+                    return
+                    
                 await self.bot.send_message(
                     chat_id=self.chat_id,
                     text=text,

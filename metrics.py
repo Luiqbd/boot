@@ -1,7 +1,38 @@
-from prometheus_client import Counter, Gauge, start_http_server
+try:
+    from prometheus_client import Counter, Gauge, start_http_server
+    PROMETHEUS_AVAILABLE = True
+except ImportError:
+    PROMETHEUS_AVAILABLE = False
+    
+    # Mock classes para quando prometheus não estiver disponível
+    class MockCounter:
+        def __init__(self, *args, **kwargs):
+            pass
+        def inc(self, amount=1):
+            pass
+        def labels(self, **kwargs):
+            return self
+    
+    class MockGauge:
+        def __init__(self, *args, **kwargs):
+            pass
+        def set(self, value):
+            pass
+        def inc(self, amount=1):
+            pass
+        def dec(self, amount=1):
+            pass
+        def labels(self, **kwargs):
+            return self
+    
+    Counter = MockCounter
+    Gauge = MockGauge
 
 def init_metrics_server(port: int = 8000):
-    start_http_server(port)
+    if PROMETHEUS_AVAILABLE:
+        start_http_server(port)
+    else:
+        print(f"Prometheus não disponível - servidor de métricas não iniciado na porta {port}")
 
 PAIRS_DISCOVERED = Counter(
     "sniper_pairs_discovered_total",

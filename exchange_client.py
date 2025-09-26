@@ -6,9 +6,16 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from eth_account import Account
-from web3 import Web3
-from web3.exceptions import BadFunctionCallOutput
+try:
+    from eth_account import Account
+    from web3 import Web3
+    from web3.exceptions import BadFunctionCallOutput
+    WEB3_AVAILABLE = True
+except ImportError:
+    WEB3_AVAILABLE = False
+    Account = None
+    Web3 = None
+    BadFunctionCallOutput = Exception
 
 from config import config
 
