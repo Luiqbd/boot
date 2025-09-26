@@ -139,27 +139,27 @@ def build_menu():
 
 def build_config_menu():
     kb = [
-        [InlineKeyboardButton("💵 Trade Size", "config_trade_size"),
-         InlineKeyboardButton("📊 Take Profit", "config_take_profit")],
-        [InlineKeyboardButton("🛡️ Stop Loss", "config_stop_loss"),
-         InlineKeyboardButton("📈 Trailing Stop", "config_trailing")],
-        [InlineKeyboardButton("💧 Min Liquidez", "config_liquidity"),
-         InlineKeyboardButton("🏷️ Max Taxa", "config_max_tax")],
-        [InlineKeyboardButton("🎯 Max Posições", "config_max_positions"),
-         InlineKeyboardButton("⚡ Modo Agressivo", "config_aggressive")],
-        [InlineKeyboardButton("🔙 Voltar", "menu_main")]
+        [InlineKeyboardButton("💵 Trade Size", callback_data="config_trade_size"),
+         InlineKeyboardButton("📊 Take Profit", callback_data="config_take_profit")],
+        [InlineKeyboardButton("🛡️ Stop Loss", callback_data="config_stop_loss"),
+         InlineKeyboardButton("📈 Trailing Stop", callback_data="config_trailing")],
+        [InlineKeyboardButton("💧 Min Liquidez", callback_data="config_liquidity"),
+         InlineKeyboardButton("🏷️ Max Taxa", callback_data="config_max_tax")],
+        [InlineKeyboardButton("🎯 Max Posições", callback_data="config_max_positions"),
+         InlineKeyboardButton("⚡ Modo Agressivo", callback_data="config_aggressive")],
+        [InlineKeyboardButton("🔙 Voltar", callback_data="menu_main")]
     ]
     return InlineKeyboardMarkup(kb)
 
 def build_analysis_menu():
     kb = [
-        [InlineKeyboardButton("📊 RSI", "analysis_rsi"),
-         InlineKeyboardButton("📈 Volume", "analysis_volume")],
-        [InlineKeyboardButton("💧 Liquidez", "analysis_liquidity"),
-         InlineKeyboardButton("🎯 Momentum", "analysis_momentum")],
-        [InlineKeyboardButton("👥 Holders", "analysis_holders"),
-         InlineKeyboardButton("🔍 Score Geral", "analysis_overall")],
-        [InlineKeyboardButton("🔙 Voltar", "menu_main")]
+        [InlineKeyboardButton("📊 RSI", callback_data="analysis_rsi"),
+         InlineKeyboardButton("📈 Volume", callback_data="analysis_volume")],
+        [InlineKeyboardButton("💧 Liquidez", callback_data="analysis_liquidity"),
+         InlineKeyboardButton("🎯 Momentum", callback_data="analysis_momentum")],
+        [InlineKeyboardButton("👥 Holders", callback_data="analysis_holders"),
+         InlineKeyboardButton("🔍 Score Geral", callback_data="analysis_overall")],
+        [InlineKeyboardButton("🔙 Voltar", callback_data="menu_main")]
     ]
     return InlineKeyboardMarkup(kb)
 
@@ -241,7 +241,7 @@ async def menu_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     f"  Valor: `{pos['amount']:.4f}` ETH\n"
                     f"  Tempo: `{entry_time.strftime('%H:%M:%S')}`\n\n"
                 )
-            await q.message.reply_text(pos_msg, parse_mode="MarkdownV2")
+            await q.message.reply_text(pos_msg, )
 
     elif cmd == "menu_history":
         history_msg = (
@@ -252,7 +252,7 @@ async def menu_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"• Falhas: `{risk_manager.get_failure_count_24h()}`\n\n"
             f"Use /report para relatório completo"
         )
-        await q.message.reply_text(history_msg, parse_mode="MarkdownV2")
+        await q.message.reply_text(history_msg, )
 
     elif cmd == "menu_analyze":
         await q.message.edit_markdown_v2(
@@ -270,25 +270,25 @@ async def menu_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"• ⚠️ Maior risco\n\n"
             f"Status: {'🟢 Ativo' if config.get('TURBO_MODE', False) else '🔴 Inativo'}"
         )
-        await q.message.reply_text(turbo_msg, parse_mode="MarkdownV2")
+        await q.message.reply_text(turbo_msg, )
 
     elif cmd == "menu_blacklist":
         blacklist_msg = (
-            f"🚫 *Blacklist de Tokens*\n\n"
-            f"Tokens bloqueados: `{len(config.get('BLACKLIST', []))}`\n"
+            f"🚫 BLACKLIST DE TOKENS\n\n"
+            f"Tokens bloqueados: {len(config.get('BLACKLIST', []))}\n"
             f"Use /blacklist <token> para adicionar\n"
             f"Use /unblacklist <token> para remover"
         )
-        await q.message.reply_text(blacklist_msg, parse_mode="MarkdownV2")
+        await q.message.reply_text(blacklist_msg)
 
     elif cmd == "menu_whitelist":
         whitelist_msg = (
-            f"✅ *Whitelist de Tokens*\n\n"
-            f"Tokens aprovados: `{len(config.get('WHITELIST', []))}`\n"
+            f"✅ WHITELIST DE TOKENS\n\n"
+            f"Tokens aprovados: {len(config.get('WHITELIST', []))}\n"
             f"Use /whitelist <token> para adicionar\n"
             f"Use /unwhitelist <token> para remover"
         )
-        await q.message.reply_text(whitelist_msg, parse_mode="MarkdownV2")
+        await q.message.reply_text(whitelist_msg)
 
     elif cmd == "menu_ping":
         up = int(time.time() - app_bot.bot_data["start_time"])
@@ -305,21 +305,24 @@ async def menu_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     elif cmd == "menu_help":
         help_msg = (
-            f"🆘 *Ajuda do Sniper Bot*\n\n"
-            f"*Comandos principais:*\n"
+            f"🆘 AJUDA DO SNIPER BOT\n\n"
+            f"COMANDOS PRINCIPAIS:\n"
             f"• /start - Menu principal\n"
             f"• /status - Status do bot\n"
             f"• /balance - Saldo da carteira\n"
-            f"• /report - Relatório detalhado\n\n"
-            f"*Funcionalidades:*\n"
+            f"• /report - Relatório detalhado\n"
+            f"• /snipe - Iniciar sniper\n"
+            f"• /stop - Parar sniper\n\n"
+            f"FUNCIONALIDADES:\n"
             f"• Sniper automático de novos tokens\n"
             f"• Análise técnica avançada\n"
             f"• Múltiplos níveis de take profit\n"
             f"• Stop loss dinâmico\n"
-            f"• Gerenciamento de risco\n\n"
-            f"*Suporte:* @seu_usuario"
+            f"• Gerenciamento de risco\n"
+            f"• Detecção de memecoins\n\n"
+            f"SUPORTE: @seu_usuario"
         )
-        await q.message.reply_text(help_msg, parse_mode="MarkdownV2")
+        await q.message.reply_text(help_msg)
 
     elif cmd == "menu_main":
         # Return to main menu
@@ -337,13 +340,13 @@ async def menu_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # reexibe menu principal
     try:
-        await q.message.edit_markdown_v2(
-            "🎯 *Sniper Bot*\nUse os botões abaixo:",
+        await q.message.edit_text(
+            "🎯 SNIPER BOT ATIVO\n\nUse os botões abaixo para controlar o bot:",
             reply_markup=build_menu()
         )
     except:
-        await q.message.reply_markdown_v2(
-            "🎯 *Sniper Bot*\nUse os botões abaixo:",
+        await q.message.reply_text(
+            "🎯 SNIPER BOT ATIVO\n\nUse os botões abaixo para controlar o bot:",
             reply_markup=build_menu()
         )
 
@@ -352,34 +355,34 @@ async def handle_config_menu(q, cmd):
     if cmd == "config_trade_size":
         current_size = config.get("TRADE_SIZE_ETH", 0.1)
         msg = (
-            f"💵 *Trade Size Atual:* `{current_size}` ETH\n\n"
+            f"💵 TRADE SIZE ATUAL: {current_size} ETH\n\n"
             f"Tamanho da posição por trade.\n"
             f"Recomendado: 0.05 - 0.2 ETH\n\n"
             f"Use /set_trade_size <valor> para alterar"
         )
-        await q.message.reply_text(msg, parse_mode="MarkdownV2")
+        await q.message.reply_text(msg)
     
     elif cmd == "config_take_profit":
         tp_levels = advanced_sniper.config.take_profit_levels
         msg = (
-            f"📊 *Take Profit Levels:*\n\n"
-            f"• Nível 1: `{tp_levels[0]*100:.0f}%`\n"
-            f"• Nível 2: `{tp_levels[1]*100:.0f}%`\n"
-            f"• Nível 3: `{tp_levels[2]*100:.0f}%`\n"
-            f"• Nível 4: `{tp_levels[3]*100:.0f}%`\n\n"
+            f"📊 TAKE PROFIT LEVELS:\n\n"
+            f"• Nível 1: {tp_levels[0]*100:.0f}%\n"
+            f"• Nível 2: {tp_levels[1]*100:.0f}%\n"
+            f"• Nível 3: {tp_levels[2]*100:.0f}%\n"
+            f"• Nível 4: {tp_levels[3]*100:.0f}%\n\n"
             f"25% da posição é vendida em cada nível"
         )
-        await q.message.reply_text(msg, parse_mode="MarkdownV2")
+        await q.message.reply_text(msg)
     
     elif cmd == "config_stop_loss":
         sl_pct = advanced_sniper.config.stop_loss_pct * 100
         msg = (
-            f"🛡️ *Stop Loss:* `{sl_pct:.1f}%`\n\n"
+            f"🛡️ STOP LOSS: {sl_pct:.1f}%\n\n"
             f"Perda máxima aceita por trade.\n"
             f"Recomendado: 5% - 15%\n\n"
             f"Use /set_stop_loss <valor> para alterar"
         )
-        await q.message.reply_text(msg, parse_mode="MarkdownV2")
+        await q.message.reply_text(msg, )
     
     elif cmd == "config_trailing":
         trail_pct = advanced_sniper.config.trailing_stop_pct * 100
@@ -389,7 +392,7 @@ async def handle_config_menu(q, cmd):
             f"Protege lucros em alta volatilidade.\n\n"
             f"Use /set_trailing <valor> para alterar"
         )
-        await q.message.reply_text(msg, parse_mode="MarkdownV2")
+        await q.message.reply_text(msg, )
     
     elif cmd == "config_liquidity":
         min_liq = advanced_sniper.config.min_liquidity
@@ -399,7 +402,7 @@ async def handle_config_menu(q, cmd):
             f"Maior liquidez = menor slippage\n\n"
             f"Use /set_min_liquidity <valor> para alterar"
         )
-        await q.message.reply_text(msg, parse_mode="MarkdownV2")
+        await q.message.reply_text(msg, )
     
     elif cmd == "config_max_tax":
         max_tax = advanced_sniper.config.max_tax_bps / 100
@@ -409,7 +412,7 @@ async def handle_config_menu(q, cmd):
             f"Tokens com taxa alta são rejeitados.\n\n"
             f"Use /set_max_tax <valor> para alterar"
         )
-        await q.message.reply_text(msg, parse_mode="MarkdownV2")
+        await q.message.reply_text(msg, )
     
     elif cmd == "config_max_positions":
         max_pos = advanced_sniper.config.max_positions
@@ -419,7 +422,7 @@ async def handle_config_menu(q, cmd):
             f"Controla exposição ao risco.\n\n"
             f"Use /set_max_positions <valor> para alterar"
         )
-        await q.message.reply_text(msg, parse_mode="MarkdownV2")
+        await q.message.reply_text(msg, )
     
     elif cmd == "config_aggressive":
         aggressive = config.get("AGGRESSIVE_MODE", False)
@@ -432,7 +435,7 @@ async def handle_config_menu(q, cmd):
             f"• ⚠️ Maior risco\n\n"
             f"Use /toggle_aggressive para alternar"
         )
-        await q.message.reply_text(msg, parse_mode="MarkdownV2")
+        await q.message.reply_text(msg, )
 
 async def handle_analysis_menu(q, cmd):
     """Handle analysis menu commands"""
@@ -447,7 +450,7 @@ async def handle_analysis_menu(q, cmd):
             f"• Mín. RSI: `{advanced_sniper.config.min_rsi_oversold}`\n"
             f"• Máx. RSI: `{advanced_sniper.config.max_rsi_overbought}`"
         )
-        await q.message.reply_text(msg, parse_mode="MarkdownV2")
+        await q.message.reply_text(msg, )
     
     elif cmd == "analysis_volume":
         msg = (
@@ -458,7 +461,7 @@ async def handle_analysis_menu(q, cmd):
             f"• Volume constante: Sem interesse\n\n"
             f"Mínimo configurado: `{advanced_sniper.config.min_volume_spike}x`"
         )
-        await q.message.reply_text(msg, parse_mode="MarkdownV2")
+        await q.message.reply_text(msg, )
     
     elif cmd == "analysis_liquidity":
         msg = (
@@ -469,7 +472,7 @@ async def handle_analysis_menu(q, cmd):
             f"• Decrescimento: Negativo\n\n"
             f"Liquidez mínima: `{advanced_sniper.config.min_liquidity}` ETH"
         )
-        await q.message.reply_text(msg, parse_mode="MarkdownV2")
+        await q.message.reply_text(msg, )
     
     elif cmd == "analysis_momentum":
         msg = (
@@ -480,7 +483,7 @@ async def handle_analysis_menu(q, cmd):
             f"• Momentum < 0: Baixa\n\n"
             f"Mínimo configurado: `{advanced_sniper.config.min_momentum_score}`"
         )
-        await q.message.reply_text(msg, parse_mode="MarkdownV2")
+        await q.message.reply_text(msg, )
     
     elif cmd == "analysis_holders":
         msg = (
@@ -491,7 +494,7 @@ async def handle_analysis_menu(q, cmd):
             f"• Score < 0.5: Concentrado (risco)\n\n"
             f"Evita tokens com poucos holders grandes."
         )
-        await q.message.reply_text(msg, parse_mode="MarkdownV2")
+        await q.message.reply_text(msg, )
     
     elif cmd == "analysis_overall":
         msg = (
@@ -503,21 +506,89 @@ async def handle_analysis_menu(q, cmd):
             f"• Score < 0.5: Sinal fraco\n\n"
             f"Mínimo para entrada: `{advanced_sniper.config.min_signal_strength.name}`"
         )
-        await q.message.reply_text(msg, parse_mode="MarkdownV2")
+        await q.message.reply_text(msg, )
+
+# Comandos diretos do Telegram
+async def snipe_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not TELEGRAM_AVAILABLE:
+        return
+    start_discovery()
+    await update.message.reply_text("🎯 Sniper iniciado! Procurando novos tokens...")
+
+async def stop_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not TELEGRAM_AVAILABLE:
+        return
+    stop_discovery()
+    await update.message.reply_text("⏹ Sniper parado!")
+
+async def status_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not TELEGRAM_AVAILABLE:
+        return
+    status = "🟢 ATIVO" if is_discovery_running() else "🔴 PARADO"
+    positions = len(risk_manager.posicoes_ativas)
+    balance = get_balance_eth()
+    msg = (
+        f"📊 STATUS DO BOT\n\n"
+        f"Sniper: {status}\n"
+        f"Posições ativas: {positions}\n"
+        f"Saldo: {balance:.4f} ETH\n"
+        f"Uptime: {datetime.timedelta(seconds=int(time.time() - app_bot.bot_data.get('start_time', time.time())))}"
+    )
+    await update.message.reply_text(msg)
+
+async def balance_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not TELEGRAM_AVAILABLE:
+        return
+    balance = get_balance_eth()
+    await update.message.reply_text(f"💰 Saldo atual: {balance:.6f} ETH")
+
+async def report_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not TELEGRAM_AVAILABLE:
+        return
+    await update.message.reply_text(risk_manager.gerar_relatorio())
+
+# Handler de erro global
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log errors caused by Updates."""
+    logger.error(f"Exception while handling an update: {context.error}")
+    
+    # Tentar responder ao usuário se possível
+    if isinstance(update, Update) and update.effective_message:
+        try:
+            await update.effective_message.reply_text(
+                "❌ Ocorreu um erro interno. Tente novamente ou use /start"
+            )
+        except:
+            pass
 
 # Registrar handlers
 if TELEGRAM_AVAILABLE and app_bot:
     app_bot.add_handler(CommandHandler("start", start_cmd))
+    app_bot.add_handler(CommandHandler("snipe", snipe_cmd))
+    app_bot.add_handler(CommandHandler("stop", stop_cmd))
+    app_bot.add_handler(CommandHandler("status", status_cmd))
+    app_bot.add_handler(CommandHandler("balance", balance_cmd))
+    app_bot.add_handler(CommandHandler("report", report_cmd))
     app_bot.add_handler(CallbackQueryHandler(menu_handler))
     app_bot.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND,
-                       lambda u,c: u.message.reply_text("Use /start"))
+                       lambda u,c: u.message.reply_text("Use /start para abrir o menu"))
     )
+    
+    # Adicionar handler de erro
+    app_bot.add_error_handler(error_handler)
 
     # Comandos
     loop.run_until_complete(app_bot.initialize())
     loop.run_until_complete(app_bot.start())
-    loop.run_until_complete(bot.set_my_commands([BotCommand("start","Abrir menu")]))
+    loop.run_until_complete(bot.set_my_commands([
+        BotCommand("start", "Abrir menu principal"),
+        BotCommand("snipe", "Iniciar sniper"),
+        BotCommand("stop", "Parar sniper"),
+        BotCommand("status", "Ver status do bot"),
+        BotCommand("balance", "Ver saldo da carteira"),
+        BotCommand("report", "Relatório detalhado")
+    ]))
     if WEBHOOK_URL:
         url = WEBHOOK_URL.rstrip("/") + "/webhook"
         loop.run_until_complete(bot.set_webhook(url=url))
@@ -525,6 +596,12 @@ if TELEGRAM_AVAILABLE and app_bot:
 if TELEGRAM_AVAILABLE and app_bot:
     Thread(target=loop.run_forever, daemon=True).start()
     logger.info("🤖 Bot running")
+    
+    # Auto-start discovery se configurado
+    if config.get("AUTO_START_DISCOVERY", True):
+        time.sleep(2)  # Aguarda bot inicializar
+        start_discovery()
+        logger.info("🎯 Discovery auto-iniciado")
 else:
     logger.info("🤖 Bot não disponível - apenas API Flask")
 
