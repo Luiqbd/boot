@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Login App</string>
+    <string name="login_title">Área de Login</string>
+    <string name="username_hint">Usuário</string>
+    <string name="password_hint">Senha</string>
+    <string name="login_button">Entrar</string>
+    <string name="logout_button">Sair</string>
+    <string name="welcome_message">Bem-vindo!</string>
+    <string name="login_failed">Usuário ou senha incorretos</string>
+    <string name="login_success">Login realizado com sucesso!</string>
+    <string name="username_empty">Por favor, insira o usuário</string>
+    <string name="password_empty">Por favor, insira a senha</string>
+    <string name="logged_in_as">Logado como: </string>
+</resources>
