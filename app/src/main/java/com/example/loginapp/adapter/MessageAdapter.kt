@@ -18,6 +18,11 @@ class MessageAdapter(private val currentUserId: String) : ListAdapter<Message, R
     companion object {
         private const val VIEW_TYPE_SENT = 1
         private const val VIEW_TYPE_RECEIVED = 2
+
+        fun formatTime(timestamp: Long): String {
+            val sdf = SimpleDateFormat("HH:mm", Locale.getDefault())
+            return sdf.format(Date(timestamp))
+        }
     }
 
     override fun getItemViewType(position: Int): Int {
@@ -52,7 +57,7 @@ class MessageAdapter(private val currentUserId: String) : ListAdapter<Message, R
 
         fun bind(message: Message) {
             tvMessage.text = message.message
-            tvTime.text = formatTime(message.timestamp)
+            tvTime.text = MessageAdapter.formatTime(message.timestamp)
         }
     }
 
@@ -64,13 +69,8 @@ class MessageAdapter(private val currentUserId: String) : ListAdapter<Message, R
         fun bind(message: Message) {
             tvMessage.text = message.message
             tvSender.text = message.senderName
-            tvTime.text = formatTime(message.timestamp)
+            tvTime.text = MessageAdapter.formatTime(message.timestamp)
         }
-    }
-
-    private fun formatTime(timestamp: Long): String {
-        val sdf = SimpleDateFormat("HH:mm", Locale.getDefault())
-        return sdf.format(Date(timestamp))
     }
 
     class MessageDiffCallback : DiffUtil.ItemCallback<Message>() {

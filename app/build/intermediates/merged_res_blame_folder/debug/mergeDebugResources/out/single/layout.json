@@ -1,0 +1,34 @@
+[
+    {
+        "merged": "com.example.loginapp-mergeDebugResources-37:/layout/item_chat_list.xml",
+        "source": "com.example.loginapp-main-40:/layout/item_chat_list.xml"
+    },
+    {
+        "merged": "com.example.loginapp-mergeDebugResources-37:/layout/activity_main.xml",
+        "source": "com.example.loginapp-main-40:/layout/activity_main.xml"
+    },
+    {
+        "merged": "com.example.loginapp-mergeDebugResources-37:/layout/item_message_sent.xml",
+        "source": "com.example.loginapp-main-40:/layout/item_message_sent.xml"
+    },
+    {
+        "merged": "com.example.loginapp-mergeDebugResources-37:/layout/activity_home.xml",
+        "source": "com.example.loginapp-main-40:/layout/activity_home.xml"
+    },
+    {
+        "merged": "com.example.loginapp-mergeDebugResources-37:/layout/item_message_received.xml",
+        "source": "com.example.loginapp-main-40:/layout/item_message_received.xml"
+    },
+    {
+        "merged": "com.example.loginapp-mergeDebugResources-37:/layout/activity_chat.xml",
+        "source": "com.example.loginapp-main-40:/layout/activity_chat.xml"
+    },
+    {
+        "merged": "com.example.loginapp-mergeDebugResources-37:/layout/activity_chats.xml",
+        "source": "com.example.loginapp-main-40:/layout/activity_chats.xml"
+    },
+    {
+        "merged": "com.example.loginapp-mergeDebugResources-37:/layout/activity_login.xml",
+        "source": "com.example.loginapp-main-40:/layout/activity_login.xml"
+    }
+]
