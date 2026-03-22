@@ -15,4 +15,6 @@
     <color name="text_secondary">#FF757575</color>
     <color name="error">#FFF44336</color>
     <color name="success">#FF4CAF50</color>
+    <color name="divider">#FFE0E0E0</color>
+    <color name="chat_background">#FFECE5DD</color>
 </resources>

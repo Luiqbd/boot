@@ -33,6 +33,16 @@
             android:exported="false"
             android:theme="@style/Theme.LoginApp" />
 
+        <activity
+            android:name=".ChatsActivity"
+            android:exported="false"
+            android:theme="@style/Theme.LoginApp" />
+
+        <activity
+            android:name=".ChatActivity"
+            android:exported="false"
+            android:theme="@style/Theme.LoginApp" />
+
     </application>
 
 </manifest>

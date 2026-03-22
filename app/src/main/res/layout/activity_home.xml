@@ -35,10 +35,24 @@
         tools:text="Logado como: admin" />
 
     <Button
-        android:id="@+id/btnLogout"
+        android:id="@+id/btnChats"
         android:layout_width="match_parent"
         android:layout_height="56dp"
         android:layout_marginTop="48dp"
+        android:text="Mensagens 💬"
+        android:textSize="16sp"
+        android:textStyle="bold"
+        android:backgroundTint="@color/primary"
+        android:textColor="@color/white"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/tvUserInfo" />
+
+    <Button
+        android:id="@+id/btnLogout"
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:layout_marginTop="16dp"
         android:text="@string/logout_button"
         android:textSize="16sp"
         android:textStyle="bold"
@@ -46,6 +60,6 @@
         android:textColor="@color/white"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/tvUserInfo" />
+        app:layout_constraintTop_toBottomOf="@id/btnChats" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>

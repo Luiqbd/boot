@@ -77,6 +77,8 @@ class LoginActivity : AppCompatActivity() {
         sharedPrefs.edit().apply {
             putBoolean("isLoggedIn", true)
             putString("username", username)
+            putString("logged_user", username)
+            putString("logged_user_name", username)
             apply()
         }
     }

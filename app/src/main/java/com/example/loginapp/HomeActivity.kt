@@ -24,6 +24,11 @@ class HomeActivity : AppCompatActivity() {
         binding.btnLogout.setOnClickListener {
             logout()
         }
+
+        binding.btnChats.setOnClickListener {
+            val intent = Intent(this, ChatsActivity::class.java)
+            startActivity(intent)
+        }
     }
 
     private fun logout() {
