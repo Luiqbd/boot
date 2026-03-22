@@ -10,6 +10,12 @@ Um aplicativo Android com sistema de login/restrição de acesso.
 - ✅ Tela inicial após login bem-sucedido
 - ✅ Botão de logout
 - ✅ Múltiplos usuários permitidos
+- ✅ **Sistema de mensagens estilo WhatsApp**
+  - Lista de conversas
+  - Chat em tempo real
+  - Mensagens enviadas/recebidas com visual diferente
+  - Indicador de mensagens não lidas
+  - Resposta automática simulada
 
 ## Usuários de Teste
 
@@ -59,9 +65,21 @@ LoginApp/
 │   │   ├── java/com/example/loginapp/
 │   │   │   ├── MainActivity.kt        # Tela inicial
 │   │   │   ├── LoginActivity.kt       # Tela de login
-│   │   │   └── HomeActivity.kt        # Tela após login
+│   │   │   ├── HomeActivity.kt        # Tela após login (com botão Mensagens)
+│   │   │   ├── ChatsActivity.kt       # Lista de conversas
+│   │   │   ├── ChatActivity.kt       # Tela de chat individual
+│   │   │   ├── adapter/
+│   │   │   │   ├── ChatListAdapter.kt    # Adapter para lista de chats
+│   │   │   │   └── MessageAdapter.kt     # Adapter para mensagens
+│   │   │   └── model/
+│   │   │       └── Message.kt        # Modelo de dados
 │   │   ├── res/
 │   │   │   ├── layout/                # Layouts XML
+│   │   │   │   ├── activity_chats.xml      # Lista de conversas
+│   │   │   │   ├── activity_chat.xml        # Chat individual
+│   │   │   │   ├── item_chat_list.xml      # Item da lista
+│   │   │   │   ├── item_message_sent.xml   # Mensagem enviada
+│   │   │   │   └── item_message_received.xml # Mensagem recebida
 │   │   │   ├── values/                # Strings, cores, temas
 │   │   │   └── drawable/              # Ícones
 │   │   └── AndroidManifest.xml
@@ -81,10 +99,12 @@ LoginApp/
 
 ## Capturas de Tela
 
-O app possui 3 telas:
+O app possui 5 telas:
 1. **Tela Inicial** - Botão para ir ao login
 2. **Tela de Login** - Campos de usuário e senha
-3. **Tela Home** - Mensagem de boas-vindas após login
+3. **Tela Home** - Mensagem de boas-vindas após login + botão Mensagens
+4. **Lista de Conversas** - Visual estilo WhatsApp com conversas
+5. **Chat Individual** - Conversa com mensagens enviadas/recebidas
 
 ---
 
