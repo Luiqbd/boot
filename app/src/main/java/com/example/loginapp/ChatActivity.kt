@@ -5,6 +5,7 @@ import android.os.Bundle
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.example.loginapp.adapter.MessageAdapter
@@ -31,8 +32,13 @@ class ChatActivity : AppCompatActivity() {
         binding = ActivityChatBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        chatId = intent.getStringExtra("chat_id") ?: ""
-        chatName = intent.getStringExtra("chat_name") ?: ""
+        // Obter dados do intent com valores padrão
+        chatId = intent.getStringExtra("chat_id") ?: run {
+            Toast.makeText(this, "Erro: ID do chat não encontrado", Toast.LENGTH_SHORT).show()
+            finish()
+            return
+        }
+        chatName = intent.getStringExtra("chat_name") ?: "Chat"
 
         setupToolbar()
         setupRecyclerView()
@@ -68,59 +74,69 @@ class ChatActivity : AppCompatActivity() {
     }
 
     private fun loadMessages() {
-        val currentUser = sharedPrefs.getString("logged_user", "") ?: ""
-        val prefs = getSharedPreferences("users_$currentUser", Context.MODE_PRIVATE)
-        val messagesJson = prefs.getString(KEY_MESSAGES + chatId, null)
+        try {
+            val currentUser = sharedPrefs.getString("logged_user", "") ?: ""
+            if (currentUser.isEmpty()) {
+                Toast.makeText(this, "Erro: Usuário não identificado", Toast.LENGTH_SHORT).show()
+                return
+            }
+            
+            val prefs = getSharedPreferences("users_$currentUser", Context.MODE_PRIVATE)
+            val messagesJson = prefs.getString(KEY_MESSAGES + chatId, null)
 
-        val messages = if (messagesJson != null) {
-            val type = object : TypeToken<List<Message>>() {}.type
-            Gson().fromJson<List<Message>>(messagesJson, type)
-        } else {
-            // Mensagens de exemplo
-            val sampleMessages = listOf(
-                Message(
-                    id = "1",
-                    senderId = chatId,
-                    senderName = chatName,
-                    receiverId = currentUser,
-                    message = "Olá! 👋",
-                    timestamp = System.currentTimeMillis() - 3600000,
-                    isFromMe = false
-                ),
-                Message(
-                    id = "2",
-                    senderId = currentUser,
-                    senderName = sharedPrefs.getString("logged_user_name", currentUser) ?: currentUser,
-                    receiverId = chatId,
-                    message = "Oi! Tudo bem?",
-                    timestamp = System.currentTimeMillis() - 3500000,
-                    isFromMe = true
-                ),
-                Message(
-                    id = "3",
-                    senderId = chatId,
-                    senderName = chatName,
-                    receiverId = currentUser,
-                    message = "Estou bem! E você?",
-                    timestamp = System.currentTimeMillis() - 1800000,
-                    isFromMe = false
-                ),
-                Message(
-                    id = "4",
-                    senderId = chatId,
-                    senderName = chatName,
-                    receiverId = currentUser,
-                    message = "Última mensagem recebida",
-                    timestamp = System.currentTimeMillis() - 300000,
-                    isFromMe = false
-                )
-            )
-            prefs.edit().putString(KEY_MESSAGES + chatId, Gson().toJson(sampleMessages)).apply()
-            sampleMessages
+            val messages = if (messagesJson != null) {
+                try {
+                    val type = object : TypeToken<List<Message>>() {}.type
+                    Gson().fromJson<List<Message>>(messagesJson, type) ?: getSampleMessages(currentUser)
+                } catch (e: Exception) {
+                    getSampleMessages(currentUser)
+                }
+            } else {
+                getSampleMessages(currentUser)
+            }
+
+            messageAdapter.submitList(messages)
+            binding.rvMessages.scrollToPosition(messages.size - 1)
+        } catch (e: Exception) {
+            Toast.makeText(this, "Erro ao carregar mensagens: ${e.message}", Toast.LENGTH_SHORT).show()
         }
+    }
 
-        messageAdapter.submitList(messages)
-        binding.rvMessages.scrollToPosition(messages.size - 1)
+    private fun getSampleMessages(currentUser: String): List<Message> {
+        val sampleMessages = listOf(
+            Message(
+                id = "1",
+                senderId = chatId,
+                senderName = chatName,
+                receiverId = currentUser,
+                message = "Olá! 👋",
+                timestamp = System.currentTimeMillis() - 3600000,
+                isFromMe = false
+            ),
+            Message(
+                id = "2",
+                senderId = currentUser,
+                senderName = sharedPrefs.getString("logged_user_name", currentUser) ?: currentUser,
+                receiverId = chatId,
+                message = "Oi! Tudo bem?",
+                timestamp = System.currentTimeMillis() - 3500000,
+                isFromMe = true
+            ),
+            Message(
+                id = "3",
+                senderId = chatId,
+                senderName = chatName,
+                receiverId = currentUser,
+                message = "Estou bem! E você?",
+                timestamp = System.currentTimeMillis() - 1800000,
+                isFromMe = false
+            )
+        )
+        
+        val prefs = getSharedPreferences("users_$currentUser", Context.MODE_PRIVATE)
+        prefs.edit().putString(KEY_MESSAGES + chatId, Gson().toJson(sampleMessages)).apply()
+        
+        return sampleMessages
     }
 
     private fun sendMessage(messageText: String) {
